@@ -1537,14 +1537,169 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
   );
 }
 
+function getShipmentScanMeta(scan: Shipment['scanSentToAccounting']) {
+  if (scan === true || scan === 'yes') {
+    return { label: 'ОТПРАВЛЕН', dot: 'bg-[#7cb244]', badge: 'bg-[#7cb244]/10 text-[#7cb244]' };
+  }
+  if (scan === false || scan === 'no') {
+    return { label: 'НЕТ', dot: 'bg-rose-500', badge: 'bg-rose-500/10 text-rose-500' };
+  }
+  return { label: 'НЕ ЗАДАНО', dot: 'bg-ink-4', badge: 'bg-[#141414]/5 text-[#141414]/40' };
+}
+
+function getScanDisplayValue(scan: Shipment['scanSentToAccounting']) {
+  if (scan === true || scan === 'yes') return 'Да';
+  if (scan === false || scan === 'no') return 'Нет';
+  return '—';
+}
+
+function ShipmentDetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h5 className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#B08B57] mb-3">
+        {title}
+      </h5>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function ShipmentDetailField({
+  label,
+  value,
+  showDivider = true,
+}: {
+  label: string;
+  value?: React.ReactNode;
+  showDivider?: boolean;
+}) {
+  return (
+    <div className={cn('py-3.5', showDivider && 'border-b border-dashed border-[#E5E0D6]')}>
+      <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#8A8574] mb-1">{label}</p>
+      <div className="text-[15px] font-semibold text-[#2C2922] leading-snug">{value ?? '—'}</div>
+    </div>
+  );
+}
+
+function ShipmentDetailPanel({
+  shipment,
+  canEdit,
+  onEdit,
+  onDelete,
+  onClose,
+}: {
+  shipment: Shipment;
+  canEdit: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const machineLabel = shipment.autoNumber ? `Машина №${shipment.autoNumber}` : 'Отгрузка';
+  const isUpd = shipment.docType === 'upd';
+  const incomingDocLabel = isUpd ? 'Входящий УПД' : 'Входящий акт';
+  const outgoingDocLabel = isUpd ? 'Исходящий УПД' : 'Исходящий МХ-3';
+
+  return (
+    <div className="flex flex-col max-h-[75vh] bg-[#FCF9F2]">
+      <div className="shrink-0 px-5 pt-5 pb-4 border-b border-[#E8E4DC]">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#8A8574] mb-1">Отгрузка</p>
+            <h4 className="font-serif text-[28px] font-normal text-[#2C2922] leading-[1.1] truncate">{machineLabel}</h4>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {canEdit && (
+              <>
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  title="Редактировать"
+                  className="w-9 h-9 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  title="Удалить"
+                  className="w-9 h-9 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#A04930] hover:bg-[#F5E6E2] transition-colors"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              title="Свернуть"
+              className="w-9 h-9 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-5 space-y-6">
+        <ShipmentDetailSection title="Документы">
+          <ShipmentDetailField label={incomingDocLabel} value={shipment.incomingUPD} />
+          <ShipmentDetailField label="Отправлен скан в бухгалтерию" value={getScanDisplayValue(shipment.scanSentToAccounting)} />
+          <ShipmentDetailField label={outgoingDocLabel} value={shipment.outgoingUPD} />
+          <ShipmentDetailField label="Номер доверенности" value={shipment.poaNumber} />
+          <ShipmentDetailField label="Дата доверенности" value={shipment.poaDate ? formatDateToDisplay(shipment.poaDate) : undefined} showDivider={false} />
+        </ShipmentDetailSection>
+
+        <ShipmentDetailSection title="Перевозка">
+          <ShipmentDetailField label="Дата загрузки" value={shipment.loadingDate ? formatDate(shipment.loadingDate) : undefined} />
+          <ShipmentDetailField label="Дата выгрузки" value={shipment.unloadingDate ? formatDate(shipment.unloadingDate) : undefined} />
+          <ShipmentDetailField label="ФИО водителя" value={shipment.driverName} />
+          <ShipmentDetailField label="Перевозчик" value={shipment.carrierName} />
+          <ShipmentDetailField label="Стоимость перевозки" value={formatCurrency(shipment.carryingCost || 0)} />
+          <ShipmentDetailField label="Стоимость перевозки (общая)" value={formatCurrency(shipment.totalCarryingCost || 0)} />
+          <ShipmentDetailField label="Счёт от перевозчика" value={shipment.carrierInvoice} />
+          <ShipmentDetailField label="УПД перевозчика" value={shipment.carrierUPD} showDivider={false} />
+        </ShipmentDetailSection>
+
+        <ShipmentDetailSection title="Груз">
+          <ShipmentDetailField label="Материал" value={shipment.materialName} />
+          <ShipmentDetailField label="Количество" value={shipment.quantity != null ? String(shipment.quantity) : undefined} showDivider={false} />
+        </ShipmentDetailSection>
+      </div>
+    </div>
+  );
+}
+
 function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { project: Project, canEdit: boolean, directories: any, trustDeeds?: TrustDeed[] }) {
   const [isAddingMaterial, setIsAddingMaterial] = useState(false);
   const [isAddingShipment, setIsAddingShipment] = useState(false);
   const [editingMaterialId, setEditingMaterialId] = useState<string | null>(null);
   const [editingShipmentId, setEditingShipmentId] = useState<string | null>(null);
+  const [selectedShipmentId, setSelectedShipmentId] = useState<string | null>(null);
 
   const materials = project.materials || [];
   const shipments = project.shipments || [];
+  const selectedShipment = shipments.find(s => s.id === selectedShipmentId) ?? null;
+
+  useEffect(() => {
+    setSelectedShipmentId(prev => {
+      if (shipments.length === 0) return null;
+      if (prev && shipments.some(s => s.id === prev)) return prev;
+      return shipments[0].id;
+    });
+  }, [shipments]);
+
+  const handleDeleteShipment = async (shipmentId: string) => {
+    if (!confirm('Удалить эту отгрузку?')) return;
+    try {
+      const updated = shipments.filter(s => s.id !== shipmentId);
+      await updateDoc(doc(db, 'projects', project.id), {
+        shipments: updated,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `projects/${project.id}/shipments/${shipmentId}`);
+    }
+  };
 
   const handleExportToExcel = () => {
     console.log("Exporting to excel...");
@@ -1697,117 +1852,140 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
       </div>
 
       {/* Shipments Section */}
-      <div className={cn(
-        "rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-      )}>
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3">
-          <h3 className={cn("text-[14px] font-serif font-medium flex items-center gap-2", "text-ink")}>
-            Отгрузки
-            <span className="text-[11px] font-serif opacity-40">· {shipments.length}</span>
-          </h3>
-          <div className="flex items-center gap-2">
-            <Button 
-              variant="soft" 
-              size="sm" 
-              className="h-8 px-2.5 text-[11.5px] font-medium"
-              icon={<Download size={12} />}
-              onClick={handleExportToExcel}
-            >
-              Экспорт в Excel
-            </Button>
-            {shipments.length > 0 && (
-              <Button 
-                variant="primary" 
-                size="sm" 
-                className="h-8 px-2.5 text-[11.5px] font-semibold"
-                icon={<Plus size={12} />}
-                onClick={() => {
-                  setEditingShipmentId(null);
+      {shipments.length > 0 ? (
+        <div className="flex flex-col lg:grid lg:grid-cols-3 gap-4 items-start">
+          {/* Table card — 2/3 width, height by content only */}
+          <div className={cn(
+            "lg:col-span-2 min-w-0 self-start rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden"
+          )}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3 shrink-0">
+              <h3 className={cn("text-[14px] font-serif font-medium flex items-center gap-2", "text-ink")}>
+                Отгрузки
+                <span className="text-[11px] font-serif opacity-40">· {shipments.length}</span>
+              </h3>
+              <div className="flex items-center gap-2">
+                <Button 
+                  variant="soft" 
+                  size="sm" 
+                  className="h-8 px-2.5 text-[11.5px] font-medium"
+                  icon={<Download size={12} />}
+                  onClick={handleExportToExcel}
+                >
+                  Экспорт в Excel
+                </Button>
+                <Button 
+                  variant="primary" 
+                  size="sm" 
+                  className="h-8 px-2.5 text-[11.5px] font-semibold"
+                  icon={<Plus size={12} />}
+                  onClick={() => {
+                    setEditingShipmentId(null);
+                    setIsAddingShipment(true);
+                  }}
+                >
+                  Новая отгрузка
+                </Button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto custom-scrollbar p-4 pt-2">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] border-b border-[#E1D8C5]">
+                    <th className="px-4 py-3 font-bold">Тип / Номер</th>
+                    <th className="px-4 py-3 font-bold">Скан</th>
+                    <th className="px-4 py-3 font-bold">Материал / Кол-во</th>
+                    <th className="px-4 py-3 font-bold">Даты</th>
+                    <th className="px-4 py-3 font-bold">Перевозчик / Стоимость</th>
+                    <th className="w-8 px-2 py-3" aria-hidden />
+                  </tr>
+                </thead>
+                <tbody>
+                  {shipments.map((s) => {
+                    const isSelected = s.id === selectedShipmentId;
+                    const scan = getShipmentScanMeta(s.scanSentToAccounting);
+                    return (
+                      <tr
+                        key={s.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedShipmentId(s.id)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedShipmentId(s.id); } }}
+                        className={cn(
+                          "cursor-pointer transition-colors border-b border-[#E1D8C5]/60 last:border-b-0",
+                          isSelected
+                            ? "bg-[#F5E9CC] shadow-[inset_3px_0_0_0_#B07A2C]"
+                            : "hover:bg-[#F5F2E9]/80"
+                        )}
+                      >
+                        <td className="px-4 py-3.5 align-top">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase bg-black/5 text-[#141414]/60">
+                                {s.docType === 'upd' ? 'УПД' : 'АКТ'}
+                              </span>
+                              <span className="text-[12px] font-bold text-ink">{s.incomingUPD} / {s.outgoingUPD}</span>
+                            </div>
+                            <p className="text-[10px] text-ink-4 font-mono">Дов: {s.poaNumber || '—'}{s.poaDate ? ` от ${formatDateToDisplay(s.poaDate)}` : ''}</p>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3.5 align-top">
+                          <span className={cn("inline-flex px-2 py-0.5 rounded-full text-[8px] font-bold uppercase", scan.badge)}>
+                            {(s.scanSentToAccounting === true || s.scanSentToAccounting === 'yes') ? 'ОТПРАВЛЕН' : 'НЕТ'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3.5 align-top">
+                          <p className="text-[12px] font-bold text-ink">{s.materialName || '—'}</p>
+                          <p className="text-[12px] font-mono font-semibold text-ink-3">{s.quantity}</p>
+                        </td>
+                        <td className="px-4 py-3.5 align-top">
+                          <p className="text-[12px] text-ink">{formatDate(s.loadingDate)}</p>
+                          <p className="text-[11px] text-ink-4">{formatDate(s.unloadingDate)}</p>
+                        </td>
+                        <td className="px-4 py-3.5 align-top">
+                          <p className="text-[12px] font-bold text-ink">{s.carrierName || '—'}</p>
+                          <p className="text-[12px] font-mono font-semibold text-[#5a6b3c]">{formatCurrency(s.totalCarryingCost)}</p>
+                        </td>
+                        <td className="px-2 py-3.5 align-middle text-ink-4">
+                          <ChevronRight size={14} className={cn("transition-opacity", isSelected ? "opacity-80" : "opacity-30")} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Detail card */}
+          {selectedShipment && (
+            <div className={cn(
+              "w-full lg:col-span-1 self-start flex flex-col rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden"
+            )}>
+              <ShipmentDetailPanel
+                shipment={selectedShipment}
+                canEdit={canEdit}
+                onEdit={() => {
+                  setEditingShipmentId(selectedShipment.id);
                   setIsAddingShipment(true);
                 }}
-              >
-                Новая отгрузка
-              </Button>
-            )}
-          </div>
+                onDelete={() => handleDeleteShipment(selectedShipment.id)}
+                onClose={() => setSelectedShipmentId(null)}
+              />
+            </div>
+          )}
         </div>
-
-        <div className="p-4">
-          {shipments.length > 0 ? (
-          <div className="overflow-x-auto no-scrollbar -mx-10 px-10">
-            <table className="w-full text-left border-separate border-spacing-y-2">
-              <thead>
-                <tr className={cn("text-[10px] font-bold uppercase tracking-widest transition-colors opacity-30", "text-[#141414]")}>
-                  <th className="px-6 py-4">Тип / Номер</th>
-                  <th className="px-6 py-4">Скан</th>
-                  <th className="px-6 py-4">Материал / Кол-во</th>
-                  <th className="px-6 py-4">Даты</th>
-                  <th className="px-6 py-4">Перевозчик / Стоимость</th>
-                  <th className="px-6 py-4 text-right">Действия</th>
-                </tr>
-              </thead>
-              <tbody>
-                {shipments.map((s) => (
-                  <tr key={s.id} className={cn("group transition-colors", "hover:bg-[#F5F5F0]")}>
-                    <td className="px-6 py-6 rounded-l-2xl">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className={cn("px-1.5 py-0.5 rounded text-[8px] font-bold uppercase", "bg-black/5 text-[#141414]/60")}>
-                            {s.docType === 'upd' ? 'УПД' : 'АКТ'}
-                          </span>
-                          <span className={cn("text-xs font-bold", "text-[#141414]")}>{s.incomingUPD} / {s.outgoingUPD}</span>
-                        </div>
-                        <p className="text-[10px] opacity-40 font-mono">Дов: {s.poaNumber} от {s.poaDate}</p>
-                      </div>
-                    </td>
-                    <td className="px-6 py-6">
-                      <span className={cn(
-                        "px-2 py-1 rounded-full text-[8px] font-bold uppercase",
-                        (s.scanSentToAccounting === true || s.scanSentToAccounting === 'yes') ? "bg-[#7cb244]/10 text-[#7cb244]" : 
-                        (s.scanSentToAccounting === false || s.scanSentToAccounting === 'no') ? "bg-rose-500/10 text-rose-500" :
-                        "bg-[#141414]/5 text-[#141414]/30"
-                      )}>
-                        {(s.scanSentToAccounting === true || s.scanSentToAccounting === 'yes') ? 'ОТПРАВЛЕН' : 'НЕТ'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-6">
-                      <div className="space-y-1">
-                        <p className={cn("text-xs font-bold", "text-[#141414]")}>{s.materialName}</p>
-                        <p className="text-sm font-mono font-bold opacity-60">{s.quantity}</p>
-                      </div>
-                    </td>
-                    <td className="px-6 py-6">
-                      <div className="space-y-1 text-xs">
-                        <p className={cn("text-xs transition-colors", "text-[#141414]")}>{formatDate(s.loadingDate)}</p>
-                        <p className="opacity-40">{formatDate(s.unloadingDate)}</p>
-                      </div>
-                    </td>
-                    <td className="px-6 py-6">
-                      <div className="space-y-1">
-                        <p className={cn("text-xs font-bold", "text-[#141414]")}>{s.carrierName}</p>
-                        <p className="text-sm font-mono font-bold text-[#7cb244]">{formatCurrency(s.totalCarryingCost)}</p>
-                      </div>
-                    </td>
-                    <td className="px-6 py-6 text-right rounded-r-2xl">
-                      <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button 
-                          onClick={() => {
-                            setEditingShipmentId(s.id);
-                            setIsAddingShipment(true);
-                          }}
-                          className={cn("p-2 rounded-lg transition-colors", "hover:bg-black/5 text-[#5A5A40]")}
-                        >
-                          <Edit3 size={16} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      ) : (
+        <div className={cn(
+          "rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden"
+        )}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3">
+            <h3 className={cn("text-[14px] font-serif font-medium flex items-center gap-2", "text-ink")}>
+              Отгрузки
+              <span className="text-[11px] font-serif opacity-40">· 0</span>
+            </h3>
           </div>
-        ) : (
-          <div className={cn("py-7 px-5 border border-dashed rounded-2xl flex flex-col items-center justify-center gap-3.5", "border-line bg-transparent")}>
+          <div className={cn("py-7 px-5 m-4 border border-dashed rounded-2xl flex flex-col items-center justify-center gap-3.5", "border-line bg-transparent")}>
             <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", "bg-white border border-line text-ink-3 shadow-sm")}>
               <Truck size={16} />
             </div>
@@ -1828,9 +2006,8 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
               Добавить отгрузку
             </Button>
           </div>
-        )}
         </div>
-      </div>
+      )}
 
       <AnimatePresence>
         {isAddingMaterial && (
