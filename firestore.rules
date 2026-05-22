@@ -1,0 +1,101 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helpers
+    function isSignedIn() { return request.auth != null; }
+    function getUserData() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function isAdmin() { return isSignedIn() && (request.auth.token.email == '444hanimai@gmail.com'); }
+    
+    function canAccessDashboard() { return isAdmin() || (isSignedIn() && getUserData().get('accessDashboard', false) == true); }
+    function canFullProjectAccess() { return isAdmin() || (isSignedIn() && getUserData().get('fullProjectAccess', false) == true); }
+    function canAccessDirectories() { return isAdmin() || (isSignedIn() && getUserData().get('accessDirectories', false) == true); }
+    function canAccessSettings() { return isAdmin() || (isSignedIn() && getUserData().get('accessSettings', false) == true); }
+
+    // Test connection document
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+
+    // Users
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (request.auth.uid == userId || canAccessSettings());
+      allow delete: if isAdmin();
+    }
+
+    // Projects
+    match /projects/{projectId} {
+      function getProjectsAccess() {
+        return getUserData().get('projectsAccess', {});
+      }
+      function hasReadAccess() {
+        return getProjectsAccess().get(projectId, null) != null;
+      }
+      function hasEditAccess() {
+        return getProjectsAccess().get(projectId, null) == 'edit';
+      }
+      function isLeadManager() {
+        return get(/databases/$(database)/documents/projects/$(projectId)).data.leadManagerId == request.auth.uid;
+      }
+
+      allow read: if isSignedIn() && (isAdmin() || canFullProjectAccess() || hasReadAccess() || isLeadManager());
+      allow create: if isSignedIn(); 
+      allow update: if isSignedIn() && (isAdmin() || canFullProjectAccess() || hasEditAccess() || isLeadManager());
+      allow delete: if isAdmin();
+      
+      // Tasks
+      match /tasks/{taskId} {
+        allow read: if isSignedIn() && (isAdmin() || canFullProjectAccess() || hasReadAccess() || isLeadManager());
+        allow write: if isSignedIn() && (isAdmin() || canFullProjectAccess() || hasEditAccess() || isLeadManager());
+      }
+
+      // Events
+      match /events/{eventId} {
+        allow read: if isSignedIn() && (isAdmin() || canFullProjectAccess() || hasReadAccess() || isLeadManager());
+        allow write: if isSignedIn() && (isAdmin() || canFullProjectAccess() || hasEditAccess() || isLeadManager());
+      }
+
+      // Trust Deeds
+      match /trust_deeds/{deedId} {
+        allow read: if isSignedIn() && (isAdmin() || canFullProjectAccess() || hasReadAccess() || isLeadManager());
+        allow write: if isSignedIn() && (isAdmin() || canFullProjectAccess() || hasEditAccess() || isLeadManager());
+      }
+
+      // Documents
+      match /documents/{docId} {
+        allow read, create, delete: if request.auth != null;
+        allow update: if false;  // метаданные не редактируются — только перезагрузка
+      }
+    }
+
+    // Directory Collections
+    match /companies/{id} { allow read: if isSignedIn(); allow write: if canAccessDirectories(); }
+    match /contacts/{id} { allow read: if isSignedIn(); allow write: if canAccessDirectories(); }
+    match /expense_categories/{id} { allow read: if isSignedIn(); allow write: if canAccessDirectories(); }
+    match /materials/{id} { allow read: if isSignedIn(); allow write: if canAccessDirectories(); }
+    match /units/{id} { allow read: if isSignedIn(); allow write: if canAccessDirectories(); }
+    match /drivers/{id} { allow read: if isSignedIn(); allow write: if canAccessDirectories(); }
+    match /carriers/{id} { allow read: if isSignedIn(); allow write: if canAccessDirectories(); }
+
+    // Collection Group rules for Dashboard
+    match /{path=**}/tasks/{taskId} {
+      allow read: if isSignedIn() && (canFullProjectAccess() || hasReadAccessForTask(path));
+    }
+    match /{path=**}/events/{eventId} {
+      allow read: if isSignedIn() && (canFullProjectAccess() || hasReadAccessForTask(path));
+    }
+    
+    function hasReadAccessForTask(path) {
+      // This is complex for collectionGroup. Usually we'd need to check projectId in the data
+      // For now, allow read for all if they have dashboard access, 
+      // or rely on the project-specific rules above if queried via subcollection.
+      return false; // Force specific project queries or dashboard access
+    }
+  }
+}

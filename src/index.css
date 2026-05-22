@@ -1,0 +1,113 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-bg: var(--bg);
+  --color-bg-elev: var(--bg-elev);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-ochre: var(--ochre);
+  --color-ochre-soft: var(--ochre-soft);
+  --color-ochre-bg: var(--ochre-bg);
+  --color-terracotta: var(--terracotta);
+
+  --font-ui: "Manrope", sans-serif;
+  --font-display: "Newsreader", serif;
+  --font-serif: "Playfair Display", serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --font-size-display-base: 1.75rem;
+  --font-size-display-lg: 2.25rem;
+
+  --color-status-blue: #3b4a55;
+  --color-status-blue-bg: #d8dfe3;
+  --color-status-green: #5a6b3c;
+  --color-status-green-bg: #e1e3cf;
+  --color-status-red: #a04930;
+  --color-status-red-bg: #f5e6e2;
+  --color-status-emerald: #2d4f35;
+  --color-status-emerald-bg: #e1ede4;
+}
+
+@layer base {
+  :root {
+    --bg: #efe9de;
+    --bg-elev: #f6f1e7;
+    --surface: #fbf8f1;
+    --surface-2: #f1ebdd;
+    --line: #e1d8c5;
+    --line-strong: #cdc1a8;
+    --ink: #1f1c14;
+    --ink-2: #4a463a;
+    --ink-3: #7a7565;
+    --ink-4: #a9a392;
+    --ochre: #b07a2c;
+    --ochre-soft: #e9d6ad;
+    --ochre-bg: #f5e9cc;
+    --terracotta: #a04930;
+  }
+  [data-theme="graphite"] {
+    --bg: #15140f;
+    --bg-elev: #1c1b15;
+    --surface: #211f18;
+    --surface-2: #1a1812;
+    --line: #2e2b22;
+    --line-strong: #3d3a2f;
+    --ink: #f3ecd6;
+    --ink-2: #c8c0a8;
+    --ink-3: #908875;
+    --ink-4: #5d5849;
+    --ochre: #d39a4d;
+    --ochre-soft: #3a2e1a;
+    --ochre-bg: #2a2316;
+  }
+
+  body {
+    @apply bg-bg text-ink font-ui antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+}
+
+/* Custom scrollbar matching the architectural theme */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-line-strong/20 rounded-full transition-colors;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-line-strong/40;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+  .font-ui {
+    font-family: var(--font-ui);
+  }
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+  .font-serif {
+    font-family: var(--font-serif);
+  }
+}

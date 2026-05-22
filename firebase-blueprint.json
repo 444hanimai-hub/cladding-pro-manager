@@ -1,0 +1,305 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "Строительный проект по подбору и поставке облицовочного материала",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Наименование проекта" },
+        "address": { "type": "string", "description": "Адрес проекта" },
+        "client": { "type": "string", "description": "Заказчик" },
+        "deadline": { "type": "string", "format": "date", "description": "Срок проекта" },
+        "status": { 
+          "type": "string", 
+          "enum": ["lead", "active", "completed", "cancelled"],
+          "description": "Статус проекта"
+        },
+        "stakeholders": {
+          "type": "object",
+          "properties": {
+            "client": { "$ref": "#/entities/StakeholderGroup" },
+            "generalContractor": { "$ref": "#/entities/StakeholderGroup" },
+            "subcontractor": { "$ref": "#/entities/StakeholderGroup" },
+            "architect": { "$ref": "#/entities/StakeholderGroup" }
+          }
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "quantity": { "type": "number" }
+            }
+          }
+        },
+        "finance": {
+          "type": "object",
+          "properties": {
+            "contractSum": { "type": "number", "description": "Общая сумма контракта (Доходы)" },
+            "managerPercentage": { "type": "number", "description": "Процент менеджера" },
+            "expenses": {
+              "type": "array",
+              "items": { "$ref": "#/entities/Expense" }
+            }
+          }
+        },
+        "materialInfo": {
+          "type": "object",
+          "properties": {
+            "materialId": { "type": "string" },
+            "materialName": { "type": "string" },
+            "quantity": { "type": "number" },
+            "unitId": { "type": "string" },
+            "unitName": { "type": "string" }
+          }
+        },
+        "shipments": {
+          "type": "array",
+          "items": { "$ref": "#/entities/Shipment" }
+        },
+        "managerId": { "type": "string", "description": "ID ответственного менеджера" },
+        "leadManagerId": { "type": "string" },
+        "leadManagerName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "actualCompletionDate": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "client", "managerId"]
+    },
+    "Shipment": {
+      "title": "Shipment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "loadingDate": { "type": "string", "format": "date" },
+        "unloadingDate": { "type": "string", "format": "date" },
+        "driverId": { "type": "string" },
+        "driverName": { "type": "string" },
+        "powerOfAttorney": { "type": "string" },
+        "brickQuantity": { "type": "number" },
+        "carryingCost": { "type": "number" },
+        "actualCarryingCost": { "type": "number" },
+        "carrierId": { "type": "string" },
+        "carrierName": { "type": "string" }
+      }
+    },
+    "Expense": {
+      "title": "Expense",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "category": { "type": "string" },
+        "categoryId": { "type": "string" },
+        "amount": { "type": "number" }
+      }
+    },
+    "Material": {
+      "title": "Material",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" }
+      }
+    },
+    "Unit": {
+      "title": "Unit",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" }
+      }
+    },
+    "Driver": {
+      "title": "Driver",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "phone": { "type": "string" }
+      }
+    },
+    "Carrier": {
+      "title": "Carrier",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" }
+      }
+    },
+    "ExpenseCategory": {
+      "title": "Expense Category",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" }
+      }
+    },
+    "StakeholderGroup": {
+      "title": "Stakeholder Group",
+      "description": "Группа участников (Компания и её контакты)",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string" },
+        "companyName": { "type": "string" },
+        "contactIds": { 
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Компания из справочника",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "managerId": { "type": "string" }
+      }
+    },
+    "Contact": {
+      "title": "Contact",
+      "description": "Контактное лицо компании",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string" },
+        "name": { "type": "string" },
+        "position": { "type": "string" },
+        "phone": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Задача по проекту",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "dueDate": { "type": "string", "format": "date-time" },
+        "completed": { "type": "boolean" },
+        "type": { "type": "string", "enum": ["task", "reminder"] }
+      },
+      "required": ["projectId", "title"]
+    },
+    "TrustDeed": {
+      "title": "TrustDeed",
+      "description": "Доверенность на получение/перевозку груза",
+      "type": "object",
+      "properties": {
+        "number": { "type": "string" },
+        "issueDate": { "type": "string", "format": "date" },
+        "expiryDate": { "type": "string", "format": "date" },
+        "supplierId": { "type": "string" },
+        "supplierName": { "type": "string" },
+        "customerName": { "type": "string" },
+        "carrierId": { "type": "string" },
+        "carrierName": { "type": "string" },
+        "accountNumber": { "type": "string" },
+        "rate": { "type": "number" },
+        "driverId": { "type": "string" },
+        "driverName": { "type": "string" },
+        "driverPassportSeries": { "type": "string" },
+        "driverPassportNumber": { "type": "string" },
+        "materialId": { "type": "string" },
+        "materialName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Event": {
+      "title": "Event",
+      "description": "Мероприятие (проведенное или планируемое)",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string" },
+        "title": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "type": { "type": "string", "enum": ["past", "planned"] },
+        "notes": { "type": "string" }
+      },
+      "required": ["projectId", "title", "date"]
+    },
+    "ProjectDocument": {
+      "title": "ProjectDocument",
+      "description": "Метаданные документа проекта",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "size": { "type": "number" },
+        "mimeType": { "type": "string" },
+        "storagePath": { "type": "string" },
+        "downloadURL": { "type": "string" },
+        "uploadedBy": { "type": "string" },
+        "uploadedByName": { "type": "string" },
+        "uploadedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "size", "mimeType", "storagePath", "downloadURL", "uploadedBy", "uploadedByName"]
+    }
+  },
+  "firestore": {
+    "projects": {
+      "schema": "Project",
+      "description": "Коллекция проектов"
+    },
+    "projects/{projectId}/tasks": {
+      "schema": "Task",
+      "description": "Задачи конкретного проекта"
+    },
+    "projects/{projectId}/events": {
+      "schema": "Event",
+      "description": "Журнал мероприятий проекта"
+    },
+    "projects/{projectId}/trust_deeds": {
+      "schema": "TrustDeed",
+      "description": "Доверенности проекта"
+    },
+    "projects/{projectId}/documents": {
+      "schema": "ProjectDocument",
+      "description": "Документы проекта"
+    },
+    "companies": {
+      "schema": "Company",
+      "description": "Справочник компаний"
+    },
+    "contacts": {
+      "schema": "Contact",
+      "description": "Справочник контактов"
+    },
+    "materials": {
+      "schema": "Material",
+      "description": "Справочник материалов"
+    },
+    "units": {
+      "schema": "Unit",
+      "description": "Справочник единиц измерения"
+    },
+    "drivers": {
+      "schema": "Driver",
+      "description": "Справочник водителей"
+    },
+    "carriers": {
+      "schema": "Carrier",
+      "description": "Справочник перевозчиков"
+    },
+    "expense_categories": {
+      "schema": "ExpenseCategory",
+      "description": "Справочник категорий расходов"
+    },
+    "users": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string" },
+          "displayName": { "type": "string" },
+          "photoURL": { "type": "string" },
+          "role": { "type": "string", "enum": ["admin", "user"] },
+          "hasFinanceAccess": { "type": "boolean" },
+          "projectsAccess": { "type": "object" },
+          "financeCode": { "type": "string" }
+        }
+      },
+      "description": "Данные пользователей"
+    }
+  }
+}
