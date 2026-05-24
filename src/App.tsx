@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db } from './lib/firebase';
-import { onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, User } from 'firebase/auth';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { connectGoogleCalendar } from './services/googleCalendarAuth';
+import { verifyCalendarAccess } from './services/googleCalendarService';
 import { doc, getDoc, setDoc, collection, onSnapshot, query, where, orderBy, getDocFromServer, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { 
   Plus, 
@@ -206,23 +208,41 @@ export default function App() {
     localStorage.removeItem(ACCESS_TOKEN_KEY);
   };
 
-  const loginWithCalendar = async () => {
-    setLoading(true);
-    const provider = new GoogleAuthProvider();
-    provider.addScope('https://www.googleapis.com/auth/calendar.events');
-    
+  const loginWithCalendar = async (): Promise<boolean> => {
     try {
-      const result = await signInWithPopup(auth, provider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential?.accessToken) {
-        setAccessToken(credential.accessToken);
-        localStorage.setItem(ACCESS_TOKEN_KEY, credential.accessToken);
+      const token = await connectGoogleCalendar();
+      if (!token) {
+        alert(
+          'Не удалось получить доступ к Google Календарю. Выберите аккаунт и разрешите доступ к календарю.'
+        );
+        return false;
       }
-    } catch (error) {
-      console.error("Login failed", error);
-      alert("Ошибка авторизации: " + error.message);
-    } finally {
-      setLoading(false);
+
+      const { valid, unauthorized } = await verifyCalendarAccess(token);
+      if (!valid) {
+        if (unauthorized) {
+          alert('Google не выдал доступ к календарю. Попробуйте снова и отметьте все запрошенные разрешения.');
+        } else {
+          alert('Не удалось проверить подключение к календарю. Проверьте интернет и попробуйте ещё раз.');
+        }
+        return false;
+      }
+
+      setAccessToken(token);
+      localStorage.setItem(ACCESS_TOKEN_KEY, token);
+      return true;
+    } catch (error: unknown) {
+      const code =
+        error && typeof error === 'object' && 'code' in error
+          ? String((error as { code: string }).code)
+          : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        return false;
+      }
+      console.error('Calendar connect failed', error);
+      const message = error instanceof Error ? error.message : 'Неизвестная ошибка';
+      alert('Ошибка подключения календаря: ' + message);
+      return false;
     }
   };
 

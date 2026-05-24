@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { STATUS_COLOR } from './statuses';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -78,6 +79,122 @@ export function formatDateToDisplay(date: any) {
   }
   
   return `${d}.${m}.${y}`;
+}
+
+/** Цвет заливки при 100% отгрузки — как «Завершён» в воронке на дашборде */
+export const SHIPPING_PROGRESS_COMPLETE_COLOR = STATUS_COLOR.done;
+
+export type ShippingProgressInfo = {
+  shippedTotal: number;
+  materialsTotal: number;
+  remaining: number;
+  percent: number;
+  barPercent: number;
+  isComplete: boolean;
+};
+
+/** Процент отгрузки: сумма quantity по отгрузкам / сумма quantity по материалам × 100 */
+export function getShippingProgress(project: {
+  materials?: Array<{ quantity?: number }>;
+  shipments?: Array<{ quantity?: number }>;
+}): ShippingProgressInfo {
+  const materialsTotal = (project.materials ?? []).reduce(
+    (acc, m) => acc + (Number(m.quantity) || 0),
+    0
+  );
+  const shippedTotal = (project.shipments ?? []).reduce(
+    (acc, s) => acc + (Number(s.quantity) || 0),
+    0
+  );
+  const remaining = materialsTotal - shippedTotal;
+  const percent =
+    materialsTotal > 0 ? Math.round((shippedTotal * 100) / materialsTotal) : 0;
+  const barPercent = Math.min(Math.max(percent, 0), 100);
+  const isComplete = materialsTotal > 0 && remaining <= 0;
+
+  return { shippedTotal, materialsTotal, remaining, percent, barPercent, isComplete };
+}
+
+export function formatShippingQuantity(value: number): string {
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value);
+}
+
+export function formatShippingProgressLabel(info: ShippingProgressInfo): string {
+  return `${info.percent}% (осталось ${formatShippingQuantity(info.remaining)} из ${formatShippingQuantity(info.materialsTotal)})`;
+}
+
+function normalizeMaterialKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** Сумма quantity в материалах проекта по названию материала */
+export function getMaterialPlannedQuantity(
+  materials: Array<{ materialName?: string; quantity?: number }> | undefined,
+  materialName: string
+): number {
+  const key = normalizeMaterialKey(materialName);
+  if (!key) return 0;
+  return (materials ?? [])
+    .filter((m) => normalizeMaterialKey(m.materialName || '') === key)
+    .reduce((acc, m) => acc + (Number(m.quantity) || 0), 0);
+}
+
+/** Сумма quantity в отгрузках по материалу; при редактировании — без текущей записи + quantity с формы */
+export function getMaterialShippedQuantity(
+  shipments: Array<{ id?: string; materialName?: string; quantity?: number }> | undefined,
+  materialName: string,
+  options?: { excludeShipmentId?: string; formQuantity?: number }
+): number {
+  const key = normalizeMaterialKey(materialName);
+  const formQty = Number(options?.formQuantity) || 0;
+  if (!key) return formQty;
+
+  const fromOthers = (shipments ?? [])
+    .filter((s) => {
+      if (options?.excludeShipmentId && s.id === options.excludeShipmentId) return false;
+      return normalizeMaterialKey(s.materialName || '') === key;
+    })
+    .reduce((acc, s) => acc + (Number(s.quantity) || 0), 0);
+
+  return fromOthers + formQty;
+}
+
+export type ShipmentQuantityValidation = {
+  ok: boolean;
+  message?: string;
+  planned: number;
+  shipped: number;
+};
+
+export function validateShipmentMaterialQuantity(params: {
+  materials?: Array<{ materialName?: string; quantity?: number }>;
+  shipments?: Array<{ id?: string; materialName?: string; quantity?: number }>;
+  materialName: string;
+  quantity: number;
+  editingShipmentId?: string | null;
+}): ShipmentQuantityValidation {
+  const materialName = params.materialName?.trim() || '';
+  const quantity = Number(params.quantity) || 0;
+  const planned = getMaterialPlannedQuantity(params.materials, materialName);
+  const shipped = getMaterialShippedQuantity(params.shipments, materialName, {
+    excludeShipmentId: params.editingShipmentId ?? undefined,
+    formQuantity: quantity,
+  });
+
+  if (!materialName) {
+    return { ok: true, planned, shipped };
+  }
+
+  if (shipped > planned) {
+    return {
+      ok: false,
+      planned,
+      shipped,
+      message: `По материалу «${materialName}» отгружено ${formatShippingQuantity(shipped)} — больше, чем в материалах проекта (${formatShippingQuantity(planned)}). Уменьшите количество.`,
+    };
+  }
+
+  return { ok: true, planned, shipped };
 }
 
 import { auth } from './firebase';

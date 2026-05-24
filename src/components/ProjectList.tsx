@@ -22,7 +22,7 @@ import {
   Circle,
   TrendingDown
 } from 'lucide-react';
-import { formatCurrency, cn, formatDateToDisplay } from '../lib/utils';
+import { formatCurrency, cn, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
 import CompanySelect from './CompanySelect';
 import { DatePicker } from './ui/DatePicker';
 import UserAvatar from './UserAvatar';
@@ -535,9 +535,7 @@ function ProjectCard({
 }) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
   const projectTasks = allTasks.filter(t => t.projectId === project.id);
-  const readiness = projectTasks.length > 0 
-    ? Math.round((projectTasks.filter(t => t.completed).length / projectTasks.length) * 100)
-    : (project.status === 'completed' ? 100 : 0);
+  const shippingProgress = getShippingProgress(project);
 
   const nextItem = useMemo(() => {
     const now = new Date();
@@ -642,14 +640,22 @@ function ProjectCard({
 
       {/* 4.4. Прогресс */}
       <div>
-        <div className="flex justify-between items-end mb-1.5">
-          <span className="text-[11px] text-ink-3">Отгружено</span>
-          <span className="text-[11.5px] font-semibold text-ink tabular-nums">{readiness}%</span>
+        <div className="flex justify-between items-end gap-2 mb-1.5">
+          <span className="text-[11px] text-ink-3 shrink-0">Отгружено</span>
+          <span className="text-[10.5px] font-semibold text-ink tabular-nums text-right leading-tight">
+            {formatShippingProgressLabel(shippingProgress)}
+          </span>
         </div>
         <div className="h-1.5 w-full bg-surface-2 rounded-full overflow-hidden">
           <div 
-            className="h-full bg-ochre rounded-full transition-all duration-700" 
-            style={{ width: `${readiness}%` }}
+            className={cn(
+              "h-full rounded-full transition-all duration-700",
+              !shippingProgress.isComplete && "bg-ochre"
+            )}
+            style={{
+              width: `${shippingProgress.barPercent}%`,
+              ...(shippingProgress.isComplete ? { backgroundColor: SHIPPING_PROGRESS_COMPLETE_COLOR } : {}),
+            }}
           />
         </div>
       </div>

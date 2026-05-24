@@ -19,7 +19,7 @@ import {
   Circle,
   Download
 } from 'lucide-react';
-import { formatCurrency, cn } from '../lib/utils';
+import { formatCurrency, cn, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
 import CodeProtection from './CodeProtection';
 import UserAvatar from './UserAvatar';
 import StatusPill from './StatusPill';
@@ -838,21 +838,25 @@ function ProjectFunnel({ projects }: { projects: Project[] }) {
               <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: it.color }} />
               <span className="text-[13px] font-medium text-ink truncate">{it.label}</span>
             </div>
-            <div className="relative h-[24px] bg-surface-2 rounded-[5px] overflow-visible">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${barPct}%` }}
-                transition={{ duration: 0.5, ease: 'easeOut' }}
-                className="absolute left-0 top-0 h-full rounded-[5px] flex items-center px-2.5"
-                style={{ backgroundColor: it.color, opacity: it.sum > 0 ? 1 : 0.35 }}
-              >
-                {showInside && (
-                  <span className="text-[11px] font-semibold text-white whitespace-nowrap tabular-nums">{fSum(it.sum)}</span>
-                )}
-              </motion.div>
+            <div className="relative h-6 shrink-0">
+              <div className="absolute inset-0 h-6 bg-surface-2 rounded-[5px] overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${barPct}%` }}
+                  transition={{ duration: 0.5, ease: 'easeOut' }}
+                  className="absolute inset-y-0 left-0 h-6 max-h-6 rounded-[5px] flex items-center overflow-hidden px-2.5"
+                  style={{ backgroundColor: it.color, opacity: it.sum > 0 ? 1 : 0.35 }}
+                >
+                  {showInside && (
+                    <span className="text-[11px] leading-none font-semibold text-white whitespace-nowrap tabular-nums">
+                      {fSum(it.sum)}
+                    </span>
+                  )}
+                </motion.div>
+              </div>
               {!showInside && it.sum > 0 && (
                 <span
-                  className="absolute top-1/2 -translate-y-1/2 text-[11px] font-semibold text-ink-2 whitespace-nowrap tabular-nums"
+                  className="absolute top-1/2 -translate-y-1/2 text-[11px] leading-none font-semibold text-ink-2 whitespace-nowrap tabular-nums pointer-events-none"
                   style={{ left: `calc(${barPct}% + 8px)` }}
                 >
                   {fSum(it.sum)}
@@ -986,9 +990,7 @@ function ProjectFinancialBlock({ project, onClick, isFirst }: { key?: any; proje
   const netProfit = profit - (profit * (f.managerPercentage || 0) / 100);
   const profitability = f.contractSum > 0 ? (netProfit / f.contractSum) * 100 : 0;
 
-  const readiness = typeof project.readiness === 'number'
-    ? project.readiness
-    : (project.status === 'completed' ? 100 : (project.shipped || 0));
+  const shippingProgress = getShippingProgress(project);
 
   const isOverdue = (() => {
     if (!project.deadline || project.status === 'completed' || project.status === 'cancelled') return false;
@@ -1019,7 +1021,7 @@ function ProjectFinancialBlock({ project, onClick, isFirst }: { key?: any; proje
         "w-full grid items-center gap-4 px-5 py-3 hover:bg-surface-2 text-left group transition-colors",
         !isFirst && "border-t border-line"
       )}
-      style={{ gridTemplateColumns: '1fr 105px 130px 80px 30px 16px' }}
+      style={{ gridTemplateColumns: '1fr 105px minmax(150px, 1fr) 80px 30px 16px' }}
     >
       {/* Статус + название + клиент */}
       <div className="min-w-0">
@@ -1049,12 +1051,23 @@ function ProjectFinancialBlock({ project, onClick, isFirst }: { key?: any; proje
 
       {/* Прогресс */}
       <div>
-        <div className="flex items-center justify-between mb-[5px]">
-          <span className="text-[10.5px] text-ink-3">Отгружено</span>
-          <span className="text-[11px] font-semibold text-ink tabular-nums">{readiness}%</span>
+        <div className="flex items-center justify-between gap-2 mb-[5px]">
+          <span className="text-[10.5px] text-ink-3 shrink-0">Отгружено</span>
+          <span className="text-[10px] font-semibold text-ink tabular-nums text-right leading-tight">
+            {formatShippingProgressLabel(shippingProgress)}
+          </span>
         </div>
         <div className="h-1 bg-surface-2 rounded-full overflow-hidden">
-          <div className="h-full bg-ochre rounded-full transition-all" style={{ width: `${readiness}%` }} />
+          <div
+            className={cn(
+              "h-full rounded-full transition-all",
+              !shippingProgress.isComplete && "bg-ochre"
+            )}
+            style={{
+              width: `${shippingProgress.barPercent}%`,
+              ...(shippingProgress.isComplete ? { backgroundColor: SHIPPING_PROGRESS_COMPLETE_COLOR } : {}),
+            }}
+          />
         </div>
       </div>
 

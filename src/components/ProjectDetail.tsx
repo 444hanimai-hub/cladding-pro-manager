@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { query, where, orderBy, getDocs, limit, doc, onSnapshot, updateDoc, collection, addDoc, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
@@ -51,7 +51,8 @@ import {
   STATUS_LIST 
 } from '../lib/statuses';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { formatCurrency, cn, formatDate, formatDateForInput, formatDateToDisplay } from '../lib/utils';
+import { formatCurrency, cn, formatDate, formatDateForInput, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, validateShipmentMaterialQuantity, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
+import { exportShipmentsToExcel } from '../lib/export-shipments';
 import ExpenseCategorySelect from './ExpenseCategorySelect';
 import { DatePicker } from './ui/DatePicker';
 import { TimeInput } from './ui/TimeInput';
@@ -66,7 +67,7 @@ import { AppUser } from '../types';
 import UserAvatar from './UserAvatar';
 import ProjectDocuments from './ProjectDocuments';
 import StatusPill from './StatusPill';
-import { createCalendarEvent } from '../services/googleCalendarService';
+import { createCalendarEvent, isCalendarAuthError, verifyCalendarAccess } from '../services/googleCalendarService';
 
 function DueBlock({ project, overdue, daysRemaining }: { project: Project; overdue: boolean; daysRemaining: number }) {
   const isDone = project.status === 'done' || project.status === 'completed';
@@ -127,7 +128,7 @@ interface ProjectDetailProps {
   onBack: () => void;
   appUser: AppUser | null;
   accessToken?: string | null;
-  onConnectCalendar?: () => void;
+  onConnectCalendar?: () => Promise<boolean>;
   onClearCalendarToken?: () => void;
 }
 
@@ -286,10 +287,7 @@ export default function ProjectDetail({
     return Math.ceil((deadlineDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
   })();
 
-  // Shipping progress
-  const totalPlannedQuantity = project.materials?.reduce((acc, m) => acc + (m.quantity || 0), 0) || 0;
-  const totalShippedQuantity = project.shipments?.reduce((acc, s) => acc + (s.quantity || 0), 0) || 0;
-  const shippingPercent = totalPlannedQuantity > 0 ? Math.min(Math.round((totalShippedQuantity / totalPlannedQuantity) * 100), 100) : 0;
+  const shippingProgress = getShippingProgress(project);
 
   const isDone = project.status === 'done' || project.status === 'completed';
   const isCanceled = project.status === 'cancelled' || project.status === 'canceled';
@@ -378,13 +376,19 @@ export default function ProjectDetail({
         <div className="mt-[14px]">
           <div className="flex justify-between items-center mb-2">
             <span className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3">Отгружено</span>
-            <span className="text-[12px] font-semibold text-ink tabular-nums">{shippingPercent}%</span>
+            <span className="text-[12px] font-semibold text-ink tabular-nums">
+              {formatShippingProgressLabel(shippingProgress)}
+            </span>
           </div>
           <div className="h-1.5 w-full bg-surface-2 rounded-full overflow-hidden">
             <motion.div 
               initial={{ width: 0 }}
-              animate={{ width: `${shippingPercent}%` }}
-              className="h-full bg-ochre transition-all duration-700"
+              animate={{ width: `${shippingProgress.barPercent}%` }}
+              className={cn(
+                "h-full transition-all duration-700",
+                !shippingProgress.isComplete && "bg-ochre"
+              )}
+              style={shippingProgress.isComplete ? { backgroundColor: SHIPPING_PROGRESS_COMPLETE_COLOR } : undefined}
             />
           </div>
         </div>
@@ -1217,7 +1221,24 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
     };
   });
 
+  const [quantityError, setQuantityError] = useState<string | null>(null);
+
   const handleSave = async () => {
+    const validation = validateShipmentMaterialQuantity({
+      materials: project.materials,
+      shipments: project.shipments,
+      materialName: form.materialName || '',
+      quantity: form.quantity ?? 0,
+      editingShipmentId: editingId,
+    });
+
+    if (!validation.ok) {
+      setQuantityError(validation.message ?? 'Количество превышает доступный остаток по материалу.');
+      return;
+    }
+
+    setQuantityError(null);
+
     try {
       const shipments = project.shipments || [];
       const newShipment = {
@@ -1439,7 +1460,10 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 <DirectorySelect 
                   value={form.materialName || ''}
                   options={project.materials?.map(m => ({ id: m.id, name: m.materialName })) || []}
-                  onChange={v => setForm({...form, materialName: v})}
+                  onChange={v => {
+                    setQuantityError(null);
+                    setForm({ ...form, materialName: v });
+                  }}
                   onAdd={async () => {}} 
                   placeholder="Выбрать материал..."
                   className={inputClass}
@@ -1451,10 +1475,21 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 <input 
                   type="number"
                   value={form.quantity !== undefined && form.quantity !== 0 ? form.quantity : ''}
-                  onChange={e => setForm({...form, quantity: e.target.value ? Number(e.target.value) : undefined})}
-                  className={inputClass}
+                  onChange={e => {
+                    setQuantityError(null);
+                    setForm({ ...form, quantity: e.target.value ? Number(e.target.value) : undefined });
+                  }}
+                  className={cn(
+                    inputClass,
+                    quantityError && 'border-terracotta focus:border-terracotta bg-[#fdf6f3]'
+                  )}
                   placeholder="0"
                 />
+                {quantityError && (
+                  <p className="mt-1.5 text-[11px] leading-snug text-terracotta font-medium">
+                    {quantityError}
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -1537,14 +1572,20 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
   );
 }
 
+const SCAN_BADGE_BASE = 'inline-flex items-center px-2 py-0.5 rounded-full text-[8px] font-semibold uppercase whitespace-nowrap font-ui';
+
 function getShipmentScanMeta(scan: Shipment['scanSentToAccounting']) {
   if (scan === true || scan === 'yes') {
-    return { label: 'ОТПРАВЛЕН', dot: 'bg-[#7cb244]', badge: 'bg-[#7cb244]/10 text-[#7cb244]' };
+    return {
+      label: 'ОТПРАВЛЕН',
+      badge: cn(SCAN_BADGE_BASE, 'tracking-[0.04em]'),
+      badgeStyle: { backgroundColor: STATUS_BG.shipping, color: STATUS_COLOR.shipping },
+    };
   }
-  if (scan === false || scan === 'no') {
-    return { label: 'НЕТ', dot: 'bg-rose-500', badge: 'bg-rose-500/10 text-rose-500' };
-  }
-  return { label: 'НЕ ЗАДАНО', dot: 'bg-ink-4', badge: 'bg-[#141414]/5 text-[#141414]/40' };
+  return {
+    label: 'НЕТ',
+    badge: cn(SCAN_BADGE_BASE, 'bg-[#f1d9cf] text-terracotta tracking-[0.12em]'),
+  };
 }
 
 function getScanDisplayValue(scan: Shipment['scanSentToAccounting']) {
@@ -1556,7 +1597,7 @@ function getScanDisplayValue(scan: Shipment['scanSentToAccounting']) {
 function ShipmentDetailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <h5 className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#B08B57] mb-3">
+      <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">
         {title}
       </h5>
       <div>{children}</div>
@@ -1574,9 +1615,9 @@ function ShipmentDetailField({
   showDivider?: boolean;
 }) {
   return (
-    <div className={cn('py-3.5', showDivider && 'border-b border-dashed border-[#E5E0D6]')}>
-      <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#8A8574] mb-1">{label}</p>
-      <div className="text-[15px] font-semibold text-[#2C2922] leading-snug">{value ?? '—'}</div>
+    <div className={cn('py-2', showDivider && 'border-b border-dashed border-[#E5E0D6]')}>
+      <p className="text-[9px] font-bold uppercase tracking-[0.08em] text-[#8A8574] mb-0.5 leading-tight">{label}</p>
+      <div className="text-[12px] font-semibold text-[#2C2922] leading-tight">{value ?? '—'}</div>
     </div>
   );
 }
@@ -1601,30 +1642,30 @@ function ShipmentDetailPanel({
 
   return (
     <div className="flex flex-col max-h-[75vh] bg-[#FCF9F2]">
-      <div className="shrink-0 px-5 pt-5 pb-4 border-b border-[#E8E4DC]">
-        <div className="flex items-start justify-between gap-3">
+      <div className="shrink-0 px-4 pt-3.5 pb-3 border-b border-[#E8E4DC]">
+        <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#8A8574] mb-1">Отгрузка</p>
-            <h4 className="font-serif text-[28px] font-normal text-[#2C2922] leading-[1.1] truncate">{machineLabel}</h4>
+            <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] mb-0.5">Отгрузка</p>
+            <h4 className="font-serif text-[20px] font-normal text-[#2C2922] leading-[1.15] truncate">{machineLabel}</h4>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             {canEdit && (
               <>
                 <button
                   type="button"
                   onClick={onEdit}
                   title="Редактировать"
-                  className="w-9 h-9 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"
+                  className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"
                 >
-                  <Pencil size={15} />
+                  <Pencil size={13} />
                 </button>
                 <button
                   type="button"
                   onClick={onDelete}
                   title="Удалить"
-                  className="w-9 h-9 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#A04930] hover:bg-[#F5E6E2] transition-colors"
+                  className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#A04930] hover:bg-[#F5E6E2] transition-colors"
                 >
-                  <Trash2 size={15} />
+                  <Trash2 size={13} />
                 </button>
               </>
             )}
@@ -1632,15 +1673,15 @@ function ShipmentDetailPanel({
               type="button"
               onClick={onClose}
               title="Свернуть"
-              className="w-9 h-9 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"
+              className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"
             >
-              <X size={15} />
+              <X size={13} />
             </button>
           </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-5 space-y-6">
+      <div className="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 space-y-4">
         <ShipmentDetailSection title="Документы">
           <ShipmentDetailField label={incomingDocLabel} value={shipment.incomingUPD} />
           <ShipmentDetailField label="Отправлен скан в бухгалтерию" value={getScanDisplayValue(shipment.scanSentToAccounting)} />
@@ -1702,8 +1743,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
   };
 
   const handleExportToExcel = () => {
-    console.log("Exporting to excel...");
-    // Future implementation
+    exportShipmentsToExcel(shipments, project.name);
   };
 
   return (
@@ -1930,8 +1970,8 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                           </div>
                         </td>
                         <td className="px-4 py-3.5 align-top">
-                          <span className={cn("inline-flex px-2 py-0.5 rounded-full text-[8px] font-bold uppercase", scan.badge)}>
-                            {(s.scanSentToAccounting === true || s.scanSentToAccounting === 'yes') ? 'ОТПРАВЛЕН' : 'НЕТ'}
+                          <span className={scan.badge} style={scan.badgeStyle}>
+                            {scan.label}
                           </span>
                         </td>
                         <td className="px-4 py-3.5 align-top">
@@ -3173,7 +3213,81 @@ function FinanceInput({ label, value, onChange, disabled, isPercentage }: { labe
 }
 
 
-function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnectCalendar, onClearCalendarToken }: { tasks: ProjectTask[], projectId: string, canEdit: boolean, project: Project | null, accessToken?: string | null, onConnectCalendar?: () => void, onClearCalendarToken?: () => void }) {
+const TASK_CARD_CLASS =
+  'rounded-2xl border bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden';
+const TASK_LABEL_CLASS =
+  'text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-1.5';
+
+function parseTaskDate(dateVal: ProjectTask['date'] | unknown): Date | null {
+  if (dateVal == null || dateVal === '') return null;
+  if (
+    typeof dateVal === 'object' &&
+    'toDate' in dateVal &&
+    typeof (dateVal as { toDate: () => Date }).toDate === 'function'
+  ) {
+    return (dateVal as { toDate: () => Date }).toDate();
+  }
+  const d = new Date(String(dateVal));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Метка времени для сортировки: дата + время; без даты — в конец списка */
+function getTaskSortTimestamp(task: ProjectTask): number {
+  const d = parseTaskDate(task.date);
+  if (!d) return Number.MAX_SAFE_INTEGER;
+  const time = task.time?.trim();
+  if (time && /^([01]\d|2[0-3]):([0-5]\d)$/.test(time)) {
+    const [h, m] = time.split(':').map(Number);
+    d.setHours(h, m, 0, 0);
+  } else {
+    d.setHours(0, 0, 0, 0);
+  }
+  return d.getTime();
+}
+
+function compareTasksBySchedule(a: ProjectTask, b: ProjectTask): number {
+  const dateDiff = getTaskSortTimestamp(a) - getTaskSortTimestamp(b);
+  if (dateDiff !== 0) return dateDiff;
+  const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+  if (orderDiff !== 0) return orderDiff;
+  return a.id.localeCompare(b.id);
+}
+
+function sortTasksForDisplay(list: ProjectTask[]): ProjectTask[] {
+  return [...list].sort(compareTasksBySchedule);
+}
+
+function CalendarReconnectBanner({
+  onConnect,
+  detail,
+  isConnecting,
+}: {
+  onConnect: () => void | Promise<void>;
+  detail?: string | null;
+  isConnecting?: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-ochre/35 bg-[#FBF5E8] px-4 py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-[13px] font-semibold text-ink">Синхронизация с Google Календарём отключена</p>
+        <p className="text-[12px] text-ink-3 mt-1 leading-snug">
+          {detail ||
+            'Подключите календарь — задачи с датой будут автоматически появляться в Google Calendar.'}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onConnect}
+        disabled={isConnecting}
+        className="shrink-0 h-9 px-4 rounded-lg text-[12px] font-semibold bg-[#A67C3C] text-white hover:bg-[#956f35] disabled:opacity-50 transition-colors whitespace-nowrap"
+      >
+        {isConnecting ? 'Подключение…' : 'Подключить Google Календарь'}
+      </button>
+    </div>
+  );
+}
+
+function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnectCalendar, onClearCalendarToken }: { tasks: ProjectTask[], projectId: string, canEdit: boolean, project: Project | null, accessToken?: string | null, onConnectCalendar?: () => Promise<boolean>, onClearCalendarToken?: () => void }) {
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDate, setNewTaskDate] = useState('');
   const [newTaskTime, setNewTaskTime] = useState('');
@@ -3181,6 +3295,59 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTaskData, setEditingTaskData] = useState<Partial<ProjectTask>>({});
   const [calendarSyncError, setCalendarSyncError] = useState<string | null>(null);
+  const [calendarNeedsReconnect, setCalendarNeedsReconnect] = useState(() => !accessToken);
+  const [isConnectingCalendar, setIsConnectingCalendar] = useState(false);
+  const [completedTasksExpanded, setCompletedTasksExpanded] = useState(false);
+
+  const handleConnectCalendar = async () => {
+    if (!onConnectCalendar || isConnectingCalendar) return;
+    setIsConnectingCalendar(true);
+    try {
+      const ok = await onConnectCalendar();
+      if (ok) {
+        setCalendarNeedsReconnect(false);
+        setCalendarSyncError(null);
+      }
+    } finally {
+      setIsConnectingCalendar(false);
+    }
+  };
+
+  const markCalendarDisconnected = (detail: string, calError?: unknown) => {
+    setCalendarNeedsReconnect(true);
+    setCalendarSyncError(detail);
+    if (!calError || isCalendarAuthError(calError)) onClearCalendarToken?.();
+  };
+
+  useEffect(() => {
+    if (!accessToken) {
+      setCalendarNeedsReconnect(true);
+      return;
+    }
+
+    let cancelled = false;
+    verifyCalendarAccess(accessToken).then(({ valid, unauthorized }) => {
+      if (cancelled) return;
+      if (!valid) {
+        setCalendarNeedsReconnect(true);
+        if (unauthorized) {
+          setCalendarSyncError('Доступ к Google Календарю недействителен. Подключите календарь снова.');
+          onClearCalendarToken?.();
+        } else {
+          setCalendarSyncError('Не удалось проверить календарь. Проверьте интернет.');
+        }
+      } else {
+        setCalendarNeedsReconnect(false);
+        setCalendarSyncError(null);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, onClearCalendarToken]);
+
+  const showCalendarBanner = calendarNeedsReconnect && Boolean(onConnectCalendar);
 
   const handleUpdateTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3198,12 +3365,15 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
             ...editingTaskData,
             id: editingTaskId
           });
-        } catch (calError: any) {
-          const isAuthError = calError.message?.includes('401') || calError.message?.includes('403') || calError.message?.includes('expired') || calError.message?.includes('unauthorized') || calError.message?.includes('forbidden');
-          if (isAuthError) {
-            onClearCalendarToken?.();
-          }
-          console.error("Calendar sync error:", calError);
+        } catch (calError: unknown) {
+          const message = calError instanceof Error ? calError.message : 'Ошибка календаря';
+          markCalendarDisconnected(
+            isCalendarAuthError(calError)
+              ? 'Доступ к Google Календарю истёк. Подключите календарь снова.'
+              : `Не удалось обновить календарь: ${message}`,
+            calError
+          );
+          console.error('Calendar sync error:', calError);
         }
       }
 
@@ -3239,16 +3409,16 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
     if (!newTaskTitle || !canEdit) return;
     setCalendarSyncError(null);
     try {
-      const taskData = {
+      const taskData: Partial<ProjectTask> & { projectId: string; createdAt: ReturnType<typeof serverTimestamp>; order: number } = {
         projectId,
         title: newTaskTitle,
         description: '',
-        date: newTaskDate || null,
-        time: newTaskTime || null,
+        date: newTaskDate || undefined,
+        time: newTaskTime || undefined,
         completed: false,
         type: 'task',
         createdAt: serverTimestamp(),
-        order: tasks.length
+        order: tasks.length,
       };
 
       await addDoc(collection(db, 'projects', projectId, 'tasks'), taskData);
@@ -3256,9 +3426,22 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
       if (accessToken && project && newTaskDate) {
         try {
           await createCalendarEvent(accessToken, project, taskData);
-        } catch (calError: any) {
-          console.error("Calendar sync failed", calError);
+          setCalendarNeedsReconnect(false);
+          setCalendarSyncError(null);
+        } catch (calError: unknown) {
+          const message = calError instanceof Error ? calError.message : 'Ошибка календаря';
+          console.error('Calendar sync failed', calError);
+          markCalendarDisconnected(
+            isCalendarAuthError(calError)
+              ? 'Задача сохранена в CRM, но доступ к Google Календарю истёк. Подключите календарь снова.'
+              : `Задача сохранена в CRM, но не попала в календарь: ${message}`,
+            calError
+          );
         }
+      } else if (newTaskDate && !accessToken) {
+        markCalendarDisconnected(
+          'Задача сохранена в CRM. Подключите Google Календарь, чтобы она попала в календарь.'
+        );
       }
 
       setNewTaskTitle('');
@@ -3269,188 +3452,141 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
     }
   };
 
-  const tasksWithDate = tasks.filter(t => t.date && !t.completed).sort((a, b) => new Date(a.date!).getTime() - new Date(b.date!).getTime());
-  const tasksWithoutDate = tasks.filter(t => !t.date && !t.completed).sort((a, b) => (a.order || 0) - (b.order || 0));
-  const completedTasks = tasks.filter(t => t.completed);
+  const activeTasks = useMemo(
+    () => sortTasksForDisplay(tasks.filter((t) => !t.completed)),
+    [tasks]
+  );
+
+  const completedTasks = useMemo(
+    () => sortTasksForDisplay(tasks.filter((t) => t.completed)),
+    [tasks]
+  );
+
+  const renderTaskList = (list: ProjectTask[], emptyLabel: string) => (
+    <div className="divide-y divide-[#E5E0D6]">
+      {list.map((task) => (
+        <TaskItem
+          key={task.id}
+          task={task}
+          canEdit={canEdit}
+          onToggle={toggleTask}
+          onDelete={deleteTask}
+          onBeginEdit={(t) => {
+            setEditingTaskId(t.id);
+            setEditingTaskData({ title: t.title, date: t.date, time: t.time });
+          }}
+          isEditing={editingTaskId === task.id}
+          editingData={editingTaskData}
+          onEditDataChange={setEditingTaskData}
+          onSaveEdit={handleUpdateTask}
+          onCancelEdit={() => setEditingTaskId(null)}
+        />
+      ))}
+      {list.length === 0 && (
+        <div className="px-4 py-10 text-center text-[11px] text-ink-3">
+          {emptyLabel}
+        </div>
+      )}
+    </div>
+  );
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
-      {/* Left Column: Add Task Form */}
-      <div className={cn(
-        "p-6 rounded-2xl border transition-colors",
-        "bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-      )}>
-        <div className="flex items-center justify-between mb-8">
-          <h3 className={cn("text-lg font-serif transition-colors", "text-[#141414]")}>Добавить задачу</h3>
-        </div>
+    <div className="space-y-4">
+      {showCalendarBanner && onConnectCalendar && (
+        <CalendarReconnectBanner
+          onConnect={handleConnectCalendar}
+          detail={calendarSyncError}
+          isConnecting={isConnectingCalendar}
+        />
+      )}
 
-        <form onSubmit={addTask} className="space-y-6">
-          <div className="space-y-2">
-            <label className={cn("text-[10px] font-bold uppercase tracking-widest ml-1 transition-colors opacity-40", "text-[#141414]")}>
-              ЧТО НУЖНО СДЕЛАТЬ?
-            </label>
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-start">
+      {/* Форма добавления — 2/5 */}
+      <div className={cn(TASK_CARD_CLASS, 'p-5 lg:col-span-2')}>
+        <h3 className="text-[15px] font-serif font-medium text-ink mb-4">Добавить задачу</h3>
+
+        <form onSubmit={addTask} className="space-y-4">
+          <div>
+            <label className={TASK_LABEL_CLASS}>Что нужно сделать?</label>
             <textarea
               value={newTaskTitle}
-              onChange={e => setNewTaskTitle(e.target.value)}
+              onChange={(e) => setNewTaskTitle(e.target.value)}
               placeholder="Напр. Отправить КП заказчику"
-              rows={2}
-              className={cn(
-                "w-full border rounded-2xl px-6 py-4 text-sm font-medium focus:ring-2 transition-all resize-none",
-                "bg-[#F5F5F0] border-[#141414]/10 text-[#141414] focus:ring-[#5A5A40]/30"
-              )}
+              rows={3}
+              disabled={!canEdit}
+              className="w-full min-h-[88px] bg-[#F5F2E9] border border-transparent rounded-lg px-3.5 py-3 text-[13px] font-medium text-ink placeholder:text-ink-4 focus:border-ochre/50 focus:outline-none transition-colors resize-none"
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className={cn("text-[10px] font-bold uppercase tracking-widest ml-1 transition-colors opacity-40", "text-[#141414]")}>
-                ДАТА (НЕОБЯЗАТЕЛЬНО)
-              </label>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={TASK_LABEL_CLASS}>Дата</label>
               <DatePicker
                 value={newTaskDate}
                 onChange={setNewTaskDate}
                 placeholder="дд.мм.гггг"
+                variant="compact"
               />
             </div>
-            <div className="space-y-2">
-              <label className={cn("text-[10px] font-bold uppercase tracking-widest ml-1 transition-colors opacity-40", "text-[#141414]")}>
-                ВРЕМЯ
-              </label>
+            <div>
+              <label className={TASK_LABEL_CLASS}>Время</label>
               <TimeInput
                 value={newTaskTime}
                 onChange={setNewTaskTime}
                 placeholder="--:--"
+                variant="compact"
               />
             </div>
           </div>
 
           <button
             type="submit"
-            disabled={!newTaskTitle || !canEdit}
-            className={cn(
-              "w-full py-5 rounded-2xl font-bold text-sm transition-all active:scale-95 shadow-xl flex items-center justify-center gap-2",
-              "bg-[#B48444] text-white hover:opacity-90"
-            )}
+            disabled={!newTaskTitle.trim() || !canEdit}
+            className="w-full h-10 rounded-lg text-[12.5px] font-semibold bg-[#A67C3C] text-white hover:bg-[#956f35] disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5 active:scale-[0.99]"
           >
-            <Plus size={18} strokeWidth={3} />
-            <span>Добавить задачу</span>
+            <Plus size={15} strokeWidth={2.5} />
+            Добавить задачу
           </button>
 
-          <p className={cn("text-[10px] leading-relaxed opacity-40", "text-[#141414]")}>
+          <p className="text-[11px] leading-relaxed text-[#8A8574]">
             Часть задач подгружается автоматически при создании проекта — даты можно проставить позже.
           </p>
         </form>
       </div>
 
-      {/* Right Column: Task Lists */}
-      <div className="space-y-8">
-        {/* Section: With Date */}
-        <div className={cn(
-          "rounded-2xl border transition-colors overflow-hidden",
-          "bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-        )}>
-          <div className={cn(
-            "px-8 py-5 flex items-center gap-2 border-b transition-colors",
-            "border-[#141414]/5 bg-[#fcfcfc]/50"
-          )}>
-            <span className={cn("text-sm font-serif", "text-[#141414]")}>С датой</span>
-            <span className={cn("text-xs opacity-30 mt-0.5 font-mono")}>· {tasksWithDate.length}</span>
+      {/* Списки задач — 3/5 */}
+      <div className="flex flex-col gap-4 min-w-0 lg:col-span-3">
+        <div className={TASK_CARD_CLASS}>
+          <div className="flex items-center gap-1.5 px-4 py-3 border-b border-[#E5E0D6]">
+            <span className="text-[14px] font-serif font-medium text-ink">Задачи</span>
+            <span className="text-[12px] text-ink-3 tabular-nums">· {activeTasks.length}</span>
           </div>
-
-          <div className={cn("divide-y transition-colors", "divide-[#141414]/5")}>
-            {tasksWithDate.map(task => (
-              <TaskItem
-                key={task.id}
-                task={task}
-                canEdit={canEdit}
-                onToggle={toggleTask}
-                onDelete={deleteTask}
-                onBeginEdit={(t) => {
-                  setEditingTaskId(t.id);
-                  setEditingTaskData({ title: t.title, date: t.date, time: t.time });
-                }}
-                isEditing={editingTaskId === task.id}
-                editingData={editingTaskData}
-                onEditDataChange={setEditingTaskData}
-                onSaveEdit={handleUpdateTask}
-                onCancelEdit={() => setEditingTaskId(null)}
-              />
-            ))}
-            {tasksWithDate.length === 0 && (
-              <div className="p-8 text-center text-[10px] uppercase font-bold tracking-widest opacity-20 transition-colors">Нет задач с датой</div>
-            )}
-          </div>
+          {renderTaskList(activeTasks, 'Нет активных задач')}
         </div>
 
-        {/* Section: Without Date */}
-        <div className={cn(
-          "rounded-2xl border transition-colors overflow-hidden",
-          "bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-        )}>
-          <div className={cn(
-            "px-8 py-5 flex items-center justify-between border-b transition-colors",
-            "border-[#141414]/5 bg-[#fcfcfc]/50"
-          )}>
-            <div className="flex items-center gap-2">
-              <span className={cn("text-sm font-serif", "text-[#141414]")}>Без даты</span>
-              <span className={cn("text-xs opacity-30 mt-0.5 font-mono")}>· {tasksWithoutDate.length}</span>
-            </div>
-            <span className={cn("text-[10px] font-bold uppercase tracking-tighter opacity-30", "text-[#141414]")}>
-              назначьте дату когда поймёте срок
-            </span>
-          </div>
-
-          <div className={cn("divide-y transition-colors", "divide-[#141414]/5")}>
-            {tasksWithoutDate.map(task => (
-              <TaskItem
-                key={task.id}
-                task={task}
-                canEdit={canEdit}
-                onToggle={toggleTask}
-                onDelete={deleteTask}
-                onBeginEdit={(t) => {
-                  setEditingTaskId(t.id);
-                  setEditingTaskData({ title: t.title, date: t.date, time: t.time });
-                }}
-                isEditing={editingTaskId === task.id}
-                editingData={editingTaskData}
-                onEditDataChange={setEditingTaskData}
-                onSaveEdit={handleUpdateTask}
-                onCancelEdit={() => setEditingTaskId(null)}
-              />
-            ))}
-            {tasksWithoutDate.length === 0 && (
-              <div className="p-8 text-center text-[10px] uppercase font-bold tracking-widest opacity-20 transition-colors">Нет задач без даты</div>
-            )}
-          </div>
-        </div>
-
-        {/* Section: Completed */}
         {completedTasks.length > 0 && (
-          <div className={cn(
-            "rounded-2xl border transition-colors overflow-hidden opacity-60 grayscale-[0.3]",
-            "bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-          )}>
-            <div className={cn(
-              "px-8 py-5 border-b transition-colors",
-              "border-[#141414]/5"
-            )}>
-              <span className={cn("text-sm font-serif", "text-[#141414]")}>Завершенные</span>
-              <span className={cn("text-xs opacity-30 ml-2 font-mono")}>· {completedTasks.length}</span>
-            </div>
-            <div className={cn("divide-y transition-colors", "divide-[#141414]/5")}>
-              {completedTasks.map(task => (
-                <TaskItem
-                  key={task.id}
-                  task={task}
-                  canEdit={canEdit}
-                  onToggle={toggleTask}
-                  onDelete={deleteTask}
-                />
-              ))}
-            </div>
+          <div className={TASK_CARD_CLASS}>
+            <button
+              type="button"
+              onClick={() => setCompletedTasksExpanded((v) => !v)}
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 border-b border-[#E5E0D6] text-left hover:bg-[#F5F2E9]/60 transition-colors"
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[14px] font-serif font-medium text-ink">Завершенные задачи</span>
+                <span className="text-[12px] text-ink-3 tabular-nums">· {completedTasks.length}</span>
+              </div>
+              <ChevronDown
+                size={16}
+                className={cn(
+                  'text-ink-3 shrink-0 transition-transform duration-200',
+                  completedTasksExpanded && 'rotate-180'
+                )}
+              />
+            </button>
+            {completedTasksExpanded && renderTaskList(completedTasks, '')}
           </div>
         )}
+      </div>
       </div>
     </div>
   );
@@ -3480,114 +3616,132 @@ function TaskItem({
   onCancelEdit?: () => void,
   key?: string | number
 }) {
-  const dateVal = task.date;
-  let d: Date | null = null;
-  if (dateVal) {
-    if (typeof dateVal === 'object' && dateVal !== null && 'toDate' in (dateVal as object) && typeof (dateVal as any).toDate === 'function') {
-      d = (dateVal as any).toDate();
-    } else {
-      d = new Date(dateVal as any);
-    }
-  }
-  const isInvalid = d && isNaN(d.getTime());
-  const day = d && !isInvalid ? d.toLocaleDateString('ru-RU', { day: '2-digit' }) : '';
-  const month = d && !isInvalid ? d.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '').toLowerCase() : '';
+  const d = parseTaskDate(task.date);
+  const day = d ? d.toLocaleDateString('ru-RU', { day: '2-digit' }) : '';
+  const month = d
+    ? d.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '').toUpperCase()
+    : '';
+  const timeLabel = task.time || (d ? '—' : '');
 
   if (isEditing && onEditDataChange && onSaveEdit && onCancelEdit) {
     return (
-      <div className="p-6 space-y-4">
+      <div className="px-4 py-4 space-y-3 bg-[#FBF8F2]">
         <textarea
           value={editingData?.title || ''}
-          onChange={e => onEditDataChange({ ...editingData, title: e.target.value })}
-          className={cn(
-            "w-full border-none rounded-xl px-4 py-3 text-sm font-medium focus:ring-2 transition-all resize-none",
-            "bg-[#F5F5F0] text-[#141414] focus:ring-[#5A5A40]/30"
-          )}
+          onChange={(e) => onEditDataChange({ ...editingData, title: e.target.value })}
+          rows={2}
+          className="w-full bg-[#F5F2E9] border border-transparent rounded-lg px-3.5 py-2.5 text-[13px] font-medium text-ink focus:border-ochre/50 focus:outline-none resize-none"
         />
         <div className="grid grid-cols-2 gap-3">
           <DatePicker
             value={editingData?.date || ''}
-            onChange={v => onEditDataChange({ ...editingData, date: v })}
+            onChange={(v) => onEditDataChange({ ...editingData, date: v })}
+            variant="compact"
           />
           <TimeInput
             value={editingData?.time || ''}
-            onChange={v => onEditDataChange({ ...editingData, time: v })}
+            onChange={(v) => onEditDataChange({ ...editingData, time: v })}
+            variant="compact"
           />
         </div>
         <div className="flex gap-2">
-          <button onClick={onSaveEdit} className={cn("flex-1 py-3 rounded-xl text-[10px] font-bold transition-all", "bg-[#5A5A40] text-white")}>Сохранить</button>
-          <button onClick={onCancelEdit} className={cn("px-4 py-3 rounded-xl text-[10px] font-bold", "bg-[#F5F5F0] text-[#141414]/40")}>Отмена</button>
+          <button
+            type="button"
+            onClick={onSaveEdit}
+            className="flex-1 h-9 rounded-lg text-[11px] font-semibold bg-[#A67C3C] text-white hover:bg-[#956f35] transition-colors"
+          >
+            Сохранить
+          </button>
+          <button
+            type="button"
+            onClick={onCancelEdit}
+            className="px-4 h-9 rounded-lg text-[11px] font-semibold bg-surface-2 text-ink-3 hover:text-ink transition-colors"
+          >
+            Отмена
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div 
+    <div
       id={`task-${task.id}`}
       className={cn(
-        "px-8 py-6 flex items-center gap-6 group transition-colors rounded-xl",
-        task.completed ? "hover:bg-opacity-50" : ("hover:bg-gray-50/50")
+        'px-4 py-3.5 flex items-center gap-3 group transition-colors',
+        task.completed ? 'bg-[#FAFAF7]/60' : 'hover:bg-[#F5F2E9]/50'
       )}
     >
-      {/* Circle Checkbox */}
-      <button 
+      <button
+        type="button"
         onClick={() => onToggle(task)}
+        disabled={!canEdit}
         className={cn(
-          "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0",
-          task.completed 
-            ? ("bg-[#4fb47c] border-[#4fb47c]")
-            : ("border-[#141414]/10 hover:border-[#5A5A40]/50")
+          'w-[18px] h-[18px] rounded-full border flex items-center justify-center transition-all shrink-0',
+          task.completed
+            ? 'bg-[#4fb47c] border-[#4fb47c]'
+            : 'border-[#C8C0AE] bg-white hover:border-[#A67C3C]'
         )}
       >
-        {task.completed && <CheckCircle2 size={14} className="text-white" />}
-        {!task.completed && <div className="w-2 h-2 rounded-full opacity-0 hover:opacity-100 transition-opacity bg-current" />}
+        {task.completed && <Check size={11} className="text-white stroke-[3px]" />}
       </button>
 
-      {/* Date Display */}
-      <div className="w-10 flex flex-col items-center shrink-0">
+      <div className="w-[52px] flex flex-col items-center shrink-0 text-center leading-none">
         {task.date ? (
           <>
-            <span className={cn("text-lg font-serif leading-none", "text-[#141414]")}>{day}</span>
-            <span className={cn("text-[8px] font-bold uppercase tracking-widest opacity-40", "text-[#141414]")}>{month}</span>
-            <span className={cn("text-[9px] font-bold opacity-30 mt-0.5")}>{task.time || '—'}</span>
+            <span
+              className={cn(
+                'text-[15px] font-semibold tabular-nums',
+                task.completed ? 'text-ink-3' : 'text-ink'
+              )}
+            >
+              {day}
+            </span>
+            <span className="text-[9px] font-bold uppercase tracking-[0.06em] text-ink-3 mt-0.5">
+              {month}
+            </span>
+            {timeLabel && (
+              <span className="text-[10px] text-ink-3 mt-1 tabular-nums">{timeLabel}</span>
+            )}
           </>
         ) : (
-          <div className="flex flex-col items-center">
-             <Clock size={16} className="opacity-20" />
-          </div>
+          <Clock size={15} className="text-ink-4/50 mt-1" strokeWidth={1.75} />
         )}
       </div>
 
-      {/* Task Content */}
-      <div className="flex-1 min-w-0">
-        <h4 className={cn(
-          "font-bold text-sm leading-tight transition-all",
-          task.completed ? "line-through opacity-30" : ("text-[#141414]")
-        )}>
+      <div className="flex-1 min-w-0 py-0.5">
+        <p
+          className={cn(
+            'text-[13px] font-medium leading-snug',
+            task.completed ? 'text-ink-3 line-through' : 'text-ink'
+          )}
+        >
           {task.title}
-        </h4>
+        </p>
         {!task.date && (
-          <p className="text-[9px] font-bold uppercase tracking-widest opacity-30 mt-1">без даты</p>
+          <p className="text-[10px] text-ink-3 mt-0.5">без даты</p>
         )}
       </div>
 
-      {/* Actions */}
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
-        {canEdit && !task.completed && onBeginEdit && (
-          <button 
+      <div className="flex items-center gap-0.5 shrink-0">
+        {canEdit && onBeginEdit && (
+          <button
+            type="button"
             onClick={() => onBeginEdit(task)}
-            className={cn("p-2 rounded-xl transition-all", "hover:bg-black/5 text-[#5A5A40]")}
+            className="p-1.5 rounded-md text-ink-3 hover:text-ink hover:bg-black/[0.04] transition-colors"
+            title="Редактировать"
           >
-            <Edit3 size={14} />
+            <Pencil size={13} strokeWidth={1.75} />
           </button>
         )}
         {canEdit && (
-          <button 
+          <button
+            type="button"
             onClick={(e) => onDelete(e, task.id)}
-            className="p-2 rounded-xl text-rose-500 hover:bg-rose-500/10 transition-all opacity-40 hover:opacity-100"
+            className="p-1.5 rounded-md text-ink-3 hover:text-terracotta hover:bg-terracotta/5 transition-colors"
+            title="Удалить"
           >
-            <Trash2 size={14} />
+            <Trash2 size={13} strokeWidth={1.75} />
           </button>
         )}
       </div>
