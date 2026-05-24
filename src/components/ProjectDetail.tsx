@@ -30,11 +30,9 @@ import {
   DollarSign,
   Briefcase,
   Activity,
-  Shield,
   Download,
   FileText,
   Truck,
-  Award,
   Check,
   PieChart as PieChartIcon,
   Printer,
@@ -51,7 +49,15 @@ import {
   STATUS_LIST 
 } from '../lib/statuses';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { formatCurrency, cn, formatDate, formatDateForInput, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, validateShipmentMaterialQuantity, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
+import { formatCurrency, formatAmountGrouped, parseGroupedAmount, cn, formatDate, formatDateForInput, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, validateShipmentMaterialQuantity, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
+import {
+  getManagerBonus,
+  getMarginColor,
+  getMarginPercent,
+  getNetProfitAfterAll,
+  getProfitBeforeBonus,
+  getTotalExpenses,
+} from '../lib/financeCalculations';
 import { exportShipmentsToExcel } from '../lib/export-shipments';
 import ExpenseCategorySelect from './ExpenseCategorySelect';
 import { DatePicker } from './ui/DatePicker';
@@ -62,7 +68,7 @@ import { todayLocalISO } from '../lib/dates';
 
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
 import CodeProtection from './CodeProtection';
-import { onSnapshot as onSnapUser } from 'firebase/firestore';
+import { useFinanceAccess } from '../hooks/useFinanceAccess';
 import { AppUser } from '../types';
 import UserAvatar from './UserAvatar';
 import ProjectDocuments from './ProjectDocuments';
@@ -190,7 +196,18 @@ export default function ProjectDetail({
                   appUser?.projectsAccess?.[projectId] === 'edit' ||
                   project?.leadManagerId === auth.currentUser?.uid;
 
-  const hasFinanceAccess = isOwner || appUser?.accessDashboard === true;
+  const {
+    canSeeFinancialData,
+    canDisplayFinancialAmounts,
+    needsCodeGate,
+    unlock,
+  } = useFinanceAccess(appUser);
+
+  useEffect(() => {
+    if (!canSeeFinancialData && activeSegment === 'finance') {
+      setActiveSegment('info');
+    }
+  }, [canSeeFinancialData, activeSegment]);
 
   useEffect(() => {
     const unsubProject = onSnapshot(doc(db, 'projects', projectId), (doc) => {
@@ -318,7 +335,12 @@ export default function ProjectDetail({
           ? "bg-gradient-to-b from-[#f1d9cf] to-surface border-[#f1d9cf]"
           : "bg-surface border-line"
       )}>
-        <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr_1fr_1fr] gap-6 items-center">
+        <div className={cn(
+          'grid grid-cols-1 gap-6 items-center',
+          canDisplayFinancialAmounts
+            ? 'lg:grid-cols-[1.4fr_1fr_1fr_1fr]'
+            : 'lg:grid-cols-[1.4fr_1fr]'
+        )}>
           {/* Левая часть: статус + название + мета */}
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2.5 mb-1.5">
@@ -350,20 +372,26 @@ export default function ProjectDetail({
             </div>
           </div>
 
-          {/* Контракт */}
-          <div>
-            <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1.5">Контракт</p>
-            <div className="flex items-baseline gap-1.5">
-              <span className="font-display text-[24px] font-normal text-ink leading-none tabular-nums">{formatMln(project.finance?.contractSum || 0)}</span>
-              <span className="font-display text-[13px] text-ink-3">млн ₽</span>
-            </div>
-          </div>
-
-          {/* Маржа */}
-          <div>
-            <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1.5">Маржа</p>
-            <p className="font-display text-[24px] font-normal leading-none tabular-nums" style={{ color: '#2f5e3f' }}>67%</p>
-          </div>
+          {canDisplayFinancialAmounts && (() => {
+            const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
+            const marginPct = Math.round(getMarginPercent(f));
+            const marginColor = getMarginColor(marginPct);
+            return (
+              <>
+                <div>
+                  <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1.5">Контракт</p>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="font-display text-[24px] font-normal text-ink leading-none tabular-nums">{formatMln(f.contractSum)}</span>
+                    <span className="font-display text-[13px] text-ink-3">млн ₽</span>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1.5">Маржа</p>
+                  <p className="font-display text-[24px] font-normal leading-none tabular-nums" style={{ color: marginColor }}>{marginPct}%</p>
+                </div>
+              </>
+            );
+          })()}
 
           {/* Правая (последняя) колонка грида шапки — срок */}
           <div className="flex flex-col items-end justify-center text-right">
@@ -399,7 +427,13 @@ export default function ProjectDetail({
         <TabButton active={activeSegment === 'info'} onClick={() => setActiveSegment('info')} label="Информация" />
         <TabButton active={activeSegment === 'materials'} onClick={() => setActiveSegment('materials')} label="Материалы и отгрузки" count={project.shipments?.length} />
         <TabButton active={activeSegment === 'activity'} onClick={() => setActiveSegment('activity')} label="Задачи" count={tasks.length} />
-        {hasFinanceAccess && <TabButton active={activeSegment === 'finance'} onClick={() => setActiveSegment('finance')} label="Финансы и бонусы" />}
+        {canSeeFinancialData && (
+          <TabButton
+            active={activeSegment === 'finance'}
+            onClick={() => setActiveSegment('finance')}
+            label="Финансы и бонусы"
+          />
+        )}
         <TabButton active={activeSegment === 'trust'} onClick={() => setActiveSegment('trust')} label="Доверенности" count={trustDeeds.length} />
       </div>
 
@@ -409,7 +443,18 @@ export default function ProjectDetail({
           {activeSegment === 'info' && <motion.div key="info"><PersonalInfoTab project={project} canEdit={canEdit} users={users} /></motion.div>}
           {activeSegment === 'materials' && <motion.div key="materials"><MaterialsTab project={project} canEdit={canEdit} directories={directories} trustDeeds={trustDeeds} /></motion.div>}
           {activeSegment === 'activity' && <motion.div key="activity"><ActivityTab tasks={tasks} projectId={projectId} canEdit={canEdit} project={project} accessToken={accessToken} onConnectCalendar={onConnectCalendar} onClearCalendarToken={onClearCalendarToken} /></motion.div>}
-          {activeSegment === 'finance' && <motion.div key="finance"><FinanceTab project={project} canEdit={canEdit} users={users} /></motion.div>}
+          {activeSegment === 'finance' && canSeeFinancialData && (
+            <motion.div key="finance">
+              <FinanceTab
+                project={project}
+                canEdit={canEdit}
+                users={users}
+                appUser={appUser}
+                needsCodeGate={needsCodeGate}
+                onUnlock={unlock}
+              />
+            </motion.div>
+          )}
           {activeSegment === 'trust' && <motion.div key="trust"><TrustDeedsTab project={project} canEdit={canEdit} directories={directories} trustDeeds={trustDeeds} /></motion.div>}
         </AnimatePresence>
       </div>
@@ -460,11 +505,11 @@ function TabButton({ active, onClick, label, count }: { active: boolean, onClick
 function FinancialSummary({ project }: { project: Project }) {
   const [isOpen, setIsOpen] = useState(false);
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-  const totalExpenses = (f.expenses || []).reduce((acc, exp) => acc + (exp.amount || 0), 0);
-  const profit = f.contractSum - totalExpenses;
-  const managerBonus = profit * (f.managerPercentage || 0) / 100;
-  const netProfit = profit - managerBonus;
-  const profitability = f.contractSum > 0 ? (netProfit / f.contractSum) * 100 : 0;
+  const totalExpenses = getTotalExpenses(f);
+  const profitBeforeBonus = getProfitBeforeBonus(f);
+  const managerBonus = getManagerBonus(f);
+  const netProfitAfterAll = getNetProfitAfterAll(f);
+  const profitability = getMarginPercent(f);
 
   return (
     <div className={cn(
@@ -503,15 +548,19 @@ function FinancialSummary({ project }: { project: Project }) {
                   <span className="font-mono font-bold text-rose-400">-{formatCurrency(totalExpenses)}</span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className={"text-[#141414]/60 text-sm"}>Прибыль</span>
-                  <span className={cn("font-mono font-bold", "text-[#4fb47c]")}>{formatCurrency(profit)}</span>
+                  <span className={"text-[#141414]/60 text-sm"}>Прибыль до бонуса</span>
+                  <span className={cn("font-mono font-bold", "text-[#4fb47c]")}>{formatCurrency(profitBeforeBonus)}</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className={"text-[#141414]/60 text-sm"}>Бонус менеджера ({f.managerPercentage || 0}%)</span>
                   <span className={cn("font-mono font-bold", "text-[#5A5A40]")}>{formatCurrency(managerBonus)}</span>
                 </div>
+                <div className="flex justify-between items-center">
+                  <span className={"text-[#141414]/60 text-sm"}>Чистая прибыль</span>
+                  <span className={cn("font-mono font-bold", "text-[#4fb47c]")}>{formatCurrency(netProfitAfterAll)}</span>
+                </div>
                 <div className={cn("flex justify-between items-center pt-2 border-t transition-colors", "border-[#141414]/5")}>
-                  <span className={cn("text-[10px] font-bold uppercase tracking-widest font-sans transition-colors", "text-[#141414]/60")}>Рентабельность</span>
+                  <span className={cn("text-[10px] font-bold uppercase tracking-widest font-sans transition-colors", "text-[#141414]/60")}>Маржа</span>
                   <span className={cn("font-mono font-black text-2xl transition-colors", "text-[#141414]")}>
                     {profitability.toFixed(1)}%
                   </span>
@@ -1720,6 +1769,10 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
   const materials = project.materials || [];
   const shipments = project.shipments || [];
   const selectedShipment = shipments.find(s => s.id === selectedShipmentId) ?? null;
+  const allMaterialShipped = useMemo(
+    () => getShippingProgress(project).isComplete,
+    [project.materials, project.shipments]
+  );
 
   useEffect(() => {
     setSelectedShipmentId(prev => {
@@ -1913,18 +1966,25 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                 >
                   Экспорт в Excel
                 </Button>
-                <Button 
-                  variant="primary" 
-                  size="sm" 
-                  className="h-8 px-2.5 text-[11.5px] font-semibold"
-                  icon={<Plus size={12} />}
-                  onClick={() => {
-                    setEditingShipmentId(null);
-                    setIsAddingShipment(true);
-                  }}
+                <span
+                  className="inline-flex"
+                  title={allMaterialShipped ? 'Весь материал отгружен' : undefined}
                 >
-                  Новая отгрузка
-                </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="h-8 px-2.5 text-[11.5px] font-semibold"
+                    icon={<Plus size={12} />}
+                    disabled={allMaterialShipped}
+                    onClick={() => {
+                      if (allMaterialShipped) return;
+                      setEditingShipmentId(null);
+                      setIsAddingShipment(true);
+                    }}
+                  >
+                    Новая отгрузка
+                  </Button>
+                </span>
               </div>
             </div>
 
@@ -2707,56 +2767,48 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
   );
 }
 
-function FinanceTab({ project, canEdit, users }: { project: Project, canEdit: boolean, users: AppUser[] }) {
-  const [appUser, setAppUser] = useState<AppUser | null>(null);
-  const [isUnlocked, setIsUnlocked] = useState(false);
+function FinanceTab({
+                      project,
+                      canEdit,
+                      users,
+                      appUser,
+                      needsCodeGate,
+                      onUnlock,
+                    }: {
+  project: Project;
+  canEdit: boolean;
+  users: AppUser[];
+  appUser: AppUser | null;
+  needsCodeGate: boolean;
+  onUnlock: () => void;
+}) {
   const [isAdding, setIsAdding] = useState(false);
-  const [newExpenseForm, setNewExpenseForm] = useState({ 
-    date: new Date().toISOString().split('T')[0], 
-    category: '', 
-    amount: 0 
+  const [newExpenseForm, setNewExpenseForm] = useState({
+    date: new Date().toISOString().split('T')[0],
+    category: '',
+    amount: 0
   });
 
-  useEffect(() => {
-    if (!auth.currentUser) return;
-    const unsub = onSnapUser(doc(db, 'users', auth.currentUser.uid), (snap) => {
-      setAppUser({ uid: snap.id, ...snap.data() } as AppUser);
-    });
-    return () => unsub();
-  }, []);
-
-  if (appUser && !appUser.hasFinanceAccess) {
+  if (needsCodeGate) {
     return (
-      <div className={cn("p-6 rounded-2xl text-center space-y-6 transition-colors", "bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]")}>
-        <div className="w-20 h-20 bg-rose-500/10 text-rose-500 rounded-full flex items-center justify-center mx-auto">
-          <Shield size={40} />
+        <div className="flex justify-center py-10">
+          <CodeProtection
+              correctCode={appUser?.financeCode || ''}
+              onSuccess={onUnlock}
+              subtitle="Для просмотра вкладки «Финансы и бонусы» введите код доступа"
+          />
         </div>
-        <h3 className={cn("text-2xl font-serif font-medium", "text-[#141414]")}>Доступ к финансам ограничен</h3>
-        <p className={cn("max-w-sm mx-auto", "text-[#141414]/40")}>У вас недостаточно прав для просмотра финансовых показателей этого проекта. Обратитесь к администратору.</p>
-      </div>
-    );
-  }
-
-  if (appUser?.requireFinanceCode && !isUnlocked) {
-    return (
-      <CodeProtection 
-        correctCode={appUser.financeCode || ''} 
-        onSuccess={() => setIsUnlocked(true)} 
-        title="Защита модуля Финансы"
-      />
     );
   }
 
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
   const expenses = f.expenses || [];
-  const totalExpenses = expenses.reduce((acc, exp) => acc + (exp.amount || 0), 0);
-  const profitBeforeBonus = f.contractSum - totalExpenses;
-  const managerBonus = profitBeforeBonus * (f.managerPercentage || 0) / 100;
-  const netProfit = profitBeforeBonus - managerBonus;
-  const profitability = f.contractSum > 0 ? (netProfit / f.contractSum) * 100 : 0;
+  const totalExpenses = getTotalExpenses(f);
+  const profitBeforeBonus = getProfitBeforeBonus(f);
+  const managerBonus = getManagerBonus(f);
+  const netProfitAfterAll = getNetProfitAfterAll(f);
+  const profitability = getMarginPercent(f);
 
-  const leadManager = users.find(u => u.uid === project.leadManagerId);
-  
   const updateFinance = async (updates: Partial<typeof f>) => {
     try {
       const cleanUpdates = Object.entries(updates).reduce((acc, [key, value]) => {
@@ -2767,7 +2819,7 @@ function FinanceTab({ project, canEdit, users }: { project: Project, canEdit: bo
       }, {} as any);
 
       const newFinance = { ...f, ...cleanUpdates };
-      
+
       if (newFinance.expenses) {
         newFinance.expenses = newFinance.expenses.map((exp: any) => {
           const cleanExp = { ...exp };
@@ -2788,18 +2840,18 @@ function FinanceTab({ project, canEdit, users }: { project: Project, canEdit: bo
 
   const handleAddExpense = async () => {
     if (!newExpenseForm.category || newExpenseForm.amount <= 0) return;
-    
+
     try {
       const q = query(collection(db, 'expense_categories'), where('name', '==', newExpenseForm.category));
       const snapshot = await getDocs(q);
-      
+
       if (snapshot.empty) {
         await addDoc(collection(db, 'expense_categories'), {
           name: newExpenseForm.category,
           createdAt: serverTimestamp()
         });
       }
-      
+
       const newExpense = {
         id: crypto.randomUUID(),
         date: newExpenseForm.date,
@@ -2809,7 +2861,7 @@ function FinanceTab({ project, canEdit, users }: { project: Project, canEdit: bo
 
       const updatedExpenses = [...expenses, newExpense];
       await updateFinance({ expenses: updatedExpenses });
-      
+
       setNewExpenseForm({
         date: new Date().toISOString().split('T')[0],
         category: '',
@@ -2831,266 +2883,340 @@ function FinanceTab({ project, canEdit, users }: { project: Project, canEdit: bo
     }
   };
 
+  const sortedExpenses = [...expenses].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="space-y-8"
-    >
-      {/* 1. Summary Dashboard Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <FinanceCard 
-          label="СУММА КОНТРАКТА" 
-          subtext="основа расчёта"
-          value={f.contractSum} 
-          highlight 
-        />
-        <FinanceCard 
-          label="ЧИСТАЯ ПРИБЫЛЬ" 
-          subtext="после всех расходов"
-          value={netProfit} 
-          type="profit" 
-        />
-        <FinanceCard 
-          label="РАСХОДЫ" 
-          subtext={`${expenses.length} операций`}
-          value={totalExpenses} 
-          type="expense" 
-        />
-        <FinanceCard 
-          label="МАРЖА" 
-          subtext="от контракта"
-          value={profitability} 
-          isPercentage
-          type="margin" 
-        />
-      </div>
-
-      {/* 2. Manager Bonus Section */}
-      <div className={cn(
-        "p-6 rounded-2xl border space-y-8 transition-colors",
-        "bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-      )}>
-        <div className="flex items-center justify-between">
-          <h3 className={cn("text-2xl font-serif font-medium", "text-[#141414]")}>Бонус менеджера</h3>
-          <div className={cn("px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest", "bg-[#F5F5F0] text-[#141414]/40")}>
-            Настройка расчета
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
-          {/* Manager Profile */}
-          <div className="lg:col-span-4 flex items-center gap-5">
-            <div className="relative">
-              <div className={cn("w-20 h-20 rounded-[28px] overflow-hidden flex items-center justify-center text-2xl font-serif font-medium", "bg-[#F5F5F0] text-[#5A5A40]")}>
-                {leadManager?.photoURL ? (
-                  <img src={leadManager.photoURL} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  leadManager?.displayName?.split(' ').map(n => n[0]).join('') || 'М'
-                )}
-              </div>
-              <div className={cn("absolute -bottom-1 -right-1 w-8 h-8 rounded-2xl border-4 flex items-center justify-center", "bg-white border-[#F5F5F0] text-[#5A5A40]")}>
-                <Award size={14} />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <h4 className={cn("text-lg font-serif font-medium", "text-[#141414]")}>
-                {leadManager?.displayName || project.leadManagerName || 'Не назначен'}
-              </h4>
-              <p className={cn("text-[10px] font-bold uppercase tracking-widest opacity-40", "text-[#141414]")}>
-                Ведущий менеджер проекта
-              </p>
-            </div>
-          </div>
-
-          {/* Calculator Inputs */}
-          <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-3 gap-6">
-            <FinanceInput 
-              label="ПРИБЫЛЬ ОБЩАЯ"
-              value={profitBeforeBonus}
-              disabled
-            />
-            <FinanceInput 
-              label="БОНУС МЕНЕДЖЕРА %"
-              value={f.managerPercentage}
-              onChange={v => updateFinance({ managerPercentage: v })}
-              disabled={!canEdit}
+      <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-5"
+      >
+        {/* Сводные карточки */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <FinanceCard
+              label="СУММА КОНТРАКТА"
+              subtext="основа расчёта"
+              value={f.contractSum}
+              variant="contract"
+              canEdit={canEdit}
+              onValueChange={(v) => updateFinance({ contractSum: v })}
+          />
+          <FinanceCard
+              label="ЧИСТАЯ ПРИБЫЛЬ"
+              subtext="после всех расходов и бонусов"
+              value={netProfitAfterAll}
+              variant="profit"
+          />
+          <FinanceCard
+              label="РАСХОДЫ"
+              subtext={`${expenses.length} операций`}
+              value={totalExpenses}
+              variant="expense"
+          />
+          <FinanceCard
+              label="МАРЖА"
+              subtext="от контракта"
+              value={profitability}
               isPercentage
+              variant="margin"
+          />
+        </div>
+
+        {/* Бонус менеджера */}
+        <div className="rounded-2xl border border-line bg-surface p-5 shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
+          <h3 className="font-display text-[17px] font-medium text-ink leading-tight mb-4">Бонус менеджера</h3>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <FinanceInput
+                label="ЧИСТАЯ ПРИБЫЛЬ"
+                value={profitBeforeBonus}
+                disabled
+                compact
+                valueColor={FINANCE_VALUE_COLORS.profit}
+                className="min-w-0"
             />
-            <div className="space-y-2">
-              <label className={cn("text-[10px] font-bold uppercase tracking-widest ml-4 transition-colors", "text-[#141414]/20")}>СУММА К ВЫПЛАТЕ</label>
-              <div className={cn(
-                "p-4 rounded-[24px] font-mono font-black text-xl flex items-center gap-3 transition-colors",
-                "bg-[#f4a261] text-white"
-              )}>
-                <span className="opacity-40">₽</span>
-                {formatCurrency(managerBonus).replace('₽', '').trim()}
-              </div>
-            </div>
+            <FinanceInput
+                label="% менеджера"
+                value={f.managerPercentage}
+                onChange={(v) => updateFinance({ managerPercentage: Math.min(999, v) })}
+                disabled={!canEdit}
+                isPercentage
+                compact
+                percentField
+            />
+            <FinanceInput
+                label="СУММА БОНУСА"
+                value={managerBonus}
+                disabled
+                compact
+                valueColor="#b07a2c"
+                className="min-w-0"
+            />
           </div>
         </div>
-      </div>
 
-      {/* 3. Expenses Section */}
-      <div className={cn(
-        "p-6 rounded-2xl border space-y-8 transition-colors",
-        "bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-      )}>
-        <div className="flex items-center justify-between">
-          <div className="space-y-1">
-            <h3 className={cn("text-2xl font-serif font-medium", "text-[#141414]")}>Расходы по проекту</h3>
-            <p className={cn("text-[10px] font-bold uppercase tracking-widest opacity-40", "text-[#141414]")}>Учет фактических затрат</p>
-          </div>
-          {canEdit && (
-            <button 
-              onClick={() => setIsAdding(!isAdding)}
-              className={cn(
-                "px-8 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2 shadow-lg",
-                isAdding 
-                  ? ("bg-rose-400/10 text-rose-400") 
-                  : ("bg-[#141414] text-white hover:bg-black")
+        {/* Расходы + диаграмма */}
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-5 items-start">
+          <div className="xl:col-span-3 overflow-hidden rounded-[18px] border border-[#DED8CC] bg-[#F8F3E9] shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_3px_rgba(48,42,28,0.08)]">
+            <div className="flex items-center justify-between gap-4 border-b border-[#DED8CC] px-4 py-3">
+              <h3 className="font-display text-[15px] font-medium leading-tight text-[#302A1C]">
+                Расходы по проекту
+              </h3>
+
+              {canEdit && (
+                  <button
+                      type="button"
+                      onClick={() => setIsAdding(!isAdding)}
+                      className={cn(
+                          "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[11px] font-medium transition-colors",
+                          isAdding
+                              ? "border-[#C9B99B] bg-white/70 text-[#7C5A25] hover:bg-white"
+                              : "border-[#D8B978] bg-[#B48444] text-white shadow-[0_1px_2px_rgba(132,91,37,0.18)] hover:bg-[#A6783D]"
+                      )}
+                  >
+                    {isAdding ? (
+                        <X size={12} strokeWidth={2.25} />
+                    ) : (
+                        <Plus size={12} strokeWidth={2.5} />
+                    )}
+                    {isAdding ? 'Отмена' : 'Добавить расход'}
+                  </button>
               )}
-            >
-              <Plus size={14} strokeWidth={3} />
-              Добавить расход
-            </button>
-          )}
-        </div>
+            </div>
 
-        <AnimatePresence>
-          {isAdding && (
-            <motion.div 
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="overflow-hidden"
-            >
-              <div className={cn(
-                "p-5 rounded-2xl grid grid-cols-1 md:grid-cols-4 gap-6 mb-8 transition-colors",
-                "bg-surface-2"
-              )}>
-                <div className="space-y-2">
-                   <label className={cn("text-[10px] font-bold uppercase tracking-widest ml-4 transition-colors opacity-30", "text-[#141414]")}>Дата</label>
-                   <DatePicker 
-                     value={newExpenseForm.date || ''}
-                     onChange={v => setNewExpenseForm({...newExpenseForm, date: v})}
-                   />
-                </div>
-                <div className="md:col-span-2 space-y-2">
-                   <label className={cn("text-[10px] font-bold uppercase tracking-widest ml-4 transition-colors opacity-30", "text-[#141414]")}>Вид расхода</label>
-                   <ExpenseCategorySelect 
-                     value={newExpenseForm.category}
-                     onChange={(val) => setNewExpenseForm({...newExpenseForm, category: val})}
-                     placeholder="Напр. Логистика, Закупка..."
-                   />
-                </div>
-                <div className="space-y-2">
-                   <label className={cn("text-[10px] font-bold uppercase tracking-widest ml-4 transition-colors opacity-30", "text-[#141414]")}>Сумма</label>
-                   <div className="relative">
-                     <span className={cn("absolute left-4 top-1/2 -translate-y-1/2 font-mono font-bold transition-colors", "text-[#141414]/20")}>₽</span>
-                     <input 
-                       type="number"
-                       value={newExpenseForm.amount || ''}
-                       onChange={e => setNewExpenseForm({...newExpenseForm, amount: Number(e.target.value)})}
-                       className={cn(
-                         "w-full border-none rounded-2xl pl-10 pr-12 py-4 font-mono font-bold text-lg focus:ring-2 transition-all",
-                         "bg-white text-[#141414] focus:ring-[#5A5A40]/30 shadow-sm"
-                       )}
-                       placeholder="0"
-                     />
-                     <button 
-                        onClick={handleAddExpense}
-                        disabled={!newExpenseForm.category || newExpenseForm.amount <= 0}
-                        className={cn("absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-xl transition-all", "bg-[#141414] text-white hover:bg-black")}
-                     >
-                       <Check size={20} strokeWidth={3} />
-                     </button>
-                   </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            <AnimatePresence>
+              {isAdding && (
+                  <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden border-b border-[#DED8CC]"
+                  >
+                    <div className="bg-[#F0E8D8] px-4 py-4">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-[180px_1fr_120px_auto] md:items-end">
+                        <div>
+                          <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                            Дата
+                          </label>
+                          <DatePicker
+                              value={newExpenseForm.date || ''}
+                              onChange={(v) => setNewExpenseForm({ ...newExpenseForm, date: v })}
+                              variant="compact"
+                          />
+                        </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-          {/* List */}
-          <div className="lg:col-span-8">
-            <div className={cn(
-              "rounded-2xl border overflow-hidden transition-colors",
-              "border-line bg-surface shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-            )}>
-              <table className="w-full text-left">
-                <thead className={cn(
-                  "text-[9px] font-bold uppercase tracking-[0.2em] transition-colors",
-                  "bg-[#F5F5F0] text-[#141414]/40"
-                )}>
-                  <tr>
-                    <th className="px-8 py-5">Категория</th>
-                    <th className="px-8 py-5">Дата</th>
-                    <th className="px-8 py-5 text-right">Сумма</th>
-                    {canEdit && <th className="w-10"></th>}
-                  </tr>
+                        <div>
+                          <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                            Вид расхода
+                          </label>
+                          <ExpenseCategorySelect
+                              value={newExpenseForm.category}
+                              onChange={(val) => setNewExpenseForm({ ...newExpenseForm, category: val })}
+                              placeholder="Выберите категорию..."
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                            Сумма, ₽
+                          </label>
+                          <input
+                              type="number"
+                              value={newExpenseForm.amount || ''}
+                              onChange={(e) =>
+                                  setNewExpenseForm({
+                                    ...newExpenseForm,
+                                    amount: Number(e.target.value),
+                                  })
+                              }
+                              placeholder="0"
+                              className="h-9 w-full rounded-lg border border-transparent bg-[#FBF8F2] px-3 text-[12px] font-medium text-[#302A1C] shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] placeholder:text-[#B8AE9A] focus:border-[#B48444]/40 focus:bg-white focus:outline-none"
+                          />
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={handleAddExpense}
+                            disabled={!newExpenseForm.category || newExpenseForm.amount <= 0}
+                            className="h-9 rounded-lg bg-[#B48444] px-4 text-[11px] font-semibold text-white shadow-[0_1px_2px_rgba(132,91,37,0.2)] transition-colors hover:bg-[#A6783D] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Зафиксировать
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] border-collapse text-left">
+                <thead>
+                <tr className="border-b border-[#DED8CC] bg-[#F8F3E9]">
+                  <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                    Дата
+                  </th>
+                  <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                    Вид расхода
+                  </th>
+                  <th className="px-4 py-2.5 text-right text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                    Сумма
+                  </th>
+                  {canEdit && <th className="w-10 px-2 py-2.5" />}
+                </tr>
                 </thead>
-                <tbody className={cn("divide-y transition-colors", "divide-[#141414]/5")}>
-                  {expenses.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((expense) => (
-                    <tr key={expense.id} className={cn("group transition-colors", "hover:bg-[#F5F5F0]")}>
-                      <td className="px-8 py-5">
-                        <div className="flex items-center gap-3">
-                          <div className={cn("w-1.5 h-1.5 rounded-full", "bg-[#5A5A40]")} />
-                          <span className={cn("text-xs font-bold", "text-[#141414]")}>{expense.category}</span>
+
+                <tbody className="divide-y divide-[#DED8CC] bg-[#FBF8F2]/50">
+                {sortedExpenses.map((expense, index) => (
+                    <tr
+                        key={expense.id}
+                        className="group transition-colors hover:bg-white/60"
+                    >
+                      <td className="px-4 py-3 text-[11.5px] font-medium tabular-nums text-[#8A8574]">
+                        {new Date(expense.date).toLocaleDateString('ru-RU', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                        })}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <span
+                              className="h-2 w-2 shrink-0 rounded-[2px]"
+                              style={{
+                                backgroundColor: getExpenseCategoryColor(expense.category, index),
+                              }}
+                          />
+                          <span className="truncate text-[12.5px] font-medium text-[#302A1C]">
+                            {expense.category || 'Без категории'}
+                          </span>
                         </div>
                       </td>
-                      <td className="px-8 py-5">
-                        <span className={cn("text-[10px] font-mono uppercase tracking-tight opacity-40", "text-[#141414]")}>
-                          {new Date(expense.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+
+                      <td className="px-4 py-3 text-right">
+                        <span className="font-mono text-[12.5px] font-bold tabular-nums text-[#9B3F54]">
+                          {formatCurrency(expense.amount)}
                         </span>
                       </td>
-                      <td className="px-8 py-5 text-right">
-                        <span className={cn("text-xs font-mono font-black", "text-[#141414]")}>{formatCurrency(expense.amount)}</span>
-                      </td>
+
                       {canEdit && (
-                        <td className="px-4 py-5 text-right overflow-hidden">
-                          <button 
-                            onClick={() => removeExpense(expense.id)}
-                            className="p-2 opacity-0 group-hover:opacity-100 transition-all rounded-lg text-rose-500 hover:bg-rose-500/10"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </td>
+                          <td className="px-2 py-3 text-right">
+                            <button
+                                type="button"
+                                onClick={() => removeExpense(expense.id)}
+                                className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
+                                aria-label="Удалить расход"
+                            >
+                              <Trash2 size={12} strokeWidth={1.9} />
+                            </button>
+                          </td>
                       )}
                     </tr>
-                  ))}
-                  {expenses.length === 0 && (
+                ))}
+
+                {expenses.length === 0 && (
                     <tr>
-                      <td colSpan={canEdit ? 4 : 3} className={cn("px-8 py-20 text-center space-y-4", "text-[#141414]/10")}>
-                        <div className="flex justify-center"><PieChartIcon size={40} className="opacity-20" /></div>
-                        <p className="text-[10px] uppercase font-bold tracking-widest italic">Статей расходов пока нет</p>
+                      <td
+                          colSpan={canEdit ? 4 : 3}
+                          className="px-4 py-10 text-center"
+                      >
+                        <p className="text-[12px] font-medium text-[#8A8574]">
+                          Расходы пока не добавлены
+                        </p>
                       </td>
                     </tr>
-                  )}
+                )}
                 </tbody>
               </table>
             </div>
           </div>
 
-          {/* Chart */}
-          <div className="lg:col-span-4 flex flex-col justify-center items-center">
-            <div className="w-full aspect-square relative">
-              <ExpenseCategoryChart expenses={expenses} />
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <p className={cn("text-[8px] font-bold uppercase tracking-widest opacity-30 mt-4", "text-[#141414]")}>ИТОГО РАСХОДЫ</p>
-                <p className={cn("text-xl font-mono font-black", "text-[#141414]")}>{formatCurrency(totalExpenses).replace('₽', '').trim()} ₽</p>
-              </div>
-            </div>
+          <div className="xl:col-span-2 rounded-[18px] border border-[#DED8CC] bg-[#F8F3E9] p-5 shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_3px_rgba(48,42,28,0.08)]">
+            <p className={cn(DASHBOARD_CARD_LABEL, 'mb-4 text-center text-[#8A8574]')}>
+              Структура расходов
+            </p>
+
+            {expenses.length > 0 ? (
+                <div className="h-[260px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                          data={expenses.reduce((acc: any[], exp) => {
+                            const existing = acc.find(item => item.name === exp.category);
+                            if (existing) {
+                              existing.value += exp.amount;
+                            } else {
+                              acc.push({ name: exp.category, value: exp.amount });
+                            }
+                            return acc;
+                          }, [])}
+                          dataKey="value"
+                          nameKey="name"
+                          innerRadius={58}
+                          outerRadius={88}
+                          paddingAngle={2}
+                          stroke="none"
+                      >
+                        {expenses.map((entry: any, index: number) => (
+                            <Cell
+                                key={`expense-cell-${entry.category}-${index}`}
+                                fill={getExpenseCategoryColor(entry.category, index)}
+                            />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                          formatter={(value: number) => formatCurrency(value)}
+                          contentStyle={{
+                            borderRadius: 12,
+                            border: '1px solid #DED8CC',
+                            background: '#FBF8F2',
+                            color: '#302A1C',
+                            boxShadow: '0 8px 20px rgba(48,42,28,0.08)',
+                            fontSize: 12,
+                          }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+            ) : (
+                <div className="flex h-[260px] flex-col items-center justify-center text-center">
+                  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#EFE7D7] text-[#B8AE9A]">
+                    <PieChartIcon size={22} strokeWidth={1.8} />
+                  </div>
+                  <p className="text-[12px] font-medium text-[#8A8574]">
+                    Статей расходов пока нет
+                  </p>
+                </div>
+            )}
           </div>
         </div>
-      </div>
-    </motion.div>
+      </motion.div>
   );
 }
 
-function ExpenseCategoryChart({ expenses }: { expenses: any[] }) {
-  if (expenses.length === 0) return null;
+const EXPENSE_CATEGORY_COLORS: Record<string, string> = {
+  Логистика: '#b07a2c',
+  Мокап: '#2d4f35',
+  Образцы: '#3b4a55',
+  Монтаж: '#a04930',
+  Закупка: '#5a6b3c',
+};
+
+const EXPENSE_CATEGORY_FALLBACK = ['#b07a2c', '#2d4f35', '#3b4a55', '#a04930', '#5a6b3c', '#7a7565'];
+
+function getExpenseCategoryColor(category: string, index: number): string {
+  return EXPENSE_CATEGORY_COLORS[category] ?? EXPENSE_CATEGORY_FALLBACK[index % EXPENSE_CATEGORY_FALLBACK.length];
+}
+
+function ExpenseCategoryChart({ expenses }: { expenses: { category: string; amount: number }[] }) {
+  if (expenses.length === 0) {
+    return (
+      <div className="flex h-full w-full items-center justify-center">
+        <div className="h-[72%] w-[72%] rounded-full border-[14px] border-line/60" />
+      </div>
+    );
+  }
 
   const dataMap = expenses.reduce((acc, exp) => {
     acc[exp.category] = (acc[exp.category] || 0) + exp.amount;
@@ -3098,8 +3224,6 @@ function ExpenseCategoryChart({ expenses }: { expenses: any[] }) {
   }, {} as Record<string, number>);
 
   const data = Object.entries(dataMap).map(([name, value]) => ({ name, value }));
-  
-  const COLORS = ['#5A5A40', '#141414', '#c4a484', '#4fb47c', '#4b7095', '#f4a261'];
 
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -3108,106 +3232,251 @@ function ExpenseCategoryChart({ expenses }: { expenses: any[] }) {
           data={data}
           cx="50%"
           cy="50%"
-          innerRadius={80}
-          outerRadius={100}
-          paddingAngle={5}
+          innerRadius="62%"
+          outerRadius="88%"
+          paddingAngle={3}
           dataKey="value"
           stroke="none"
         >
           {data.map((entry, index) => (
-            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+            <Cell key={entry.name} fill={getExpenseCategoryColor(entry.name, index)} />
           ))}
         </Pie>
-        <Tooltip 
-          contentStyle={{ 
-            backgroundColor: '#fff', 
-            borderRadius: '16px', 
-            border: 'none', 
-            boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
+        <Tooltip
+          contentStyle={{
+            backgroundColor: 'var(--surface)',
+            borderRadius: '8px',
+            border: '1px solid var(--line)',
+            boxShadow: '0 4px 12px rgba(31,28,20,0.08)',
             fontSize: '12px',
-            fontFamily: 'monospace'
+            fontFamily: 'var(--font-mono)',
           }}
-          itemStyle={{ color: '#141414' }}
+          itemStyle={{ color: 'var(--ink)' }}
+          formatter={(val: number) => formatCurrency(val)}
         />
       </PieChart>
     </ResponsiveContainer>
   );
 }
 
-function FinanceCard({ label, subtext, value, type = 'default', highlight = false, isSmall = false, isPercentage = false }: { label: string, subtext?: string, value: number, type?: 'default' | 'expense' | 'profit' | 'margin', highlight?: boolean, isSmall?: boolean, isPercentage?: boolean }) {
-  return (
-    <div className={cn(
-      "p-6 rounded-2xl transition-all relative overflow-hidden group",
-      highlight 
-        ? ("bg-[#141414] text-white shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]") 
-        : (type === 'margin' ? ("bg-surface-2 border border-[#f4a261]/20") : ("border border-line bg-surface shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]")),
-      isSmall && "p-6"
-    )}>
-      {highlight && (
-        <div className="absolute -right-4 -top-4 w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:bg-white/20 transition-colors" />
-      )}
-      
-      <p className={cn(
-        "text-[10px] font-bold uppercase tracking-[0.15em] mb-1 transition-colors",
-        highlight 
-          ? ("text-white/40") 
-          : (type === 'margin' ? ("text-[#f4a261]") : ("text-[#141414]/20"))
-      )}>{label}</p>
-      
-      {subtext && (
-        <p className={cn(
-          "text-[8px] font-bold uppercase tracking-widest mb-6 opacity-30",
-          highlight 
-            ? ("text-white") 
-            : ("text-[#141414]")
-        )}>{subtext}</p>
-      )}
+/** Стили карточек как SummaryCard на дашборде */
+const DASHBOARD_CARD_LABEL = 'text-[10.5px] font-semibold uppercase tracking-[0.14em]';
+const DASHBOARD_CARD_VALUE = 'font-display text-[34px] leading-[1.05] tabular-nums';
+const DASHBOARD_CARD_UNIT = 'font-display text-[14px] opacity-70';
+const DASHBOARD_CARD_SUB = 'text-[11.5px] text-ink-3 mt-0.5';
 
-      <div className="flex items-baseline gap-2">
-        <p className={cn(
-          "font-mono font-black",
-          isSmall ? "text-2xl" : "text-4xl",
-          type === 'expense' && ("text-rose-400"),
-          type === 'profit' && ("text-[#141414]"),
-          type === 'margin' && ("text-[#141414]"),
-          (!type || type === 'default') && (highlight ? ("text-white") : ("text-[#141414]"))
-        )}>
-          {isPercentage ? value.toFixed(1) : formatCurrency(value).replace('₽', '').trim()}
+const FINANCE_VALUE_COLORS = {
+  profit: '#2f5e3f',
+  expense: '#8a3f47',
+  margin: '#1f1c14',
+  bonus: '#b07a2c',
+} as const;
+
+function FinanceCard({
+  label,
+  subtext,
+  value,
+  variant = 'profit',
+  isPercentage = false,
+  canEdit,
+  onValueChange,
+}: {
+  label: string;
+  subtext?: string;
+  value: number;
+  variant?: 'contract' | 'profit' | 'expense' | 'margin';
+  isPercentage?: boolean;
+  canEdit?: boolean;
+  onValueChange?: (value: number) => void;
+}) {
+  const isEditableContract = variant === 'contract' && canEdit && onValueChange;
+  const valueColor =
+    variant === 'contract'
+      ? 'var(--bg)'
+      : variant === 'profit'
+        ? FINANCE_VALUE_COLORS.profit
+        : variant === 'expense'
+          ? FINANCE_VALUE_COLORS.expense
+          : FINANCE_VALUE_COLORS.margin;
+
+  const num = isPercentage ? `${Math.round(value)}` : formatAmountGrouped(value);
+  const unit = isPercentage ? '%' : '₽';
+
+  if (variant === 'contract') {
+    return (
+      <div
+        className="flex min-h-[108px] flex-col gap-2.5 rounded-2xl p-[18px_20px] relative overflow-hidden"
+        style={{
+          background: 'linear-gradient(135deg, var(--ink) 0%, #2a2618 100%)',
+          border: '1px solid #2a2618',
+        }}
+      >
+        <p className={DASHBOARD_CARD_LABEL} style={{ color: 'rgba(245,233,204,0.6)' }}>
+          {label}
         </p>
-        <span className={cn(
-          "text-xl font-mono font-black",
-          highlight 
-            ? ("text-white/20") 
-            : ("text-[#141414]/10")
-        )}>
-          {isPercentage ? '%' : '₽'}
+        {isEditableContract ? (
+          <ContractSumInput value={value} onChange={onValueChange} />
+        ) : (
+          <div className="flex items-baseline gap-1.5 min-w-0">
+            <span className={cn(DASHBOARD_CARD_VALUE, 'text-bg')}>{num}</span>
+            {!isPercentage && (
+              <span className={cn(DASHBOARD_CARD_UNIT, 'text-bg shrink-0')}>{unit}</span>
+            )}
+          </div>
+        )}
+        {subtext && (
+          <p className="text-[11.5px] mt-auto" style={{ color: 'rgba(245,233,204,0.45)' }}>
+            {subtext}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-[108px] flex-col gap-2.5 rounded-2xl border border-line bg-surface p-[18px_20px] shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
+      <p className={cn(DASHBOARD_CARD_LABEL, 'text-ink-3')}>{label}</p>
+      <div className="flex items-baseline gap-1.5 min-w-0">
+        <span className={DASHBOARD_CARD_VALUE} style={{ color: valueColor }}>
+          {num}
+        </span>
+        <span className={DASHBOARD_CARD_UNIT} style={{ color: valueColor }}>
+          {unit}
         </span>
       </div>
+      {subtext && <p className={DASHBOARD_CARD_SUB}>{subtext}</p>}
     </div>
   );
 }
 
-function FinanceInput({ label, value, onChange, disabled, isPercentage }: { label: string, value?: number, onChange?: (v: number) => void, disabled?: boolean, isPercentage?: boolean }) {
+function ContractSumInput({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const [text, setText] = useState(() => formatAmountGrouped(value));
+
+  useEffect(() => {
+    setText(formatAmountGrouped(value));
+  }, [value]);
+
+  const handleChange = (raw: string) => {
+    const parsed = parseGroupedAmount(raw);
+    setText(formatAmountGrouped(parsed));
+    onChange(parsed);
+  };
+
   return (
-    <div className="space-y-2">
-      <label className={cn("text-[10px] font-bold uppercase tracking-widest ml-4 transition-colors", "text-[#141414]/20")}>{label}</label>
-      <div className={cn("relative group", disabled && "cursor-not-allowed")}>
-        <span className={cn("absolute left-6 top-1/2 -translate-y-1/2 transition-colors font-mono font-black text-xl", "text-[#141414]/10 group-focus-within:text-[#5A5A40]")}>
-          {isPercentage ? '%' : '₽'}
-        </span>
-        <input 
-          type="number"
-          value={value === 0 ? '' : (value || '')}
-          disabled={disabled}
-          onChange={e => onChange?.(Number(e.target.value))}
-          className={cn(
-            "w-full border-none rounded-[24px] pl-14 pr-6 py-4 transition-all font-mono font-bold text-lg",
-            "bg-[#F5F5F0] text-[#141414] focus:ring-[#5A5A40]/30 hover:bg-[#141414]/5",
-            disabled ? "opacity-60" : ""
+    <div className="flex items-baseline gap-1.5 min-w-0">
+      <input
+        type="text"
+        inputMode="numeric"
+        value={text}
+        onChange={(e) => handleChange(e.target.value)}
+        className={cn(
+          DASHBOARD_CARD_VALUE,
+          'w-full min-w-0 border-0 bg-transparent p-0 text-bg outline-none',
+          'placeholder:text-bg/30 [appearance:textfield]',
+          '[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+        )}
+        placeholder="0"
+      />
+      <span className={cn(DASHBOARD_CARD_UNIT, 'text-bg shrink-0')}>₽</span>
+    </div>
+  );
+}
+
+function FinanceInput({
+  label,
+  value,
+  onChange,
+  disabled,
+  isPercentage,
+  compact,
+  percentField,
+  className,
+  valueColor = 'var(--ink)',
+}: {
+  label: string;
+  value?: number;
+  onChange?: (v: number) => void;
+  disabled?: boolean;
+  isPercentage?: boolean;
+  compact?: boolean;
+  percentField?: boolean;
+  className?: string;
+  valueColor?: string;
+}) {
+  const displayValue =
+    value === undefined || value === null
+      ? ''
+      : isPercentage
+        ? String(value)
+        : formatAmountGrouped(value);
+
+  const labelEl = (
+    <label
+      className={cn(
+        DASHBOARD_CARD_LABEL,
+        'block text-ink-3',
+        percentField && 'whitespace-nowrap'
+      )}
+    >
+      {label}
+    </label>
+  );
+
+  const fieldClass = cn(
+    'rounded-lg border border-line bg-surface font-display tabular-nums transition-all',
+    compact ? 'px-2.5 py-2 text-[16px] leading-none' : 'px-3 py-2.5 text-[16px] leading-none',
+    'focus:border-ochre/40 focus:outline-none focus:ring-2 focus:ring-ochre/15',
+    disabled && 'cursor-default bg-surface-2',
+    '[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+  );
+
+  return (
+    <div className={cn('space-y-1.5', percentField && 'w-[7.25rem] shrink-0', className)}>
+      {labelEl}
+      {disabled && !onChange ? (
+        <div className={cn(fieldClass, 'font-normal')} style={{ color: valueColor }}>
+          {displayValue}
+          {!isPercentage && displayValue !== '' && (
+            <span className="ml-1 text-[14px] opacity-70" style={{ color: valueColor }}>
+              ₽
+            </span>
           )}
-          placeholder=""
+          {isPercentage && displayValue !== '' && (
+            <span className="ml-0.5 text-[14px] opacity-70" style={{ color: valueColor }}>
+              %
+            </span>
+          )}
+        </div>
+      ) : isPercentage ? (
+        <input
+          type="text"
+          inputMode="numeric"
+          maxLength={3}
+          value={value === 0 && onChange ? '' : value ?? ''}
+          disabled={disabled}
+          onChange={(e) => {
+            const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
+            onChange?.(digits ? Number(digits) : 0);
+          }}
+          className={cn(fieldClass, 'w-full text-ink')}
+          style={{ color: valueColor }}
         />
-      </div>
+      ) : (
+        <input
+          type="text"
+          inputMode="numeric"
+          value={value === 0 && onChange ? '' : value ?? ''}
+          disabled={disabled}
+          onChange={(e) => onChange?.(Number(e.target.value.replace(/\D/g, '')) || 0)}
+          className={cn(fieldClass, 'w-full text-ink')}
+        />
+      )}
     </div>
   );
 }

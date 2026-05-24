@@ -6,6 +6,23 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Число с разделителем разрядов пробелом: 12 400 000 */
+export function formatAmountGrouped(amount: number): string {
+  if (!amount) return '';
+  return new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  })
+    .format(amount)
+    .replace(/\u00a0/g, ' ');
+}
+
+export function parseGroupedAmount(raw: string): number {
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return 0;
+  return Number(digits);
+}
+
 export function formatCurrency(amount: number, short: boolean = false) {
   if (short) {
     if (amount >= 1000000) {

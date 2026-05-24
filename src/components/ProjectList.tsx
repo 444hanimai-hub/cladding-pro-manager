@@ -23,6 +23,7 @@ import {
   TrendingDown
 } from 'lucide-react';
 import { formatCurrency, cn, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
+import { getMarginPercent } from '../lib/financeCalculations';
 import CompanySelect from './CompanySelect';
 import { DatePicker } from './ui/DatePicker';
 import UserAvatar from './UserAvatar';
@@ -42,6 +43,8 @@ import {
 
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
 import { Project, AppUser, ProjectTask, ProjectEvent } from '../types';
+import { FinanceCodeGate } from './CodeProtection';
+import { useFinanceAccess } from '../hooks/useFinanceAccess';
 
 function getPeriodRange(type: PeriodType) {
   const now = new Date();
@@ -323,7 +326,19 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
     return false;
   };
 
-  const hasFinanceAccess = isOwner || appUser?.accessDashboard === true;
+  const { canDisplayFinancialAmounts, needsCodeGate, unlock } = useFinanceAccess(appUser);
+
+  if (needsCodeGate) {
+    return (
+      <FinanceCodeGate
+        correctCode={appUser?.financeCode || ''}
+        onSuccess={unlock}
+        moduleName="Проекты"
+      />
+    );
+  }
+
+  const showFinancialInCards = canDisplayFinancialAmounts;
 
   return (
     <motion.div 
@@ -427,7 +442,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
               project={project} 
               allTasks={allTasks}
               allEvents={allEvents}
-              hasFinanceAccess={hasFinanceAccess}
+              showContract={showFinancialInCards}
               onClick={() => onSelectProject(project.id)} 
               canDelete={isOwner}
               onDelete={(e) => deleteProject(project.id, e)}
@@ -443,8 +458,12 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
                   <th className="px-7 py-4 text-eyebrow text-ink-3">Проект</th>
                   <th className="px-7 py-4 text-eyebrow text-ink-3">Заказчик</th>
                   <th className="px-7 py-4 text-eyebrow text-ink-3">Статус</th>
-                  <th className="px-7 py-4 text-eyebrow text-ink-3">Контракт</th>
-                  <th className="px-7 py-4 text-eyebrow text-ink-3 text-right">Маржа</th>
+                  {showFinancialInCards && (
+                    <>
+                      <th className="px-7 py-4 text-eyebrow text-ink-3">Контракт</th>
+                      <th className="px-7 py-4 text-eyebrow text-ink-3 text-right">Маржа</th>
+                    </>
+                  )}
                   <th className="px-7 py-4 text-eyebrow text-ink-3">Куратор</th>
                   <th className="px-7 py-4"></th>
                 </tr>
@@ -452,8 +471,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
               <tbody className="divide-y divide-line">
                 {filteredProjects.map((project) => {
                   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-                  const totalExpenses = (f.expenses || []).reduce((acc, exp) => acc + (exp.amount || 0), 0);
-                  const profitability = f.contractSum > 0 ? ((f.contractSum - totalExpenses) / f.contractSum) * 100 : 0;
+                  const profitability = getMarginPercent(f);
 
                   return (
                     <tr 
@@ -469,15 +487,19 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
                       <td className="px-7 py-5">
                         <StatusPill status={project.status as any} />
                       </td>
-                      <td className="px-7 py-5 text-sm font-display font-medium text-ink">
-                        {formatCurrency(f.contractSum).split(',')[0]} <span className="text-[10px] opacity-40 italic">₽</span>
-                      </td>
-                      <td className={cn(
-                        "px-7 py-5 text-lg font-display text-right",
-                        profitability > 25 ? "text-profit" : profitability > 15 ? "text-ochre" : "text-expense"
-                      )}>
-                        {profitability.toFixed(0)}%
-                      </td>
+                      {showFinancialInCards && (
+                        <>
+                          <td className="px-7 py-5 text-sm font-display font-medium text-ink">
+                            {formatCurrency(f.contractSum).split(',')[0]} <span className="text-[10px] opacity-40 italic">₽</span>
+                          </td>
+                          <td className={cn(
+                            "px-7 py-5 text-lg font-display text-right",
+                            profitability > 25 ? "text-profit" : profitability > 15 ? "text-ochre" : "text-expense"
+                          )}>
+                            {profitability.toFixed(0)}%
+                          </td>
+                        </>
+                      )}
                       <td className="px-7 py-5">
                         <div className="flex items-center gap-2">
                           <UserAvatar 
@@ -519,7 +541,7 @@ function ProjectCard({
   project, 
   allTasks, 
   allEvents,
-  hasFinanceAccess,
+  showContract,
   onClick, 
   canDelete, 
   onDelete
@@ -528,7 +550,7 @@ function ProjectCard({
   project: Project; 
   allTasks: ProjectTask[]; 
   allEvents: ProjectEvent[];
-  hasFinanceAccess: boolean;
+  showContract: boolean;
   onClick: () => void;
   canDelete: boolean;
   onDelete: (e: React.MouseEvent) => void | Promise<void>;
@@ -625,17 +647,19 @@ function ProjectCard({
       </div>
 
       {/* 4.3. Заказчик и Контракт */}
-      <div className="flex justify-between items-end gap-2">
+      <div className={cn('flex justify-between items-end gap-2', !showContract && 'block')}>
         <div className="flex flex-col min-w-0">
           <span className="text-[9.5px] font-semibold text-ink-3 uppercase tracking-[0.14em]">ЗАКАЗЧИК</span>
           <span className="text-[13px] font-semibold text-ink leading-tight mt-0.5 truncate">{project.client}</span>
         </div>
-        <div className="flex flex-col items-end shrink-0">
-          <span className="text-[9.5px] font-semibold text-ink-3 uppercase tracking-[0.14em]">КОНТРАКТ</span>
-          <span className="text-[17px] font-display font-normal text-ink leading-[1.1] mt-0.5 tabular-nums">
-            {formatSumValue(f.contractSum)}
-          </span>
-        </div>
+        {showContract && (
+          <div className="flex flex-col items-end shrink-0">
+            <span className="text-[9.5px] font-semibold text-ink-3 uppercase tracking-[0.14em]">КОНТРАКТ</span>
+            <span className="text-[17px] font-display font-normal text-ink leading-[1.1] mt-0.5 tabular-nums">
+              {formatSumValue(f.contractSum)}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* 4.4. Прогресс */}

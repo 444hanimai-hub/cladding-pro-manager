@@ -20,7 +20,9 @@ import {
   Download
 } from 'lucide-react';
 import { formatCurrency, cn, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
-import CodeProtection from './CodeProtection';
+import { getManagerBonus, getMarginColor, getMarginPercent, getNetProfitAfterAll, getTotalExpenses } from '../lib/financeCalculations';
+import { FinanceCodeGate } from './CodeProtection';
+import { useFinanceAccess } from '../hooks/useFinanceAccess';
 import UserAvatar from './UserAvatar';
 import StatusPill from './StatusPill';
 import { Card } from './ui/Card';
@@ -102,8 +104,8 @@ interface DashboardProps {
 export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProjects, appUser }: DashboardProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isUnlocked, setIsUnlocked] = useState(false);
   const [users, setUsers] = useState<AppUser[]>([]);
+  const { needsCodeGate, unlock } = useFinanceAccess(appUser);
   const [allTasks, setAllTasks] = useState<ProjectTask[]>([]);
   const [allEvents, setAllEvents] = useState<ProjectEvent[]>([]);
 
@@ -212,10 +214,9 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
   const totals = useMemo(() => {
     return filteredProjects.reduce((acc, p) => {
       const f = p.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-      const expenses = (f.expenses || []).reduce((sum, e) => sum + (e.amount || 0), 0);
-      const profit = f.contractSum - expenses;
-      const bonus = profit * (f.managerPercentage || 0) / 100;
-      const netProfit = profit - bonus;
+      const expenses = getTotalExpenses(f);
+      const bonus = getManagerBonus(f);
+      const netProfit = getNetProfitAfterAll(f);
 
       acc.contractSum += f.contractSum;
       acc.expenses += expenses;
@@ -228,10 +229,9 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
   const previousTotals = useMemo(() => {
     return previousProjects.reduce((acc, p) => {
       const f = p.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-      const expenses = (f.expenses || []).reduce((sum, e) => sum + (e.amount || 0), 0);
-      const profit = f.contractSum - expenses;
-      const bonus = profit * (f.managerPercentage || 0) / 100;
-      const netProfit = profit - bonus;
+      const expenses = getTotalExpenses(f);
+      const bonus = getManagerBonus(f);
+      const netProfit = getNetProfitAfterAll(f);
 
       acc.contractSum += f.contractSum;
       acc.expenses += expenses;
@@ -544,15 +544,13 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     </div>
   );
 
-  if (appUser?.requireFinanceCode && !isUnlocked) {
+  if (needsCodeGate) {
     return (
-      <div className="max-w-2xl mx-auto py-12">
-        <CodeProtection 
-          correctCode={appUser.financeCode || ''} 
-          onSuccess={() => setIsUnlocked(true)} 
-          title="Защита модуля Дашборд"
-        />
-      </div>
+      <FinanceCodeGate
+        correctCode={appUser?.financeCode || ''}
+        onSuccess={unlock}
+        moduleName="Дашборд"
+      />
     );
   }
 
@@ -985,10 +983,7 @@ function SummaryCard({ title, value, isDark, isPercentage, trendVal, isPositive,
 
 function ProjectFinancialBlock({ project, onClick, isFirst }: { key?: any; project: any; onClick: () => void; isFirst?: boolean }) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-  const totalExpenses = (f.expenses || []).reduce((acc: number, e: any) => acc + (e.amount || 0), 0);
-  const profit = f.contractSum - totalExpenses;
-  const netProfit = profit - (profit * (f.managerPercentage || 0) / 100);
-  const profitability = f.contractSum > 0 ? (netProfit / f.contractSum) * 100 : 0;
+  const profitability = getMarginPercent(f);
 
   const shippingProgress = getShippingProgress(project);
 
@@ -1012,7 +1007,7 @@ function ProjectFinancialBlock({ project, onClick, isFirst }: { key?: any; proje
     return { main: `${val}`, unit: '₽' };
   };
   const contract = formatSum(f.contractSum);
-  const marginColor = profitability >= 25 ? '#2f5e3f' : profitability >= 10 ? 'var(--ochre)' : 'var(--terracotta)';
+  const marginColor = getMarginColor(profitability);
 
   return (
     <button

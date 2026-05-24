@@ -68,9 +68,20 @@ export default function Settings({ appUser }: { appUser: AppUser | null }) {
   }, []);
 
   const selectedUser = users.find(u => u.uid === selectedUserId);
+
+  const financeCodeRequired = (user: Partial<AppUser> | undefined) =>
+    Boolean(user?.accessDashboard && user?.requireFinanceCode);
+
+  const assertFinanceCodeIfRequired = (user: Partial<AppUser> | undefined): boolean => {
+    if (!financeCodeRequired(user)) return true;
+    if ((user?.financeCode || '').trim()) return true;
+    window.alert('Укажите код доступа к финансам при включённом «Запрашивать код»');
+    return false;
+  };
   
   const handleSaveNewUser = async () => {
     if (!newUser.email || !newUser.displayName) return;
+    if (!assertFinanceCodeIfRequired(newUser)) return;
     
     const normalizedEmail = newUser.email.toLowerCase().trim();
     const tempUid = `temp_${Date.now()}`;
@@ -108,6 +119,10 @@ export default function Settings({ appUser }: { appUser: AppUser | null }) {
   );
 
    const updateUser = async (uid: string, updates: Partial<AppUser>) => {
+    const base = isCreating ? newUser : selectedUser;
+    const merged = { ...base, ...updates };
+    if (!assertFinanceCodeIfRequired(merged)) return;
+
     if (isCreating) {
       setNewUser(prev => ({ ...prev, ...updates }));
     } else {
@@ -287,7 +302,14 @@ export default function Settings({ appUser }: { appUser: AppUser | null }) {
                     <PermissionToggle 
                       label="Дашборд" 
                       isEnabled={isCreating ? (newUser.accessDashboard || false) : (selectedUser?.accessDashboard || false)} 
-                      onChange={(val) => updateUser(selectedUserId!, { accessDashboard: val })}
+                      onChange={(val) => {
+                        const updates: Partial<AppUser> = { accessDashboard: val };
+                        if (!val) {
+                          updates.requireFinanceCode = false;
+                          updates.financeCode = '';
+                        }
+                        updateUser(selectedUserId!, updates);
+                      }}
                     />
                     <PermissionToggle 
                       label="Справочники" 
@@ -304,7 +326,7 @@ export default function Settings({ appUser }: { appUser: AppUser | null }) {
 
                 {(isCreating ? newUser.accessDashboard : selectedUser?.accessDashboard) && (
                   <div className="space-y-4">
-                    <p className={cn("text-[10px] font-bold uppercase tracking-[0.2em]", "text-[#141414]/20")}>Служебные данные</p>
+                    <p className={cn("text-[10px] font-bold uppercase tracking-[0.2em]", "text-[#141414]/20")}>Запрашивать код</p>
                     <div className={cn(
                       "p-6 rounded-2xl space-y-4 border transition-colors",
                       "bg-[#F5F5F0] border-[#141414]/5 shadow-inner"
@@ -313,7 +335,14 @@ export default function Settings({ appUser }: { appUser: AppUser | null }) {
                         label="Запрашивать код" 
                         isEnabled={isCreating ? (newUser.requireFinanceCode || false) : (selectedUser?.requireFinanceCode || false)} 
                         onChange={(val) => {
-                          const updates: any = { requireFinanceCode: val };
+                          if (val) {
+                            const code = (isCreating ? newUser.financeCode : selectedUser?.financeCode)?.trim();
+                            if (!code) {
+                              window.alert('Сначала укажите код доступа к финансам');
+                              return;
+                            }
+                          }
+                          const updates: Partial<AppUser> = { requireFinanceCode: val };
                           if (!val) updates.financeCode = '';
                           updateUser(selectedUserId!, updates);
                         }}
