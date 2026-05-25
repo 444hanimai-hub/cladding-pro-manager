@@ -63,6 +63,7 @@ import ExpenseCategorySelect from './ExpenseCategorySelect';
 import { DatePicker } from './ui/DatePicker';
 import { TimeInput } from './ui/TimeInput';
 import { PortalDropdown } from './ui/PortalDropdown';
+import { generateTrustDeedDocx, downloadBlob, TrustDeedDocxData } from '../lib/generateTrustDeedDocx';
 import { Button } from './ui/Button';
 import { todayLocalISO } from '../lib/dates';
 
@@ -1992,7 +1993,6 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                   <table className="w-full text-left">
                     <thead>
                     <tr className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] border-b border-[#E1D8C5]">
-                      <th className="px-4 py-3 font-bold">№ а/м</th>
                       <th className="px-4 py-3 font-bold">Тип / Номер</th>
                       <th className="px-4 py-3 font-bold">Скан</th>
                       <th className="px-4 py-3 font-bold">Материал / Кол-во</th>
@@ -2002,7 +2002,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                     </tr>
                     </thead>
                     <tbody>
-                    {[...shipments].sort((a, b) => (Number(b.autoNumber) || 0) - (Number(a.autoNumber) || 0)).map((s) => {
+                    {shipments.map((s) => {
                       const isSelected = s.id === selectedShipmentId;
                       const scan = getShipmentScanMeta(s.scanSentToAccounting);
                       return (
@@ -2019,9 +2019,6 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                                       : "hover:bg-[#F5F2E9]/80"
                               )}
                           >
-                            <td className="px-4 py-3.5 align-top">
-                              <span className="text-[13px] font-bold text-ink font-mono">{s.autoNumber || '—'}</span>
-                            </td>
                             <td className="px-4 py-3.5 align-top">
                               <div className="space-y-0.5">
                                 <div className="flex items-center gap-2 flex-wrap">
@@ -2791,40 +2788,10 @@ function FinanceTab({
 }) {
   const [isAdding, setIsAdding] = useState(false);
   const [newExpenseForm, setNewExpenseForm] = useState({
-    date: '',
+    date: new Date().toISOString().split('T')[0],
     category: '',
-    amount: 0,
-    managerPercent: 0,
+    amount: 0
   });
-  const [expenseCategories, setExpenseCategories] = useState<string[]>([]);
-  const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
-  const [categorySearch, setCategorySearch] = useState('');
-  const categoryInputRef = React.useRef<HTMLInputElement>(null);
-  const categoryDropdownRef = React.useRef<HTMLDivElement>(null);
-  const categoryWrapperRef = React.useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'expense_categories'), (snap) => {
-      const names = snap.docs.map(d => (d.data() as any).name as string).filter(Boolean);
-      setExpenseCategories([...new Set(names)].sort());
-    });
-    return () => unsub();
-  }, []);
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    if (!categoryDropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (
-          categoryWrapperRef.current && !categoryWrapperRef.current.contains(e.target as Node)
-      ) {
-        setCategoryDropdownOpen(false);
-        setCategorySearch('');
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [categoryDropdownOpen]);
 
   if (needsCodeGate) {
     return (
@@ -2841,19 +2808,10 @@ function FinanceTab({
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
   const expenses = f.expenses || [];
   const totalExpenses = getTotalExpenses(f);
-
-  // Расходы без бонуса менеджера
-  const expensesWithoutBonus = expenses.filter(
-      (e: any) => e.category?.toLowerCase() !== 'бонус менеджера'
-  );
-  const totalExpensesWithoutBonus = expensesWithoutBonus.reduce((s: number, e: any) => s + (e.amount || 0), 0);
-  const profitAfterExpenses = (f.contractSum || 0) - totalExpensesWithoutBonus;
-
-  // Чистая прибыль = контракт − все расходы включая бонус
-  const netProfit = (f.contractSum || 0) - totalExpenses;
-
-  // Маржа = ceil(чистая прибыль * 100 / сумма контракта)
-  const marginPercent = f.contractSum > 0 ? Math.ceil(netProfit * 100 / f.contractSum) : 0;
+  const profitBeforeBonus = getProfitBeforeBonus(f);
+  const managerBonus = getManagerBonus(f);
+  const netProfitAfterAll = getNetProfitAfterAll(f);
+  const profitability = getMarginPercent(f);
 
   const updateFinance = async (updates: Partial<typeof f>) => {
     try {
@@ -2909,10 +2867,9 @@ function FinanceTab({
       await updateFinance({ expenses: updatedExpenses });
 
       setNewExpenseForm({
-        date: '',
+        date: new Date().toISOString().split('T')[0],
         category: '',
-        amount: 0,
-        managerPercent: 0,
+        amount: 0
       });
       setIsAdding(false);
     } catch (error) {
@@ -2941,7 +2898,7 @@ function FinanceTab({
           className="space-y-5"
       >
         {/* Сводные карточки */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
           <FinanceCard
               label="СУММА КОНТРАКТА"
               subtext="основа расчёта"
@@ -2951,15 +2908,9 @@ function FinanceTab({
               onValueChange={(v) => updateFinance({ contractSum: v })}
           />
           <FinanceCard
-              label="ПРИБЫЛЬ"
-              subtext="после всех расходов"
-              value={profitAfterExpenses}
-              variant="profit"
-          />
-          <FinanceCard
               label="ЧИСТАЯ ПРИБЫЛЬ"
-              subtext="после бонуса менеджера"
-              value={netProfit}
+              subtext="после всех расходов и бонусов"
+              value={netProfitAfterAll}
               variant="profit"
           />
           <FinanceCard
@@ -2971,10 +2922,42 @@ function FinanceTab({
           <FinanceCard
               label="МАРЖА"
               subtext="от контракта"
-              value={marginPercent}
+              value={profitability}
               isPercentage
               variant="margin"
           />
+        </div>
+
+        {/* Бонус менеджера */}
+        <div className="rounded-2xl border border-line bg-surface p-5 shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
+          <h3 className="font-display text-[17px] font-medium text-ink leading-tight mb-4">Бонус менеджера</h3>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <FinanceInput
+                label="ЧИСТАЯ ПРИБЫЛЬ"
+                value={profitBeforeBonus}
+                disabled
+                compact
+                valueColor={FINANCE_VALUE_COLORS.profit}
+                className="min-w-0"
+            />
+            <FinanceInput
+                label="% менеджера"
+                value={f.managerPercentage}
+                onChange={(v) => updateFinance({ managerPercentage: Math.min(999, v) })}
+                disabled={!canEdit}
+                isPercentage
+                compact
+                percentField
+            />
+            <FinanceInput
+                label="СУММА БОНУСА"
+                value={managerBonus}
+                disabled
+                compact
+                valueColor="#b07a2c"
+                className="min-w-0"
+            />
+          </div>
         </div>
 
         {/* Расходы + диаграмма */}
@@ -3014,206 +2997,58 @@ function FinanceTab({
                       exit={{ opacity: 0, height: 0 }}
                       className="overflow-hidden border-b border-[#DED8CC]"
                   >
-                    {(() => {
-                      const isManagerBonus = newExpenseForm.category.toLowerCase() === 'бонус менеджера';
-                      // Чистая прибыль = контракт − все расходы кроме текущего бонуса
-                      const otherExpensesTotal = expenses.reduce((sum: number, e: any) => sum + (e.amount || 0), 0);
-                      const contractSum = f.contractSum || 0;
-                      const profitBase = contractSum - otherExpensesTotal;
-                      const bonusAmount = isManagerBonus && newExpenseForm.managerPercent > 0
-                          ? Math.round(profitBase * newExpenseForm.managerPercent / 100)
-                          : 0;
-                      const effectiveAmount = isManagerBonus ? bonusAmount : newExpenseForm.amount;
+                    <div className="bg-[#F0E8D8] px-4 py-4">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-[180px_1fr_120px_auto] md:items-end">
+                        <div>
+                          <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                            Дата
+                          </label>
+                          <DatePicker
+                              value={newExpenseForm.date || ''}
+                              onChange={(v) => setNewExpenseForm({ ...newExpenseForm, date: v })}
+                              variant="compact"
+                          />
+                        </div>
 
-                      return (
-                          <div className="bg-[#F0E8D8] px-4 py-4">
-                            <div className={cn(
-                                "grid grid-cols-1 gap-3 md:items-end",
-                                isManagerBonus
-                                    ? "md:grid-cols-[180px_1fr_80px_120px_auto]"
-                                    : "md:grid-cols-[180px_1fr_120px_auto]"
-                            )}>
-                              <div>
-                                <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                  Дата
-                                </label>
-                                <DatePicker
-                                    value={newExpenseForm.date || ''}
-                                    onChange={(v) => setNewExpenseForm({ ...newExpenseForm, date: v })}
-                                    variant="compact"
-                                />
-                              </div>
+                        <div>
+                          <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                            Вид расхода
+                          </label>
+                          <ExpenseCategorySelect
+                              value={newExpenseForm.category}
+                              onChange={(val) => setNewExpenseForm({ ...newExpenseForm, category: val })}
+                              placeholder="Выберите категорию..."
+                          />
+                        </div>
 
-                              <div className="relative" ref={categoryWrapperRef}>
-                                <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                  Вид расхода
-                                </label>
-                                <div className="relative">
-                                  <input
-                                      ref={categoryInputRef}
-                                      type="text"
-                                      value={categoryDropdownOpen ? categorySearch : newExpenseForm.category}
-                                      onChange={(e) => {
-                                        setCategorySearch(e.target.value);
-                                        if (!categoryDropdownOpen) setCategoryDropdownOpen(true);
-                                      }}
-                                      onFocus={() => {
-                                        setCategorySearch('');
-                                        setCategoryDropdownOpen(true);
-                                      }}
-                                      placeholder="Выбрать из справочника..."
-                                      className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none focus:ring-0 transition-colors pl-8 pr-8 placeholder:text-ink-4 font-normal"
-                                  />
-                                  <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
-                                  <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-3" />
-                                  {categoryDropdownOpen && categoryWrapperRef.current && (() => {
-                                    const rect = categoryWrapperRef.current.getBoundingClientRect();
-                                    return createPortal(
-                                        <div
-                                            ref={categoryDropdownRef}
-                                            style={{
-                                              position: 'fixed',
-                                              top: rect.bottom + 4,
-                                              left: rect.left,
-                                              width: rect.width,
-                                              minWidth: 220,
-                                              zIndex: 99999,
-                                              maxHeight: 240,
-                                              overflowY: 'auto',
-                                            }}
-                                            className="rounded-xl border border-line bg-white shadow-[0_8px_24px_rgba(48,42,28,0.14)] overflow-hidden"
-                                        >
-                                          {(() => {
-                                            const filtered = expenseCategories.filter(c =>
-                                                c.toLowerCase().includes(categorySearch.toLowerCase())
-                                            );
-                                            return (
-                                                <>
-                                                  {filtered.map(cat => (
-                                                      <button
-                                                          key={cat}
-                                                          type="button"
-                                                          onMouseDown={(e) => {
-                                                            e.preventDefault();
-                                                            setNewExpenseForm({ ...newExpenseForm, category: cat });
-                                                            setCategoryDropdownOpen(false);
-                                                            setCategorySearch('');
-                                                          }}
-                                                          className={cn(
-                                                              "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-surface-2",
-                                                              newExpenseForm.category === cat ? "font-semibold text-ochre" : "text-ink"
-                                                          )}
-                                                      >
-                                                        {newExpenseForm.category === cat && <Check size={12} className="text-ochre shrink-0" />}
-                                                        <span>{cat}</span>
-                                                      </button>
-                                                  ))}
-                                                  {categorySearch && !expenseCategories.some(c => c.toLowerCase() === categorySearch.toLowerCase()) && (
-                                                      <button
-                                                          type="button"
-                                                          onMouseDown={(e) => {
-                                                            e.preventDefault();
-                                                            setNewExpenseForm({ ...newExpenseForm, category: categorySearch });
-                                                            setCategoryDropdownOpen(false);
-                                                            setCategorySearch('');
-                                                          }}
-                                                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-ochre hover:bg-ochre-bg transition-colors border-t border-line"
-                                                      >
-                                                        <Plus size={12} className="shrink-0" />
-                                                        <span>Добавить «{categorySearch}»</span>
-                                                      </button>
-                                                  )}
-                                                  {filtered.length === 0 && !categorySearch && (
-                                                      <div className="px-3 py-3 text-[12px] text-ink-3 text-center">Нет категорий</div>
-                                                  )}
-                                                </>
-                                            );
-                                          })()}
-                                        </div>,
-                                        document.body
-                                    );
-                                  })()}
-                                </div>
-                              </div>
+                        <div>
+                          <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                            Сумма, ₽
+                          </label>
+                          <input
+                              type="number"
+                              value={newExpenseForm.amount || ''}
+                              onChange={(e) =>
+                                  setNewExpenseForm({
+                                    ...newExpenseForm,
+                                    amount: Number(e.target.value),
+                                  })
+                              }
+                              placeholder="0"
+                              className="h-9 w-full rounded-lg border border-transparent bg-[#FBF8F2] px-3 text-[12px] font-medium text-[#302A1C] shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] placeholder:text-[#B8AE9A] focus:border-[#B48444]/40 focus:bg-white focus:outline-none"
+                          />
+                        </div>
 
-                              {isManagerBonus && (
-                                  <div>
-                                    <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                      % менеджера
-                                    </label>
-                                    <input
-                                        type="text"
-                                        inputMode="numeric"
-                                        maxLength={3}
-                                        value={newExpenseForm.managerPercent || ''}
-                                        onChange={(e) => {
-                                          const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
-                                          setNewExpenseForm({ ...newExpenseForm, managerPercent: digits ? Number(digits) : 0 });
-                                        }}
-                                        placeholder="0"
-                                        className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none focus:ring-0 transition-colors placeholder:text-ink-4 font-normal text-center"
-                                    />
-                                  </div>
-                              )}
-
-                              <div>
-                                <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                  Сумма, ₽
-                                </label>
-                                <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={isManagerBonus
-                                        ? (bonusAmount > 0 ? formatAmountGrouped(bonusAmount) : '')
-                                        : (newExpenseForm.amount ? formatAmountGrouped(newExpenseForm.amount) : '')}
-                                    onChange={(e) => {
-                                      if (isManagerBonus) return;
-                                      const parsed = parseGroupedAmount(e.target.value);
-                                      setNewExpenseForm({ ...newExpenseForm, amount: parsed });
-                                    }}
-                                    readOnly={isManagerBonus}
-                                    placeholder={isManagerBonus ? 'авто' : '0'}
-                                    className={cn(
-                                        "w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none focus:ring-0 transition-colors placeholder:text-ink-4 font-normal",
-                                        isManagerBonus && "cursor-default bg-surface-2 text-ink-3"
-                                    )}
-                                />
-                              </div>
-
-                              <button
-                                  type="button"
-                                  onClick={async () => {
-                                    const form = { ...newExpenseForm, amount: effectiveAmount };
-                                    if (!form.category || effectiveAmount <= 0) return;
-                                    try {
-                                      const q = query(collection(db, 'expense_categories'), where('name', '==', form.category));
-                                      const snapshot = await getDocs(q);
-                                      if (snapshot.empty) {
-                                        await addDoc(collection(db, 'expense_categories'), { name: form.category, createdAt: serverTimestamp() });
-                                      }
-                                      const newExpense: any = {
-                                        id: crypto.randomUUID(),
-                                        date: form.date,
-                                        category: form.category,
-                                        amount: effectiveAmount,
-                                      };
-                                      if (isManagerBonus && form.managerPercent > 0) {
-                                        newExpense.managerPercent = form.managerPercent;
-                                      }
-                                      await updateFinance({ expenses: [...expenses, newExpense] });
-                                      setNewExpenseForm({ date: '', category: '', amount: 0, managerPercent: 0 });
-                                      setIsAdding(false);
-                                    } catch (e) { console.error(e); }
-                                  }}
-                                  disabled={!newExpenseForm.category || effectiveAmount <= 0}
-                                  className="rounded-md bg-[#B48444] px-4 py-2 text-[14px] font-semibold text-white shadow-[0_1px_2px_rgba(132,91,37,0.2)] transition-colors hover:bg-[#A6783D] disabled:cursor-not-allowed disabled:opacity-40 whitespace-nowrap"
-                              >
-                                Зафиксировать
-                              </button>
-                            </div>
-                          </div>
-                      );
-                    })()}
+                        <button
+                            type="button"
+                            onClick={handleAddExpense}
+                            disabled={!newExpenseForm.category || newExpenseForm.amount <= 0}
+                            className="h-9 rounded-lg bg-[#B48444] px-4 text-[11px] font-semibold text-white shadow-[0_1px_2px_rgba(132,91,37,0.2)] transition-colors hover:bg-[#A6783D] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Зафиксировать
+                        </button>
+                      </div>
+                    </div>
                   </motion.div>
               )}
             </AnimatePresence>
@@ -3250,14 +3085,17 @@ function FinanceTab({
                       </td>
 
                       <td className="px-4 py-3">
-                        <span className="truncate text-[12.5px] font-medium text-[#302A1C]">
-                          {expense.category || 'Без категории'}
-                          {expense.category?.toLowerCase() === 'бонус менеджера' && (expense as any).managerPercent > 0 && (
-                              <span className="ml-1.5 text-[11px] font-normal text-[#8A8574]">
-                              {(expense as any).managerPercent}%
-                            </span>
-                          )}
-                        </span>
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <span
+                              className="h-2 w-2 shrink-0 rounded-[2px]"
+                              style={{
+                                backgroundColor: getExpenseCategoryColor(expense.category, index),
+                              }}
+                          />
+                          <span className="truncate text-[12.5px] font-medium text-[#302A1C]">
+                            {expense.category || 'Без категории'}
+                          </span>
+                        </div>
                       </td>
 
                       <td className="px-4 py-3 text-right">
@@ -3299,79 +3137,53 @@ function FinanceTab({
           </div>
 
           <div className="xl:col-span-2 rounded-[18px] border border-[#DED8CC] bg-[#F8F3E9] p-5 shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_3px_rgba(48,42,28,0.08)]">
-            <p className={cn(DASHBOARD_CARD_LABEL, 'mb-4 text-[#8A8574]')}>
+            <p className={cn(DASHBOARD_CARD_LABEL, 'mb-4 text-center text-[#8A8574]')}>
               Структура расходов
             </p>
 
-            {expenses.length > 0 ? (() => {
-              const dataMap = expenses.reduce((acc: Record<string, number>, exp) => {
-                acc[exp.category] = (acc[exp.category] || 0) + exp.amount;
-                return acc;
-              }, {});
-              const chartData = Object.entries(dataMap).map(([name, value]) => ({ name, value }));
-              const total = chartData.reduce((s, d) => s + d.value, 0);
-
-              return (
-                  <div className="flex flex-col gap-4">
-                    <div className="h-[200px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                              data={chartData}
-                              dataKey="value"
-                              nameKey="name"
-                              innerRadius={52}
-                              outerRadius={80}
-                              paddingAngle={2}
-                              stroke="none"
-                          >
-                            {chartData.map((entry, index) => (
-                                <Cell
-                                    key={`cell-${entry.name}`}
-                                    fill={getExpenseCategoryColor(entry.name, index)}
-                                />
-                            ))}
-                          </Pie>
-                          <Tooltip
-                              formatter={(value: number) => formatCurrency(value)}
-                              contentStyle={{
-                                borderRadius: 12,
-                                border: '1px solid #DED8CC',
-                                background: '#FBF8F2',
-                                color: '#302A1C',
-                                boxShadow: '0 8px 20px rgba(48,42,28,0.08)',
-                                fontSize: 12,
-                              }}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-
-                    {/* Легенда */}
-                    <div className="flex flex-col gap-1.5">
-                      {chartData.map((entry, index) => {
-                        const color = getExpenseCategoryColor(entry.name, index);
-                        const pct = total > 0 ? ((entry.value / total) * 100).toFixed(1) : '0';
-                        return (
-                            <div key={entry.name} className="flex items-center gap-2">
-                          <span
-                              className="h-2.5 w-2.5 shrink-0 rounded-full"
-                              style={{ backgroundColor: color }}
-                          />
-                              <span className="flex-1 truncate text-[12px] text-[#5a5040]">{entry.name}</span>
-                              <span className="text-[11px] tabular-nums text-[#8A8574]">{pct}%</span>
-                              <span className="text-[12px] font-medium tabular-nums text-[#302A1C]">{formatCurrency(entry.value)}</span>
-                            </div>
-                        );
-                      })}
-                      <div className="mt-1 flex items-center justify-between border-t border-[#DED8CC] pt-1.5">
-                        <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-[#8A8574]">Итого</span>
-                        <span className="text-[13px] font-semibold tabular-nums text-[#302A1C]">{formatCurrency(total)}</span>
-                      </div>
-                    </div>
-                  </div>
-              );
-            })() : (
+            {expenses.length > 0 ? (
+                <div className="h-[260px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                          data={expenses.reduce((acc: any[], exp) => {
+                            const existing = acc.find(item => item.name === exp.category);
+                            if (existing) {
+                              existing.value += exp.amount;
+                            } else {
+                              acc.push({ name: exp.category, value: exp.amount });
+                            }
+                            return acc;
+                          }, [])}
+                          dataKey="value"
+                          nameKey="name"
+                          innerRadius={58}
+                          outerRadius={88}
+                          paddingAngle={2}
+                          stroke="none"
+                      >
+                        {expenses.map((entry: any, index: number) => (
+                            <Cell
+                                key={`expense-cell-${entry.category}-${index}`}
+                                fill={getExpenseCategoryColor(entry.category, index)}
+                            />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                          formatter={(value: number) => formatCurrency(value)}
+                          contentStyle={{
+                            borderRadius: 12,
+                            border: '1px solid #DED8CC',
+                            background: '#FBF8F2',
+                            color: '#302A1C',
+                            boxShadow: '0 8px 20px rgba(48,42,28,0.08)',
+                            fontSize: 12,
+                          }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+            ) : (
                 <div className="flex h-[260px] flex-col items-center justify-center text-center">
                   <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#EFE7D7] text-[#B8AE9A]">
                     <PieChartIcon size={22} strokeWidth={1.8} />
@@ -3389,25 +3201,13 @@ function FinanceTab({
 
 const EXPENSE_CATEGORY_COLORS: Record<string, string> = {
   Логистика: '#b07a2c',
-  Мокап:     '#3b6e52',
-  Образцы:   '#4a6080',
-  Монтаж:    '#a04930',
-  Закупка:   '#6b5c3e',
-  Кладка:    '#7a4f6d',
-  Доставка:  '#4f6b5c',
-  Прочее:    '#8a7a5c',
+  Мокап: '#2d4f35',
+  Образцы: '#3b4a55',
+  Монтаж: '#a04930',
+  Закупка: '#5a6b3c',
 };
 
-const EXPENSE_CATEGORY_FALLBACK = [
-  '#b07a2c', // тёплый янтарь
-  '#3b6e52', // глубокий зелёный
-  '#a04930', // терракота
-  '#4a6080', // стальной синий
-  '#7a4f6d', // приглушённая слива
-  '#6b5c3e', // коричнево-оливковый
-  '#4f7a6b', // серо-бирюзовый
-  '#8a5c5c', // пыльная роза
-];
+const EXPENSE_CATEGORY_FALLBACK = ['#b07a2c', '#2d4f35', '#3b4a55', '#a04930', '#5a6b3c', '#7a7565'];
 
 function getExpenseCategoryColor(category: string, index: number): string {
   return EXPENSE_CATEGORY_COLORS[category] ?? EXPENSE_CATEGORY_FALLBACK[index % EXPENSE_CATEGORY_FALLBACK.length];
@@ -3533,25 +3333,6 @@ function FinanceCard({
                 {subtext}
               </p>
           )}
-        </div>
-    );
-  }
-
-  if (variant === 'margin') {
-    return (
-        <div
-            className="flex min-h-[108px] flex-col gap-2.5 rounded-2xl p-[18px_20px] relative overflow-hidden"
-            style={{
-              background: 'linear-gradient(135deg, #F5E9CC 0%, #EDD99A 100%)',
-              border: '1px solid #DFC97A',
-            }}
-        >
-          <p className={DASHBOARD_CARD_LABEL} style={{ color: '#8a6a1a' }}>{label}</p>
-          <div className="flex items-baseline gap-1.5 min-w-0">
-            <span className={DASHBOARD_CARD_VALUE} style={{ color: '#6b4f10' }}>{num}</span>
-            <span className={DASHBOARD_CARD_UNIT} style={{ color: '#8a6a1a' }}>{unit}</span>
-          </div>
-          {subtext && <p className="text-[11.5px] mt-auto" style={{ color: '#a07c28' }}>{subtext}</p>}
         </div>
     );
   }
@@ -4247,29 +4028,51 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
   const [isAdding, setIsAdding] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState<Partial<TrustDeed>>({});
-  const [allTrustDeeds, setAllTrustDeeds] = useState<any[]>([]);
 
   const selectedDeed = trustDeeds.find(d => d.id === selectedDeedId);
 
-  // Load all trust deeds across all projects for cross-project numbering
-  useEffect(() => {
-    const fetchAll = async () => {
-      try {
-        const projectsSnap = await getDocs(collection(db, 'projects'));
-        const all: any[] = [];
-        for (const projectDoc of projectsSnap.docs) {
-          const deedsSnap = await getDocs(collection(db, 'projects', projectDoc.id, 'trust_deeds'));
-          deedsSnap.docs.forEach(d => all.push({ ...d.data(), id: d.id }));
-        }
-        setAllTrustDeeds(all);
-      } catch (e) { console.error(e); }
+  const handleGenerateDeed = async (deed: TrustDeed) => {
+    // Берём поставщика из карточки материала проекта
+    const mat = project.materials?.find(m => m.id === deed.materialId || m.materialName === deed.materialName);
+    const materialSupplier = (mat as any)?.supplierName || deed.supplierName || '';
+
+    const data: TrustDeedDocxData = {
+      number: deed.number,
+      issueDate: formatDateToDisplay(deed.issueDate),
+      expiryDate: formatDateToDisplay(deed.expiryDate),
+      organization: 'ООО "АРХИХАБ", ИНН 1655466404, КПП 165501001, 420021, Республика Татарстан, г. Казань, ул. Николая Столбова, д. 1/3, пом. 1014',
+      driverName: deed.driverName || '',
+      driverPosition: '',
+      driverPassportSeries: deed.driverPassportSeries || '',
+      driverPassportNumber: deed.driverPassportNumber || '',
+      driverPassportIssuedBy: (deed as any).driverPassportIssuedBy || '',
+      driverPassportIssuedDate: formatDateToDisplay((deed as any).driverPassportIssuedDate),
+      supplierName: materialSupplier,
+      accountNumber: deed.accountNumber || '',
+      accountDate: formatDateToDisplay((deed as any).accountDate),
+      bankAccount: '',
+      bankName: '',
+      materialName: deed.materialName || '',
+      materialUnit: 'Шт.',
+      quantity: String(deed.quantity || ''),
+      quantityText: '',
+      headName: 'Аухадуллина Д.Н.',
+      chiefAccountantName: 'Аухадуллина Д.Н.',
     };
-    fetchAll();
-  }, [trustDeeds.length]);
+    try {
+      const blob = await generateTrustDeedDocx(data);
+      downloadBlob(blob, `Доверенность_${deed.number}.docx`);
+    } catch (e) {
+      console.error('Ошибка генерации документа:', e);
+    }
+  };
+
+  const allTrustDeeds: any[] = [];
 
   const getNextNumber = () => {
-    if (allTrustDeeds.length === 0) return "1";
-    return (Math.max(...allTrustDeeds.map(d => parseInt(d.number) || 0)) + 1).toString();
+    if (allTrustDeeds.length === 0 && trustDeeds.length === 0) return "1";
+    const all = [...allTrustDeeds, ...trustDeeds];
+    return (Math.max(...all.map(d => parseInt(d.number) || 0)) + 1).toString();
   };
 
   const addExpiryWeek = (issueDate: string) => {
@@ -4328,6 +4131,12 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
     }
   };
 
+  const handleSaveAndGenerate = async () => {
+    await handleSave();
+    // Генерируем документ по текущим данным формы
+    await handleGenerateDeed(formData as TrustDeed);
+  };
+
   const handleDelete = async (id: string) => {
     if (!canEdit || !window.confirm('Вы уверены, что хотите удалить эту доверенность?')) return;
     try {
@@ -4340,7 +4149,6 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
 
   const sortedTrustDeeds = [...trustDeeds].sort((a, b) => (Number(b.number) || 0) - (Number(a.number) || 0));
 
-  // Auto-select first deed on load / when list changes
   useEffect(() => {
     setSelectedDeedId(prev => {
       if (sortedTrustDeeds.length === 0) return null;
@@ -4370,12 +4178,12 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
                   <table className="w-full text-left">
                     <thead>
                     <tr className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] border-b border-[#E1D8C5]">
-                      <th className="px-4 py-3 font-bold">№</th>
-                      <th className="px-4 py-3 font-bold">Выдана</th>
-                      <th className="px-4 py-3 font-bold">Действует до</th>
+                      <th className="px-4 py-3 font-bold w-10">№</th>
+                      <th className="px-2 py-3 font-bold w-24">Выдана</th>
+                      <th className="px-2 py-3 font-bold w-24">До</th>
                       <th className="px-4 py-3 font-bold">Водитель</th>
                       <th className="px-4 py-3 font-bold">Перевозчик</th>
-                      <th className="px-4 py-3 font-bold text-right">Кол-во</th>
+                      <th className="px-4 py-3 font-bold text-right w-36">Кол-во</th>
                       <th className="w-8 px-2 py-3" />
                     </tr>
                     </thead>
@@ -4395,11 +4203,15 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
                               <span className="text-[11px] text-ink-4 font-mono mr-0.5">№</span>
                               <span className="text-[13px] font-bold text-ink">{deed.number}</span>
                             </td>
-                            <td className="px-4 py-3.5"><span className="text-[12px] font-mono text-ink-3">{deed.issueDate ? formatDateToDisplay(deed.issueDate) : '—'}</span></td>
-                            <td className="px-4 py-3.5"><span className="text-[12px] font-mono text-ink-3">{deed.expiryDate ? formatDateToDisplay(deed.expiryDate) : '—'}</span></td>
-                            <td className="px-4 py-3.5"><span className="text-[12px] font-medium text-ink">{deed.driverName?.split(' ')[0] || '—'}</span></td>
+                            <td className="px-2 py-3.5"><span className="text-[11px] font-mono text-ink-3 whitespace-nowrap">{deed.issueDate ? formatDateToDisplay(deed.issueDate) : '—'}</span></td>
+                            <td className="px-2 py-3.5"><span className="text-[11px] font-mono text-ink-3 whitespace-nowrap">{deed.expiryDate ? formatDateToDisplay(deed.expiryDate) : '—'}</span></td>
+                            <td className="px-4 py-3.5"><span className="text-[12px] font-medium text-ink">{deed.driverName || '—'}</span></td>
                             <td className="px-4 py-3.5"><span className="text-[12px] text-ink-3">{deed.carrierName || '—'}</span></td>
-                            <td className="px-4 py-3.5 text-right"><span className="text-[12px] font-mono font-semibold text-ink">{deed.quantity?.toLocaleString() || '—'}</span></td>
+                            <td className="px-4 py-3.5 text-right"><span className="text-[12px] font-mono font-semibold text-ink">{deed.quantity ? (() => {
+                              const mat = project.materials?.find(m => m.id === deed.materialId || m.materialName === deed.materialName);
+                              const unit = (mat as any)?.unitName || '';
+                              return `${deed.quantity.toLocaleString('ru-RU')}${unit ? ' ' + unit : ''}`;
+                            })() : '—'}</span></td>
                             <td className="px-2 py-3.5 align-middle text-ink-4">
                               <ChevronRight size={14} className={cn("transition-opacity", isSelected ? "opacity-80" : "opacity-30")} />
                             </td>
@@ -4411,7 +4223,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
                 </div>
               </div>
 
-              {/* Detail card — 2/5 width, ShipmentDetailPanel style */}
+              {/* Detail card — 2/5 width */}
               {selectedDeed ? (
                   <div className="lg:col-span-2 w-full self-start rounded-2xl border border-line bg-surface shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden flex flex-col max-h-[75vh]">
                     <div className="shrink-0 px-4 pt-3.5 pb-3 border-b border-[#E8E4DC] bg-[#FCF9F2]">
@@ -4440,15 +4252,19 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
                           <ShipmentDetailField label="Действует до" value={selectedDeed.expiryDate ? formatDateToDisplay(selectedDeed.expiryDate) : undefined} showDivider={false} />
                         </div>
                       </div>
-
                       <div>
                         <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">Груз</h5>
                         <div>
-                          <ShipmentDetailField label="Материал" value={selectedDeed.materialName} />
-                          <ShipmentDetailField label="Количество" value={selectedDeed.quantity ? `${selectedDeed.quantity?.toLocaleString()} шт` : undefined} showDivider={false} />
+                          <ShipmentDetailField label="Материал" value={(() => {
+                            const mat = project.materials?.find(m => m.id === selectedDeed.materialId || m.materialName === selectedDeed.materialName);
+                            const supplier = (mat as any)?.supplierName;
+                            return selectedDeed.materialName
+                                ? (supplier ? `${selectedDeed.materialName} · ${supplier}` : selectedDeed.materialName)
+                                : undefined;
+                          })()} />
+                          <ShipmentDetailField label="Количество" value={selectedDeed.quantity ? `${selectedDeed.quantity.toLocaleString('ru-RU')} шт` : undefined} showDivider={false} />
                         </div>
                       </div>
-
                       <div>
                         <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">Логистика</h5>
                         <div>
@@ -4458,7 +4274,6 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
                           <ShipmentDetailField label="Ставка" value={selectedDeed.rate ? formatCurrency(selectedDeed.rate) : undefined} showDivider={false} />
                         </div>
                       </div>
-
                       <div>
                         <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">Кому</h5>
                         <div>
@@ -4472,7 +4287,10 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
                     </div>
 
                     <div className="px-4 py-3 border-t border-[#E8E4DC] bg-[#FCF9F2] shrink-0">
-                      <button className="w-full h-9 rounded-md font-semibold text-[12px] flex items-center justify-center gap-2 bg-[#B48444] text-white hover:bg-[#A6783D] transition-colors">
+                      <button
+                          onClick={() => handleGenerateDeed(selectedDeed)}
+                          className="w-full h-9 rounded-md font-semibold text-[12px] flex items-center justify-center gap-2 bg-[#B48444] text-white hover:bg-[#A6783D] transition-colors"
+                      >
                         <Download size={13} /> Сформировать документ
                       </button>
                     </div>
@@ -4486,14 +4304,14 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
               )}
             </div>
         ) : (
-            <div className={cn("rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden")}>
+            <div className="rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3">
                 <h3 className="text-[14px] font-serif font-medium flex items-center gap-2 text-ink">
                   Реестр доверенностей <span className="text-[11px] font-serif opacity-40">· 0</span>
                 </h3>
               </div>
-              <div className={cn("py-7 px-5 m-4 border border-dashed rounded-2xl flex flex-col items-center justify-center gap-3.5", "border-line bg-transparent")}>
-                <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", "bg-white border border-line text-ink-3 shadow-sm")}>
+              <div className="py-7 px-5 m-4 border border-dashed rounded-2xl flex flex-col items-center justify-center gap-3.5 border-line bg-transparent">
+                <div className="w-9 h-9 rounded-full flex items-center justify-center bg-white border border-line text-ink-3 shadow-sm">
                   <FileText size={16} />
                 </div>
                 <div className="text-center space-y-0.5">
@@ -4514,7 +4332,6 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
               <TrustDeedModal
                   formData={formData}
                   setFormData={(data: Partial<TrustDeed>) => {
-                    // Auto-update expiryDate when issueDate changes
                     if (data.issueDate !== formData.issueDate && data.issueDate) {
                       setFormData({ ...data, expiryDate: addExpiryWeek(data.issueDate) });
                     } else {
@@ -4523,6 +4340,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
                   }}
                   onClose={() => { setIsAdding(false); setFormData({}); }}
                   onSave={handleSave}
+                  onSaveAndGenerate={handleSaveAndGenerate}
                   directories={directories}
                   project={project}
                   isEditing={isEditing}
@@ -4533,6 +4351,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
   );
 }
 
+
 function TrustInfoField({ label, value }: { label: string, value?: string }) {
   return (
       <div className="space-y-1">
@@ -4542,7 +4361,8 @@ function TrustInfoField({ label, value }: { label: string, value?: string }) {
   );
 }
 
-function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, project, isEditing }: { formData: Partial<TrustDeed> & { accountDate?: string; driverPassportIssuedBy?: string; driverPassportIssuedDate?: string }, setFormData: any, onClose: () => void, onSave: () => void, directories: any, project: Project, isEditing: boolean }) {
+
+function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGenerate, directories, project, isEditing }: { formData: Partial<TrustDeed> & { accountDate?: string; driverPassportIssuedBy?: string; driverPassportIssuedDate?: string }, setFormData: any, onClose: () => void, onSave: () => void, onSaveAndGenerate: () => void, directories: any, project: Project, isEditing: boolean }) {
   const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
   const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
   const sectionLabel = "text-[10px] font-bold uppercase tracking-[0.16em] text-[#A67C3C] border-b border-[#A67C3C]/10 pb-1.5";
@@ -4550,7 +4370,7 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
   const materialOptions = (project.materials || []).map(m => ({
     id: m.id,
     name: m.materialName,
-    sub: m.supplierName || '',
+    sub: (m as any).supplierName || '',
   }));
 
   const driverOptions = (directories.drivers || []).map((d: any) => ({ id: d.id, name: d.name }));
@@ -4564,7 +4384,6 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
             exit={{ opacity: 0, scale: 0.96, y: 12 }}
             className="relative w-full max-w-2xl bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
         >
-          {/* Header */}
           <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
             <div>
               <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
@@ -4577,10 +4396,7 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
             </button>
           </div>
 
-          {/* Form */}
           <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
-
-            {/* Строка 1: Номер, Дата выдачи, Действует до */}
             <div className="grid grid-cols-3 gap-4">
               <div>
                 <label className={labelClass}>Номер</label>
@@ -4596,7 +4412,6 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
               </div>
             </div>
 
-            {/* Строка 2: Материал + Количество */}
             <div>
               <h3 className={sectionLabel}>Груз</h3>
               <div className="mt-3 grid grid-cols-[1fr_100px] gap-4">
@@ -4617,12 +4432,21 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
                 </div>
                 <div>
                   <label className={labelClass}>Количество</label>
-                  <input type="number" value={formData.quantity || ''} onChange={e => setFormData({...formData, quantity: Number(e.target.value)})} className={inputClass} placeholder="0" />
+                  <input
+                      type="text"
+                      inputMode="numeric"
+                      value={formData.quantity ? formData.quantity.toLocaleString('ru-RU') : ''}
+                      onChange={e => {
+                        const raw = e.target.value.replace(/\s/g, '').replace(/[^\d]/g, '');
+                        setFormData({...formData, quantity: raw ? Number(raw) : 0});
+                      }}
+                      className={inputClass}
+                      placeholder="0"
+                  />
                 </div>
               </div>
             </div>
 
-            {/* Логистика */}
             <div>
               <h3 className={sectionLabel}>Логистика</h3>
               <div className="mt-3 space-y-4">
@@ -4641,7 +4465,6 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
                       inputHeight="h-9"
                   />
                 </div>
-                {/* Счёт №, от (дата), Ставка */}
                 <div className="grid grid-cols-[140px_130px_1fr] gap-3">
                   <div>
                     <label className={labelClass}>Счёт №</label>
@@ -4653,17 +4476,25 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
                   </div>
                   <div>
                     <label className={labelClass}>Ставка, ₽</label>
-                    <input type="number" value={formData.rate || ''} onChange={e => setFormData({...formData, rate: Number(e.target.value)})} className={inputClass} placeholder="0" />
+                    <input
+                        type="text"
+                        inputMode="numeric"
+                        value={formData.rate ? formData.rate.toLocaleString('ru-RU') : ''}
+                        onChange={e => {
+                          const raw = e.target.value.replace(/\s/g, '').replace(/[^\d]/g, '');
+                          setFormData({...formData, rate: raw ? Number(raw) : 0});
+                        }}
+                        className={inputClass}
+                        placeholder="0"
+                    />
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Кому */}
             <div>
               <h3 className={sectionLabel}>Кому</h3>
               <div className="mt-3 space-y-4">
-                {/* ФИО + Серия + Номер в одну строку */}
                 <div className="grid grid-cols-[1fr_80px_100px] gap-3">
                   <div>
                     <label className={labelClass}>ФИО водителя</label>
@@ -4697,7 +4528,6 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
                     <input type="text" maxLength={6} value={formData.driverPassportNumber || ''} onChange={e => setFormData({...formData, driverPassportNumber: e.target.value})} className={inputClass} placeholder="000000" />
                   </div>
                 </div>
-                {/* Кем выдан + Когда */}
                 <div className="grid grid-cols-[1fr_130px] gap-4">
                   <div>
                     <label className={labelClass}>Кем выдан</label>
@@ -4710,15 +4540,13 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
                 </div>
               </div>
             </div>
-
           </div>
 
-          {/* Footer */}
           <div className="px-6 py-4 border-t border-line flex flex-col sm:flex-row items-center justify-end gap-3 shrink-0 bg-surface-2/30">
             <button onClick={onClose} className="w-full sm:w-auto inline-flex items-center justify-center h-9 px-4 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
               Отмена
             </button>
-            <button onClick={onSave} className="w-full sm:w-auto inline-flex items-center justify-center gap-2 h-9 px-4 rounded-md text-[13px] font-semibold border border-line text-ink-3 hover:bg-surface-2 transition-colors">
+            <button onClick={onSaveAndGenerate} className="w-full sm:w-auto inline-flex items-center justify-center gap-2 h-9 px-4 rounded-md text-[13px] font-semibold border border-line text-ink-3 hover:bg-surface-2 transition-colors">
               <Download size={14} /> Сохранить и сформировать
             </button>
             <button onClick={onSave} className="w-full sm:w-auto inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors">
@@ -4729,6 +4557,7 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, directories, p
       </div>
   );
 }
+
 function StatusBadge({ status, className }: { status: string, className?: string }) {
   const styles = {
     lead: 'bg-[#16222c] text-[#4b7095]',
