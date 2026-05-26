@@ -1093,6 +1093,8 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                                 setShowAddSupplierContact(false);
                             }}
                             placeholder="Выбрать компанию-поставщика..."
+                            companyType="Поставщик"
+                            onCreateCompany={{ companyType: 'Поставщик' }}
                         />
 
                         {/* Контактные лица */}
@@ -2545,12 +2547,23 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
         }
     };
 
+    const roleToCompanyType = (r: string): string => {
+        switch (r) {
+            case 'client':              return 'Заказчик';
+            case 'generalContractor':   return 'Генподрядчик';
+            case 'subcontractor':       return 'Подрядчик';
+            case 'architect':           return 'Архитектор';
+            default:                    return '';
+        }
+    };
+
     const handleSave = async () => {
         try {
             let finalCompanyId = companyId;
             if (!finalCompanyId && companyName) {
                 const companyRef = await addDoc(collection(db, 'companies'), {
                     name: companyName,
+                    companyType: roleToCompanyType(role),
                     managerId: auth.currentUser?.uid,
                     createdAt: serverTimestamp()
                 });
@@ -2644,6 +2657,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                                     setIsChangingCompany(false);
                                 }}
                                 placeholder="Поиск по справочнику..."
+                                companyType={roleToCompanyType(role)}
                             />
                         )}
                     </div>
@@ -4146,37 +4160,66 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
             ? `projects/${project.id}/trust_deeds/${formData.id}`
             : `projects/${project.id}/trust_deeds`;
         try {
+            // ── Синхронизация водителя со справочником ────────────────────────────
+            let driverId = formData.driverId || '';
+            const driverPayload: any = {};
+            if (formData.driverPassportSeries)     driverPayload.passportSeries     = formData.driverPassportSeries;
+            if (formData.driverPassportNumber)     driverPayload.passportNumber     = formData.driverPassportNumber;
+            if (formData.driverPassportIssuedBy)   driverPayload.passportIssuedBy   = formData.driverPassportIssuedBy;
+            if (formData.driverPassportIssuedDate) driverPayload.passportIssuedDate = formData.driverPassportIssuedDate;
+            if ((formData as any).driverPhone)     driverPayload.phone              = (formData as any).driverPhone;
+
+            if (formData.driverName) {
+                if (driverId) {
+                    // Водитель выбран из справочника — обновляем его данные
+                    if (Object.keys(driverPayload).length > 0) {
+                        await updateDoc(doc(db, 'drivers', driverId), driverPayload).catch(console.error);
+                    }
+                } else {
+                    // Новый водитель — создаём запись в справочнике
+                    const newDriverRef = await addDoc(collection(db, 'drivers'), {
+                        name: formData.driverName,
+                        ...driverPayload,
+                        createdAt: serverTimestamp(),
+                    });
+                    driverId = newDriverRef.id;
+                }
+            }
+
+            // Обновляем formData с актуальным driverId перед сохранением доверенности
+            const dataToSave = { ...formData, driverId };
+
             if (isEditing && formData.id) {
                 await updateDoc(doc(db, 'projects', project.id, 'trust_deeds', formData.id), {
-                    ...formData, updatedAt: serverTimestamp()
+                    ...dataToSave, updatedAt: serverTimestamp()
                 });
             } else {
                 // Сохраняем доверенность
                 const deedRef = await addDoc(collection(db, 'projects', project.id, 'trust_deeds'), {
-                    ...formData, createdAt: serverTimestamp()
+                    ...dataToSave, createdAt: serverTimestamp()
                 });
 
                 // Автоматически создаём строку в таблице отгрузок
                 const existingShipments = project.shipments || [];
                 const mat = project.materials?.find(
-                    m => m.id === formData.materialId || m.materialName === formData.materialName
+                    m => m.id === dataToSave.materialId || m.materialName === dataToSave.materialName
                 );
                 const matLabel = mat
                     ? `${mat.materialName}${(mat as any).supplierName ? ' ' + (mat as any).supplierName : ''}`
-                    : formData.materialName || '';
+                    : dataToSave.materialName || '';
 
                 const newShipment: any = {
                     id: crypto.randomUUID(),
                     autoNumber: String(existingShipments.length + 1),
                     trustDeedId: deedRef.id,
-                    trustDeedNumber: formData.number || '',
-                    poaNumber: formData.number || '',
+                    trustDeedNumber: dataToSave.number || '',
+                    poaNumber: dataToSave.number || '',
                     materialName: matLabel,
-                    materialId: formData.materialId || '',
-                    quantity: formData.quantity || 0,
-                    carryingCost: formData.rate || 0,
+                    materialId: dataToSave.materialId || '',
+                    quantity: dataToSave.quantity || 0,
+                    carryingCost: dataToSave.rate || 0,
                     totalCarryingCost: 0,
-                    carrierName: formData.carrierName || '',
+                    carrierName: dataToSave.carrierName || '',
                     docType: 'upd',
                     incomingUPD: '',
                     outgoingUPD: '',
@@ -4430,7 +4473,7 @@ function TrustInfoField({ label, value }: { label: string, value?: string }) {
 }
 
 
-function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGenerate, directories, project, isEditing }: { formData: Partial<TrustDeed> & { accountDate?: string; driverPassportIssuedBy?: string; driverPassportIssuedDate?: string }, setFormData: any, onClose: () => void, onSave: () => void, onSaveAndGenerate: () => void, directories: any, project: Project, isEditing: boolean }) {
+function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGenerate, directories, project, isEditing }: { formData: Partial<TrustDeed> & { accountDate?: string; driverPassportIssuedBy?: string; driverPassportIssuedDate?: string; driverPhone?: string }, setFormData: any, onClose: () => void, onSave: () => void, onSaveAndGenerate: () => void, directories: any, project: Project, isEditing: boolean }) {
     const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
     const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
     const sectionLabel = "text-[10px] font-bold uppercase tracking-[0.16em] text-[#A67C3C] border-b border-[#A67C3C]/10 pb-1.5";
@@ -4527,7 +4570,11 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                                         const carrier = (directories.carriers || []).find((c: any) => c.name === v);
                                         setFormData({...formData, carrierName: v, carrierId: carrier?.id || ''});
                                     }}
-                                    onAdd={async () => {}}
+                                    onAdd={async (name) => {
+                                        const ref = await addDoc(collection(db, 'carriers'), { name, createdAt: serverTimestamp() });
+                                        await addDoc(collection(db, 'companies'), { name, companyType: 'Перевозчик', createdAt: serverTimestamp() });
+                                        setFormData({...formData, carrierName: name, carrierId: ref.id});
+                                    }}
                                     placeholder="Выбрать перевозчика..."
                                     iconType="carrier"
                                     inputHeight="h-9"
@@ -4579,6 +4626,7 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                                                 driverPassportNumber: driver?.passportNumber || formData.driverPassportNumber || '',
                                                 driverPassportIssuedBy: driver?.passportIssuedBy || formData.driverPassportIssuedBy || '',
                                                 driverPassportIssuedDate: driver?.passportIssuedDate || formData.driverPassportIssuedDate || '',
+                                                driverPhone: driver?.phone || formData.driverPhone || '',
                                             });
                                         }}
                                         onAdd={async () => {}}
@@ -4596,7 +4644,7 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                                     <input type="text" maxLength={6} value={formData.driverPassportNumber || ''} onChange={e => setFormData({...formData, driverPassportNumber: e.target.value})} className={inputClass} placeholder="000000" />
                                 </div>
                             </div>
-                            <div className="grid grid-cols-[1fr_130px] gap-4">
+                            <div className="grid grid-cols-[1fr_130px_130px] gap-3">
                                 <div>
                                     <label className={labelClass}>Кем выдан</label>
                                     <input type="text" value={formData.driverPassportIssuedBy || ''} onChange={e => setFormData({...formData, driverPassportIssuedBy: e.target.value})} className={inputClass} placeholder="Наименование органа" />
@@ -4604,6 +4652,10 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                                 <div>
                                     <label className={labelClass}>Когда выдан</label>
                                     <DatePicker value={formData.driverPassportIssuedDate || ''} onChange={v => setFormData({...formData, driverPassportIssuedDate: v})} variant="compact" className="[&_input]:h-9" />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Телефон</label>
+                                    <input type="text" value={formData.driverPhone || ''} onChange={e => setFormData({...formData, driverPhone: e.target.value})} className={inputClass} placeholder="+7..." />
                                 </div>
                             </div>
                         </div>
