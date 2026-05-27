@@ -159,13 +159,8 @@ export default function App() {
             setAppUser({ uid: snap.id, ...data });
             
             // Ensure owner always has full access
-            if (user.email === '444hanimai@gmail.com' && (
-              !data.accessDashboard || !data.fullProjectAccess || !data.accessDirectories || !data.accessSettings
-            )) {
-              updateDoc(doc(db, 'users', user.uid), { 
-                accessDashboard: true,
-                fullProjectAccess: true,
-                accessDirectories: true,
+            if (user.email === '444hanimai@gmail.com' && !data.accessSettings) {
+              updateDoc(doc(db, 'users', user.uid), {
                 accessSettings: true
               });
             }

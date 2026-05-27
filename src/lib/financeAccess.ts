@@ -14,16 +14,17 @@ export function canSeeFinancialData(user: AppUser | null | undefined): boolean {
   return user.accessDashboard === true;
 }
 
-/** Нужно вводить код перед показом сумм */
+/** Нужно вводить код перед показом сумм.
+ *  Bypass по email НЕ применяется — владелец тоже вводит код если он включён.
+ */
 export function requiresFinanceCode(user: AppUser | null | undefined): boolean {
   if (!user || !canSeeFinancialData(user)) return false;
-  if (isFinanceBypassUser(user)) return false;
-  return user.requireFinanceCode === true;
+  return user.requireFinanceCode === true && Boolean(user.financeCode?.trim());
 }
 
 export function canDisplayFinancialAmounts(
-  user: AppUser | null | undefined,
-  isUnlocked: boolean
+    user: AppUser | null | undefined,
+    isUnlocked: boolean
 ): boolean {
   if (!canSeeFinancialData(user)) return false;
   if (!requiresFinanceCode(user)) return true;
@@ -47,16 +48,12 @@ export function writeFinanceUnlocked(uid: string | undefined): void {
   if (!uid) return;
   try {
     sessionStorage.setItem(getFinanceUnlockStorageKey(uid), '1');
-  } catch {
-    /* sessionStorage недоступен */
-  }
+  } catch { /* sessionStorage недоступен */ }
 }
 
 export function clearFinanceUnlocked(uid: string | undefined): void {
   if (!uid) return;
   try {
     sessionStorage.removeItem(getFinanceUnlockStorageKey(uid));
-  } catch {
-    /* sessionStorage недоступен */
-  }
+  } catch { /* sessionStorage недоступен */ }
 }

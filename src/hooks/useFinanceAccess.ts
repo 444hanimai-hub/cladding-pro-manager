@@ -4,16 +4,17 @@ import {
   canDisplayFinancialAmounts,
   canSeeFinancialData,
   clearFinanceUnlocked,
-  readFinanceUnlocked,
   requiresFinanceCode,
   writeFinanceUnlocked,
 } from '../lib/financeAccess';
 
 export function useFinanceAccess(appUser: AppUser | null | undefined) {
-  const [isUnlocked, setIsUnlocked] = useState(() => readFinanceUnlocked(appUser?.uid));
+  // Всегда стартуем с false — код запрашивается при каждом монтировании компонента
+  const [isUnlocked, setIsUnlocked] = useState(false);
 
+  // При смене пользователя сбрасываем
   useEffect(() => {
-    setIsUnlocked(readFinanceUnlocked(appUser?.uid));
+    setIsUnlocked(false);
   }, [appUser?.uid]);
 
   const unlock = useCallback(() => {
@@ -26,14 +27,12 @@ export function useFinanceAccess(appUser: AppUser | null | undefined) {
     setIsUnlocked(false);
   }, [appUser?.uid]);
 
-  const unlocked = isUnlocked;
-
   return {
     canSeeFinancialData: canSeeFinancialData(appUser),
     requiresFinanceCode: requiresFinanceCode(appUser),
-    canDisplayFinancialAmounts: canDisplayFinancialAmounts(appUser, unlocked),
-    needsCodeGate: requiresFinanceCode(appUser) && !unlocked,
-    isUnlocked: unlocked,
+    canDisplayFinancialAmounts: canDisplayFinancialAmounts(appUser, isUnlocked),
+    needsCodeGate: requiresFinanceCode(appUser) && !isUnlocked,
+    isUnlocked,
     unlock,
     lock,
   };

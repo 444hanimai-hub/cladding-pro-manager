@@ -191,11 +191,9 @@ export default function ProjectDetail({
         };
     }, []);
 
-    const isOwner = appUser?.email === '444hanimai@gmail.com';
-    const canEdit = isOwner ||
-        appUser?.fullProjectAccess === true ||
+    const canEdit = appUser?.fullProjectAccess === true ||
         appUser?.projectsAccess?.[projectId] === 'edit' ||
-        project?.leadManagerId === auth.currentUser?.uid;
+        project?.leadManagerId === appUser?.uid;
 
     const {
         canSeeFinancialData,
@@ -864,7 +862,7 @@ function PersonalInfoTab({ project, canEdit, users }: { project: Project, canEdi
                 </div>
 
                 {/* Документы */}
-                <ProjectDocuments projectId={project.id} />
+                <ProjectDocuments projectId={project.id} canEdit={canEdit} />
             </div>
 
             {/* Правая колонка: Участники проекта */}
@@ -1838,7 +1836,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                             <span className="text-[11px] font-serif opacity-40">· {materials.length}</span>
                         </h3>
                     </div>
-                    {materials.length > 0 && (
+                    {materials.length > 0 && canEdit && (
                         <Button
                             variant="ochre"
                             size="sm"
@@ -1893,7 +1891,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                                             </div>
 
                                             <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center shrink-0">
-                                                <button
+                                                {canEdit && <button
                                                     onClick={() => {
                                                         setEditingMaterialId(m.id);
                                                         setIsAddingMaterial(true);
@@ -1905,7 +1903,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                                                     title="Редактировать"
                                                 >
                                                     <Pencil size={12.5} />
-                                                </button>
+                                                </button>}
                                             </div>
                                         </div>
 
@@ -1958,6 +1956,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                                     setEditingMaterialId(null);
                                     setIsAddingMaterial(true);
                                 }}
+                                style={{ display: canEdit ? undefined : 'none' }}
                             >
                                 Добавить материал
                             </Button>
@@ -1988,10 +1987,11 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                                 >
                                     Экспорт в Excel
                                 </Button>
-                                <span
-                                    className="inline-flex"
-                                    title={allMaterialShipped ? 'Весь материал отгружен' : undefined}
-                                >
+                                {canEdit && (
+                                    <span
+                                        className="inline-flex"
+                                        title={allMaterialShipped ? 'Весь материал отгружен' : undefined}
+                                    >
                   <Button
                       variant="primary"
                       size="sm"
@@ -2007,6 +2007,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                     Новая отгрузка
                   </Button>
                 </span>
+                                )}
                             </div>
                         </div>
 
@@ -2117,7 +2118,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                             <p className={cn("text-[13px] font-serif font-medium", "text-ink")}>Отгрузок пока нет</p>
                             <p className={cn("text-[9.5px] uppercase font-semibold tracking-[0.08em] opacity-60", "text-ink-4")}>Машины и доверенности появятся здесь</p>
                         </div>
-                        <Button
+                        {canEdit && <Button
                             variant="ochre"
                             size="sm"
                             className="mt-2 px-3 h-8 text-[11.5px] font-semibold"
@@ -2128,7 +2129,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                             }}
                         >
                             Добавить отгрузку
-                        </Button>
+                        </Button>}
                     </div>
                 </div>
             )}
