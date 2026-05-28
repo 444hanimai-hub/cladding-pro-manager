@@ -304,9 +304,12 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
             </div>
         ) : viewMode === 'grid' ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(310px,1fr))] gap-[14px]">
-              {filteredProjects.map((project) => (
-                  <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
-              ))}
+              {filteredProjects.map((project) => {
+                const projectTrustDeeds = allTrustDeeds.filter(d => d.projectId === project.id);
+                return (
+                    <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} trustDeeds={projectTrustDeeds} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
+                );
+              })}
             </div>
         ) : (
             <Card className="p-0 overflow-hidden">
