@@ -2824,10 +2824,45 @@ function FinanceTab({
 }) {
     const [isAdding, setIsAdding] = useState(false);
     const [newExpenseForm, setNewExpenseForm] = useState({
-        date: new Date().toISOString().split('T')[0],
+        date: '',
         category: '',
-        amount: 0
+        amount: 0,
+        managerPercent: 0,
     });
+
+    // Портал-дропдаун категорий
+    const categoryInputRef = React.useRef<HTMLInputElement>(null);
+    const categoryWrapperRef = React.useRef<HTMLDivElement>(null);
+    const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
+    const [categorySearch, setCategorySearch] = useState('');
+    const [expenseCategories, setExpenseCategories] = useState<string[]>([]);
+
+    useEffect(() => {
+        const unsub = onSnapshot(collection(db, 'expense_categories'), (snap) => {
+            setExpenseCategories(snap.docs.map(d => d.data().name as string).filter(Boolean));
+        });
+        return () => unsub();
+    }, []);
+
+    useEffect(() => {
+        if (!categoryDropdownOpen) return;
+        const handleClick = (e: MouseEvent) => {
+            const t = e.target as Node;
+            if (!categoryWrapperRef.current?.contains(t) && !document.getElementById('expense-cat-portal')?.contains(t)) {
+                setCategoryDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, [categoryDropdownOpen]);
+
+    // Позиция портала категорий
+    const [portalPos, setPortalPos] = useState<{top:number;left:number;width:number}>({top:0,left:0,width:0});
+    useEffect(() => {
+        if (!categoryDropdownOpen || !categoryWrapperRef.current) return;
+        const rect = categoryWrapperRef.current.getBoundingClientRect();
+        setPortalPos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX, width: rect.width });
+    }, [categoryDropdownOpen]);
 
     if (needsCodeGate) {
         return (
@@ -2844,10 +2879,16 @@ function FinanceTab({
     const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
     const expenses = f.expenses || [];
     const totalExpenses = getTotalExpenses(f);
-    const profitBeforeBonus = getProfitBeforeBonus(f);
-    const managerBonus = getManagerBonus(f);
-    const netProfitAfterAll = getNetProfitAfterAll(f);
     const profitability = getMarginPercent(f);
+
+    // Расходы без бонуса менеджера
+    const expensesWithoutBonus = expenses.filter(
+        (e: any) => e.category?.toLowerCase() !== 'бонус менеджера'
+    );
+    const totalExpensesWithoutBonus = expensesWithoutBonus.reduce((s: number, e: any) => s + (e.amount || 0), 0);
+    const profitAfterExpenses = (f.contractSum || 0) - totalExpensesWithoutBonus;
+    const netProfit = (f.contractSum || 0) - totalExpenses;
+    const marginPercent = f.contractSum ? Math.round(netProfit / f.contractSum * 100) : 0;
 
     const updateFinance = async (updates: Partial<typeof f>) => {
         try {
@@ -2902,11 +2943,7 @@ function FinanceTab({
             const updatedExpenses = [...expenses, newExpense];
             await updateFinance({ expenses: updatedExpenses });
 
-            setNewExpenseForm({
-                date: new Date().toISOString().split('T')[0],
-                category: '',
-                amount: 0
-            });
+            setNewExpenseForm({ date: '', category: '', amount: 0, managerPercent: 0 });
             setIsAdding(false);
         } catch (error) {
             console.error(error);
@@ -2934,7 +2971,7 @@ function FinanceTab({
             className="space-y-5"
         >
             {/* Сводные карточки */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
                 <FinanceCard
                     label="СУММА КОНТРАКТА"
                     subtext="основа расчёта"
@@ -2944,9 +2981,15 @@ function FinanceTab({
                     onValueChange={(v) => updateFinance({ contractSum: v })}
                 />
                 <FinanceCard
+                    label="ПРИБЫЛЬ"
+                    subtext="после всех расходов"
+                    value={profitAfterExpenses}
+                    variant="profit"
+                />
+                <FinanceCard
                     label="ЧИСТАЯ ПРИБЫЛЬ"
-                    subtext="после всех расходов и бонусов"
-                    value={netProfitAfterAll}
+                    subtext="после бонуса менеджера"
+                    value={netProfit}
                     variant="profit"
                 />
                 <FinanceCard
@@ -2958,42 +3001,10 @@ function FinanceTab({
                 <FinanceCard
                     label="МАРЖА"
                     subtext="от контракта"
-                    value={profitability}
+                    value={marginPercent}
                     isPercentage
                     variant="margin"
                 />
-            </div>
-
-            {/* Бонус менеджера */}
-            <div className="rounded-2xl border border-line bg-surface p-5 shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
-                <h3 className="font-display text-[17px] font-medium text-ink leading-tight mb-4">Бонус менеджера</h3>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                    <FinanceInput
-                        label="ЧИСТАЯ ПРИБЫЛЬ"
-                        value={profitBeforeBonus}
-                        disabled
-                        compact
-                        valueColor={FINANCE_VALUE_COLORS.profit}
-                        className="min-w-0"
-                    />
-                    <FinanceInput
-                        label="% менеджера"
-                        value={f.managerPercentage}
-                        onChange={(v) => updateFinance({ managerPercentage: Math.min(999, v) })}
-                        disabled={!canEdit}
-                        isPercentage
-                        compact
-                        percentField
-                    />
-                    <FinanceInput
-                        label="СУММА БОНУСА"
-                        value={managerBonus}
-                        disabled
-                        compact
-                        valueColor="#b07a2c"
-                        className="min-w-0"
-                    />
-                </div>
             </div>
 
             {/* Расходы + диаграмма */}
@@ -3033,58 +3044,156 @@ function FinanceTab({
                                 exit={{ opacity: 0, height: 0 }}
                                 className="overflow-hidden border-b border-[#DED8CC]"
                             >
-                                <div className="bg-[#F0E8D8] px-4 py-4">
-                                    <div className="grid grid-cols-1 gap-3 md:grid-cols-[180px_1fr_120px_auto] md:items-end">
-                                        <div>
-                                            <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                                Дата
-                                            </label>
-                                            <DatePicker
-                                                value={newExpenseForm.date || ''}
-                                                onChange={(v) => setNewExpenseForm({ ...newExpenseForm, date: v })}
-                                                variant="compact"
-                                            />
-                                        </div>
+                                {(() => {
+                                    const isManagerBonus = newExpenseForm.category.toLowerCase() === 'бонус менеджера';
+                                    const otherExpensesTotal = expenses.reduce((sum: number, e: any) => sum + (e.amount || 0), 0);
+                                    const profitBase = (f.contractSum || 0) - otherExpensesTotal;
+                                    const bonusAmount = isManagerBonus && newExpenseForm.managerPercent > 0
+                                        ? Math.round(profitBase * newExpenseForm.managerPercent / 100)
+                                        : 0;
+                                    const effectiveAmount = isManagerBonus ? bonusAmount : newExpenseForm.amount;
+                                    const filteredCats = expenseCategories.filter(c => c.toLowerCase().includes(categorySearch.toLowerCase()));
 
-                                        <div>
-                                            <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                                Вид расхода
-                                            </label>
-                                            <ExpenseCategorySelect
-                                                value={newExpenseForm.category}
-                                                onChange={(val) => setNewExpenseForm({ ...newExpenseForm, category: val })}
-                                                placeholder="Выберите категорию..."
-                                            />
-                                        </div>
+                                    return (
+                                        <div className="bg-[#F0E8D8] px-4 py-4">
+                                            <div className={cn(
+                                                "grid grid-cols-1 gap-3 md:items-end",
+                                                isManagerBonus
+                                                    ? "md:grid-cols-[180px_1fr_100px_140px_auto]"
+                                                    : "md:grid-cols-[180px_1fr_120px_auto]"
+                                            )}>
+                                                <div>
+                                                    <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                                                        Дата
+                                                    </label>
+                                                    <DatePicker
+                                                        value={newExpenseForm.date || ''}
+                                                        onChange={(v) => setNewExpenseForm({ ...newExpenseForm, date: v })}
+                                                        variant="compact"
+                                                    />
+                                                </div>
 
-                                        <div>
-                                            <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                                Сумма, ₽
-                                            </label>
-                                            <input
-                                                type="number"
-                                                value={newExpenseForm.amount || ''}
-                                                onChange={(e) =>
-                                                    setNewExpenseForm({
-                                                        ...newExpenseForm,
-                                                        amount: Number(e.target.value),
-                                                    })
-                                                }
-                                                placeholder="0"
-                                                className="h-9 w-full rounded-lg border border-transparent bg-[#FBF8F2] px-3 text-[12px] font-medium text-[#302A1C] shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] placeholder:text-[#B8AE9A] focus:border-[#B48444]/40 focus:bg-white focus:outline-none"
-                                            />
-                                        </div>
+                                                <div className="relative" ref={categoryWrapperRef}>
+                                                    <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                                                        Вид расхода
+                                                    </label>
+                                                    <div className="relative">
+                                                        <input
+                                                            ref={categoryInputRef}
+                                                            type="text"
+                                                            value={categoryDropdownOpen ? categorySearch : newExpenseForm.category}
+                                                            onChange={(e) => {
+                                                                setCategorySearch(e.target.value);
+                                                                if (!categoryDropdownOpen) setCategoryDropdownOpen(true);
+                                                            }}
+                                                            onFocus={() => {
+                                                                setCategorySearch('');
+                                                                setCategoryDropdownOpen(true);
+                                                            }}
+                                                            placeholder="Выберите категорию..."
+                                                            className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 font-normal"
+                                                        />
+                                                        <ChevronDown size={13} className={cn("absolute right-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none transition-transform", categoryDropdownOpen && "rotate-180")} />
+                                                    </div>
+                                                    {categoryDropdownOpen && createPortal(
+                                                        <div id="expense-cat-portal" style={{ position:'absolute', top: portalPos.top, left: portalPos.left, width: portalPos.width, zIndex: 999999 }}>
+                                                            <div className="rounded-md bg-surface border border-line shadow-[0_8px_24px_rgba(48,42,28,0.14)] overflow-hidden">
+                                                                <div className="max-h-[200px] overflow-y-auto">
+                                                                    {filteredCats.length > 0 ? filteredCats.map(cat => (
+                                                                        <button key={cat} type="button"
+                                                                                onMouseDown={(e) => { e.preventDefault(); setNewExpenseForm({...newExpenseForm, category: cat}); setCategoryDropdownOpen(false); setCategorySearch(''); }}
+                                                                                className={cn("w-full text-left px-3 py-2 text-[13px] transition-colors hover:bg-surface-2", newExpenseForm.category === cat ? "bg-ochre-bg text-ochre font-semibold" : "text-ink")}
+                                                                        >{cat}</button>
+                                                                    )) : (
+                                                                        <p className="px-3 py-2 text-[12px] italic text-ink-4">Ничего не найдено</p>
+                                                                    )}
+                                                                    {categorySearch.trim() && !expenseCategories.some(c => c.toLowerCase() === categorySearch.toLowerCase().trim()) && (
+                                                                        <button type="button"
+                                                                                onMouseDown={(e) => { e.preventDefault(); setNewExpenseForm({...newExpenseForm, category: categorySearch.trim()}); setCategoryDropdownOpen(false); setCategorySearch(''); }}
+                                                                                className="w-full text-left px-3 py-2 text-[12.5px] font-semibold text-ochre border-t border-line bg-surface hover:bg-surface-2 transition-colors flex items-center gap-2"
+                                                                        ><Plus size={12} /> Создать «{categorySearch.trim()}»</button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>,
+                                                        document.body
+                                                    )}
+                                                </div>
 
-                                        <button
-                                            type="button"
-                                            onClick={handleAddExpense}
-                                            disabled={!newExpenseForm.category || newExpenseForm.amount <= 0}
-                                            className="h-9 rounded-lg bg-[#B48444] px-4 text-[11px] font-semibold text-white shadow-[0_1px_2px_rgba(132,91,37,0.2)] transition-colors hover:bg-[#A6783D] disabled:cursor-not-allowed disabled:opacity-40"
-                                        >
-                                            Зафиксировать
-                                        </button>
-                                    </div>
-                                </div>
+                                                <div>
+                                                    <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                                                        Сумма, ₽
+                                                    </label>
+                                                    <input
+                                                        type="text"
+                                                        inputMode="numeric"
+                                                        value={isManagerBonus ? (bonusAmount > 0 ? bonusAmount.toLocaleString('ru-RU') : '') : (newExpenseForm.amount ? newExpenseForm.amount.toLocaleString('ru-RU') : '')}
+                                                        onChange={(e) => !isManagerBonus && setNewExpenseForm({
+                                                            ...newExpenseForm,
+                                                            amount: Number(e.target.value.replace(/\D/g, '')) || 0,
+                                                        })}
+                                                        readOnly={isManagerBonus}
+                                                        placeholder={isManagerBonus ? 'авто' : '0'}
+                                                        className={cn(
+                                                            "w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none focus:ring-0 transition-colors placeholder:text-ink-4 font-normal",
+                                                            isManagerBonus && "cursor-default bg-surface-2 text-ink-3"
+                                                        )}
+                                                    />
+                                                </div>
+
+                                                {isManagerBonus && (
+                                                    <div>
+                                                        <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                                                            % менеджера
+                                                        </label>
+                                                        <input
+                                                            type="text"
+                                                            inputMode="numeric"
+                                                            maxLength={3}
+                                                            value={newExpenseForm.managerPercent || ''}
+                                                            onChange={(e) => {
+                                                                const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
+                                                                setNewExpenseForm({ ...newExpenseForm, managerPercent: digits ? Number(digits) : 0 });
+                                                            }}
+                                                            placeholder="0"
+                                                            className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none focus:ring-0 transition-colors placeholder:text-ink-4 font-normal"
+                                                        />
+                                                    </div>
+                                                )}
+
+                                                <button
+                                                    type="button"
+                                                    onClick={async () => {
+                                                        if (!newExpenseForm.category || effectiveAmount <= 0) return;
+                                                        try {
+                                                            const q = query(collection(db, 'expense_categories'), where('name', '==', newExpenseForm.category));
+                                                            const snapshot = await getDocs(q);
+                                                            if (snapshot.empty) {
+                                                                await addDoc(collection(db, 'expense_categories'), { name: newExpenseForm.category, createdAt: serverTimestamp() });
+                                                            }
+                                                            const newExpense: any = {
+                                                                id: crypto.randomUUID(),
+                                                                date: newExpenseForm.date,
+                                                                category: newExpenseForm.category,
+                                                                amount: effectiveAmount,
+                                                            };
+                                                            if (isManagerBonus && newExpenseForm.managerPercent > 0) {
+                                                                newExpense.managerPercent = newExpenseForm.managerPercent;
+                                                            }
+                                                            await updateFinance({ expenses: [...expenses, newExpense] });
+                                                            setNewExpenseForm({ date: '', category: '', amount: 0, managerPercent: 0 });
+                                                            setIsAdding(false);
+                                                        } catch (e) { console.error(e); }
+                                                    }}
+                                                    disabled={!newExpenseForm.category || effectiveAmount <= 0}
+                                                    className="rounded-md bg-[#B48444] px-4 py-2 text-[14px] font-semibold text-white shadow-[0_1px_2px_rgba(132,91,37,0.2)] transition-colors hover:bg-[#A6783D] disabled:cursor-not-allowed disabled:opacity-40 whitespace-nowrap"
+                                                >
+                                                    Зафиксировать
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                             </motion.div>
                         )}
                     </AnimatePresence>
@@ -3122,15 +3231,12 @@ function FinanceTab({
 
                                     <td className="px-4 py-3">
                                         <div className="flex min-w-0 items-center gap-2.5">
-                          <span
-                              className="h-2 w-2 shrink-0 rounded-[2px]"
-                              style={{
-                                  backgroundColor: getExpenseCategoryColor(expense.category, index),
-                              }}
-                          />
-                                            <span className="truncate text-[12.5px] font-medium text-[#302A1C]">
+                          <span className="truncate text-[12.5px] font-medium text-[#302A1C]">
                             {expense.category || 'Без категории'}
                           </span>
+                                            {(expense as any).managerPercent > 0 && (
+                                                <span className="text-[10px] text-[#B48444] font-semibold shrink-0">{(expense as any).managerPercent}%</span>
+                                            )}
                                         </div>
                                     </td>
 
