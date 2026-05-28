@@ -303,7 +303,7 @@ export default function ProjectDetail({
         return Math.ceil((deadlineDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
     })();
 
-    const shippingProgress = getShippingProgress(project);
+    const shippingProgress = getShippingProgress(project, trustDeeds);
 
     const isDone = project.status === 'done' || project.status === 'completed';
     const isCanceled = project.status === 'cancelled' || project.status === 'canceled';
@@ -1779,7 +1779,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
     const shipments = project.shipments || [];
     const selectedShipment = shipments.find(s => s.id === selectedShipmentId) ?? null;
     const allMaterialShipped = useMemo(
-        () => getShippingProgress(project).isComplete,
+        () => getShippingProgress(project, trustDeeds).isComplete,
         [project.materials, project.shipments]
     );
 
@@ -2027,6 +2027,14 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                                 {shipments.map((s) => {
                                     const isSelected = s.id === selectedShipmentId;
                                     const scan = getShipmentScanMeta(s.scanSentToAccounting);
+                                    // Подтягиваем данные из доверенности
+                                    const deed = s.poaNumber ? trustDeeds.find(d => d.number === s.poaNumber) : null;
+                                    const mat = deed ? project.materials?.find(m => m.id === deed.materialId || m.materialName === deed.materialName) : null;
+                                    const materialLabel = mat
+                                        ? `${mat.materialName}${(mat as any).supplierName ? ' · ' + (mat as any).supplierName : ''}`
+                                        : deed?.materialName || s.materialName || '—';
+                                    const quantityLabel = deed?.quantity != null ? deed.quantity.toLocaleString('ru-RU') : (s.quantity || '—');
+                                    const carrierLabel = deed?.carrierName || s.carrierName || '—';
                                     return (
                                         <tr
                                             key={s.id}
@@ -2058,15 +2066,15 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                           </span>
                                             </td>
                                             <td className="px-4 py-3.5 align-top">
-                                                <p className="text-[12px] font-bold text-ink">{s.materialName || '—'}</p>
-                                                <p className="text-[12px] font-mono font-semibold text-ink-3">{s.quantity}</p>
+                                                <p className="text-[12px] font-bold text-ink">{materialLabel}</p>
+                                                <p className="text-[12px] font-mono font-semibold text-ink-3">{quantityLabel}</p>
                                             </td>
                                             <td className="px-4 py-3.5 align-top">
                                                 <p className="text-[12px] text-ink">{formatDate(s.loadingDate)}</p>
                                                 <p className="text-[11px] text-ink-4">{formatDate(s.unloadingDate)}</p>
                                             </td>
                                             <td className="px-4 py-3.5 align-top">
-                                                <p className="text-[12px] font-bold text-ink">{s.carrierName || '—'}</p>
+                                                <p className="text-[12px] font-bold text-ink">{carrierLabel}</p>
                                                 <p className="text-[12px] font-mono font-semibold text-[#5a6b3c]">{formatCurrency(s.totalCarryingCost)}</p>
                                             </td>
                                             <td className="px-2 py-3.5 align-middle text-ink-4">

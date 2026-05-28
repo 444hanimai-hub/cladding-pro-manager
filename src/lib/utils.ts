@@ -13,8 +13,8 @@ export function formatAmountGrouped(amount: number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   })
-    .format(amount)
-    .replace(/\u00a0/g, ' ');
+      .format(amount)
+      .replace(/\u00a0/g, ' ');
 }
 
 export function parseGroupedAmount(raw: string): number {
@@ -46,11 +46,11 @@ export function formatDate(date: any) {
   else if (date.toDate && typeof date.toDate === 'function') d = date.toDate();
   else if (date instanceof Date) d = date;
   else return '';
-  
-  return d.toLocaleDateString('ru-RU', { 
-    day: '2-digit', 
-    month: '2-digit', 
-    year: 'numeric' 
+
+  return d.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
   }).replace(/\//g, '.');
 }
 
@@ -79,26 +79,22 @@ export function formatDateForInput(date: any) {
 
 export function formatDateToDisplay(date: any) {
   if (!date) return '';
-  
-  // If it's not a string, use existing formatDate logic to get DD.MM.YYYY
+
   if (typeof date !== 'string') {
     return formatDate(date);
   }
 
-  // If it's already in DD.MM.YYYY format
   if (date.includes('.')) return date;
 
-  // Try to parse YYYY-MM-DD
   const [y, m, d] = date.split('-');
   if (!d || !m || !y) {
-    // If it's some other string format, try general parsing
     return formatDate(date);
   }
-  
+
   return `${d}.${m}.${y}`;
 }
 
-/** Цвет заливки при 100% отгрузки — как «Завершён» в воронке на дашборде */
+/** Цвет заливки при 100% отгрузки */
 export const SHIPPING_PROGRESS_COMPLETE_COLOR = STATUS_COLOR.done;
 
 export type ShippingProgressInfo = {
@@ -110,22 +106,38 @@ export type ShippingProgressInfo = {
   isComplete: boolean;
 };
 
-/** Процент отгрузки: сумма quantity по отгрузкам / сумма quantity по материалам × 100 */
-export function getShippingProgress(project: {
-  materials?: Array<{ quantity?: number }>;
-  shipments?: Array<{ quantity?: number }>;
-}): ShippingProgressInfo {
+/** Процент отгрузки: считаем quantity из доверенностей привязанных к отгрузкам */
+export function getShippingProgress(
+    project: {
+      materials?: Array<{ quantity?: number }>;
+      shipments?: Array<{ poaNumber?: string; trustDeedId?: string; quantity?: number }>;
+    },
+    trustDeeds?: Array<{ number?: string; id?: string; quantity?: number }>
+): ShippingProgressInfo {
   const materialsTotal = (project.materials ?? []).reduce(
-    (acc, m) => acc + (Number(m.quantity) || 0),
-    0
+      (acc, m) => acc + (Number(m.quantity) || 0),
+      0
   );
-  const shippedTotal = (project.shipments ?? []).reduce(
-    (acc, s) => acc + (Number(s.quantity) || 0),
-    0
-  );
+
+  let shippedTotal: number;
+  if (trustDeeds && trustDeeds.length > 0) {
+    shippedTotal = (project.shipments ?? []).reduce((acc, s) => {
+      const deed = s.poaNumber
+          ? trustDeeds.find(d => d.number === s.poaNumber)
+          : s.trustDeedId
+              ? trustDeeds.find(d => d.id === s.trustDeedId)
+              : null;
+      return acc + (Number(deed?.quantity) || Number(s.quantity) || 0);
+    }, 0);
+  } else {
+    shippedTotal = (project.shipments ?? []).reduce(
+        (acc, s) => acc + (Number(s.quantity) || 0),
+        0
+    );
+  }
+
   const remaining = materialsTotal - shippedTotal;
-  const percent =
-    materialsTotal > 0 ? Math.round((shippedTotal * 100) / materialsTotal) : 0;
+  const percent = materialsTotal > 0 ? Math.round((shippedTotal * 100) / materialsTotal) : 0;
   const barPercent = Math.min(Math.max(percent, 0), 100);
   const isComplete = materialsTotal > 0 && remaining <= 0;
 
@@ -144,34 +156,32 @@ function normalizeMaterialKey(name: string): string {
   return name.trim().toLowerCase();
 }
 
-/** Сумма quantity в материалах проекта по названию материала */
 export function getMaterialPlannedQuantity(
-  materials: Array<{ materialName?: string; quantity?: number }> | undefined,
-  materialName: string
+    materials: Array<{ materialName?: string; quantity?: number }> | undefined,
+    materialName: string
 ): number {
   const key = normalizeMaterialKey(materialName);
   if (!key) return 0;
   return (materials ?? [])
-    .filter((m) => normalizeMaterialKey(m.materialName || '') === key)
-    .reduce((acc, m) => acc + (Number(m.quantity) || 0), 0);
+      .filter((m) => normalizeMaterialKey(m.materialName || '') === key)
+      .reduce((acc, m) => acc + (Number(m.quantity) || 0), 0);
 }
 
-/** Сумма quantity в отгрузках по материалу; при редактировании — без текущей записи + quantity с формы */
 export function getMaterialShippedQuantity(
-  shipments: Array<{ id?: string; materialName?: string; quantity?: number }> | undefined,
-  materialName: string,
-  options?: { excludeShipmentId?: string; formQuantity?: number }
+    shipments: Array<{ id?: string; materialName?: string; quantity?: number }> | undefined,
+    materialName: string,
+    options?: { excludeShipmentId?: string; formQuantity?: number }
 ): number {
   const key = normalizeMaterialKey(materialName);
   const formQty = Number(options?.formQuantity) || 0;
   if (!key) return formQty;
 
   const fromOthers = (shipments ?? [])
-    .filter((s) => {
-      if (options?.excludeShipmentId && s.id === options.excludeShipmentId) return false;
-      return normalizeMaterialKey(s.materialName || '') === key;
-    })
-    .reduce((acc, s) => acc + (Number(s.quantity) || 0), 0);
+      .filter((s) => {
+        if (options?.excludeShipmentId && s.id === options.excludeShipmentId) return false;
+        return normalizeMaterialKey(s.materialName || '') === key;
+      })
+      .reduce((acc, s) => acc + (Number(s.quantity) || 0), 0);
 
   return fromOthers + formQty;
 }
@@ -225,21 +235,6 @@ export function getInitials(name: string) {
   return name.trim().slice(0, 2).toUpperCase();
 }
 
-/**
- * Возвращает стабильный цвет для аватара пользователя.
- * Принимает любой строковый сид (предпочтительно — displayName,
- * см. UserAvatar.tsx про выбор сида).
- *
- * Палитра — 10 максимально различимых тонов, спокойных по насыщенности,
- * подходящих к бежево-охровой теме CRM. Все цвета подобраны так, чтобы:
- *   — белый текст инициалов читался (контраст >= 4.5:1, WCAG AA),
- *   — соседние оттенки имели разные H (hue), а не только разную яркость,
- *   — не было пар «почти одинаковых» (старые фуксия/пурпур/розовый и
- *     четыре оттенка оливкового убраны).
- *
- * Для сентинельных значений возвращается приглушённый серо-голубой
- * — «не назначен».
- */
 export function getUserColor(seed: string | null | undefined): string {
   if (!seed) return '#7A8A9A';
   const s = seed.trim();
@@ -247,21 +242,17 @@ export function getUserColor(seed: string | null | undefined): string {
     return '#7A8A9A';
   }
 
-  // 10 цветов, разнесённых по цветовому кругу примерно на 36° друг от друга.
-  // Порядок выстроен так, чтобы соседи по индексу гарантированно
-  // отличались (если у двух людей хэши случайно дадут смежные индексы —
-  // цвета всё равно будут читаемо разными).
   const colors = [
-    '#B14A2E', // 1. Кирпично-красный
-    '#C68A2E', // 2. Горчично-охровый
-    '#6B7A2C', // 3. Оливковый
-    '#2D7A4F', // 4. Изумрудно-зелёный
-    '#0F7570', // 5. Тёмно-бирюзовый
-    '#2C5FA8', // 6. Королевский синий
-    '#5238A0', // 7. Индиго
-    '#9B2D7A', // 8. Маджента
-    '#7A5237', // 9. Кофейно-коричневый
-    '#3D505F', // 10. Сине-графитовый
+    '#B14A2E',
+    '#C68A2E',
+    '#6B7A2C',
+    '#2D7A4F',
+    '#0F7570',
+    '#2C5FA8',
+    '#5238A0',
+    '#9B2D7A',
+    '#7A5237',
+    '#3D505F',
   ];
 
   let hash = 0;

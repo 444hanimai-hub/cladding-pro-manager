@@ -20,7 +20,7 @@ import { Button } from './ui/Button';
 import { Modal } from './ui/Modal';
 import { PeriodSelector, DateTypeSelector, StatusSelector, ManagerSelector, PeriodType } from './shared/DashboardFilters';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
-import { Project, AppUser, ProjectTask, ProjectEvent } from '../types';
+import { Project, AppUser, ProjectTask, ProjectEvent, TrustDeed } from '../types';
 import { FinanceCodeGate } from './CodeProtection';
 import { useFinanceAccess } from '../hooks/useFinanceAccess';
 
@@ -56,6 +56,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
   const [projects, setProjects] = useState<Project[]>([]);
   const [allTasks, setAllTasks] = useState<ProjectTask[]>([]);
   const [allEvents, setAllEvents] = useState<ProjectEvent[]>([]);
+  const [allTrustDeeds, setAllTrustDeeds] = useState<(TrustDeed & { projectId: string })[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -119,14 +120,23 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
       }));
     }, (error) => { console.error("ProjectList events group snapshot error:", error); });
 
-    return () => { unsubTasks(); unsubEvents(); };
+    // Загружаем все доверенности через collectionGroup
+    const unsubTrustDeeds = onSnapshot(collectionGroup(db, 'trust_deeds'), (snap) => {
+      setAllTrustDeeds(snap.docs.map(doc => {
+        const data = doc.data();
+        const parts = doc.ref.path.split('/');
+        const projectId = parts.length >= 2 ? parts[1] : '';
+        return { id: doc.id, projectId, ...data } as TrustDeed & { projectId: string };
+      }));
+    }, (error) => { console.error("ProjectList trust_deeds group snapshot error:", error); });
+
+    return () => { unsubTasks(); unsubEvents(); unsubTrustDeeds(); };
   }, [appUser?.uid]);
 
   useEffect(() => {
     if (!appUser) return;
     setLoading(true);
 
-    // ── Полный доступ: грузим все проекты ──────────────────────────────────
     if (appUser.fullProjectAccess) {
       const q = query(collection(db, 'projects'), orderBy('createdAt', 'desc'));
       const unsub = onSnapshot(q, (snapshot) => {
@@ -136,7 +146,6 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
       return () => unsub();
     }
 
-    // ── Ограниченный доступ: только leadManager + явные projectsAccess ─────
     const unsubs: (() => void)[] = [];
     const projectsMap = new Map<string, Project>();
 
@@ -151,28 +160,22 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
       setLoading(false);
     };
 
-    // 1. Проекты где пользователь — ведущий менеджер
     const currentUid = appUser.uid || auth.currentUser?.uid;
-    if (!currentUid) {
-      setLoading(false);
-      return;
-    }
+    if (!currentUid) { setLoading(false); return; }
+
     const q1 = query(collection(db, 'projects'), where('leadManagerId', '==', currentUid));
     unsubs.push(onSnapshot(q1, (snapshot) => {
       snapshot.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
       updateProjectsState();
     }, (error) => { console.error("ProjectList manager projects error:", error); setLoading(false); }));
 
-    // 2. Проекты из projectsAccess (только 'view' и 'edit', не закрытые)
     const accessProjectIds = Object.entries(appUser.projectsAccess || {})
         .filter(([, v]) => v === 'view' || v === 'edit')
         .map(([k]) => k);
 
     if (accessProjectIds.length > 0) {
       const chunks: string[][] = [];
-      for (let i = 0; i < accessProjectIds.length; i += 30) {
-        chunks.push(accessProjectIds.slice(i, i + 30));
-      }
+      for (let i = 0; i < accessProjectIds.length; i += 30) chunks.push(accessProjectIds.slice(i, i + 30));
       chunks.forEach(chunk => {
         const q = query(collection(db, 'projects'), where(documentId(), 'in', chunk));
         unsubs.push(onSnapshot(q, (snapshot) => {
@@ -183,29 +186,20 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
     }
 
     const timeout = setTimeout(() => { if (projectsMap.size === 0) setLoading(false); }, 2000);
-
     return () => { clearTimeout(timeout); unsubs.forEach(u => u()); };
   }, [appUser?.uid, appUser?.fullProjectAccess, JSON.stringify(appUser?.projectsAccess)]);
 
-  // isOwner только для удаления проектов
   const isOwner = appUser?.email === '444hanimai@gmail.com';
 
   const deleteProject = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!isOwner && !appUser?.accessSettings) {
-      alert('Только администратор может удалять проекты');
-      return;
-    }
+    if (!isOwner && !appUser?.accessSettings) { alert('Только администратор может удалять проекты'); return; }
     if (window.confirm('Вы уверены, что хотите удалить проект? Это действие нельзя отменить.')) {
-      try {
-        await deleteDoc(fireDoc(db, 'projects', id));
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, 'projects/' + id);
-      }
+      try { await deleteDoc(fireDoc(db, 'projects', id)); }
+      catch (error) { handleFirestoreError(error, OperationType.DELETE, 'projects/' + id); }
     }
   };
 
-  // ── Фильтрация: показываем только доступные проекты ────────────────────
   const accessibleProjects = useMemo(() => {
     const currentUid = appUser?.uid || auth.currentUser?.uid;
     return projects.filter(p =>
@@ -244,24 +238,10 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
     });
   }, [accessibleProjects, filterManagerId, filterStatuses, activeRange, dateFilterType, searchQuery]);
 
-  const canEditProject = (project: Project) => {
-    const currentUid = appUser?.uid || auth.currentUser?.uid;
-    if (appUser?.fullProjectAccess) return true;
-    if (appUser?.projectsAccess?.[project.id] === 'edit') return true;
-    if (project.leadManagerId === currentUid) return true;
-    return false;
-  };
-
   const { canDisplayFinancialAmounts, needsCodeGate, unlock } = useFinanceAccess(appUser);
 
   if (needsCodeGate) {
-    return (
-        <FinanceCodeGate
-            correctCode={appUser?.financeCode || ''}
-            onSuccess={unlock}
-            moduleName="Проекты"
-        />
-    );
+    return <FinanceCodeGate correctCode={appUser?.financeCode || ''} onSuccess={unlock} moduleName="Проекты" />;
   }
 
   const showFinancialInCards = canDisplayFinancialAmounts;
@@ -280,9 +260,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <Button onClick={() => setShowAddForm(true)} variant="ochre" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Plus size={14} />}>
-                Новый проект
-              </Button>
+              <Button onClick={() => setShowAddForm(true)} variant="ochre" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Plus size={14} />}>Новый проект</Button>
               <div className="flex items-center bg-surface-2 rounded-lg p-0.5">
                 <button onClick={() => setViewMode('grid')} className={cn("w-8 h-8 flex items-center justify-center rounded-md transition-all", viewMode === 'grid' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40")}><LayoutGrid size={15} /></button>
                 <button onClick={() => setViewMode('list')} className={cn("w-8 h-8 flex items-center justify-center rounded-md transition-all", viewMode === 'list' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40")}><ListIcon size={15} /></button>
@@ -304,9 +282,12 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
             </div>
         ) : viewMode === 'grid' ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(310px,1fr))] gap-[14px]">
-              {filteredProjects.map((project) => (
-                  <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
-              ))}
+              {filteredProjects.map((project) => {
+                const projectTrustDeeds = allTrustDeeds.filter(d => d.projectId === project.id);
+                return (
+                    <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} trustDeeds={projectTrustDeeds} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
+                );
+              })}
             </div>
         ) : (
             <Card className="p-0 overflow-hidden">
@@ -357,9 +338,19 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
   );
 }
 
-function ProjectCard({ project, allTasks, allEvents, showContract, onClick, canDelete, onDelete }: { key?: any; project: Project; allTasks: ProjectTask[]; allEvents: ProjectEvent[]; showContract: boolean; onClick: () => void; canDelete: boolean; onDelete: (e: React.MouseEvent) => void | Promise<void>; }) {
+function ProjectCard({ project, allTasks, allEvents, trustDeeds, showContract, onClick, canDelete, onDelete }: {
+  key?: any;
+  project: Project;
+  allTasks: ProjectTask[];
+  allEvents: ProjectEvent[];
+  trustDeeds: TrustDeed[];
+  showContract: boolean;
+  onClick: () => void;
+  canDelete: boolean;
+  onDelete: (e: React.MouseEvent) => void | Promise<void>;
+}) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-  const shippingProgress = getShippingProgress(project);
+  const shippingProgress = getShippingProgress(project, trustDeeds);
 
   const nextItem = useMemo(() => {
     const now = new Date();
