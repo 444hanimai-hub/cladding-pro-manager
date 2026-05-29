@@ -207,6 +207,15 @@ export default function App() {
     }
   }, [appUser, activeTab]);
 
+  // Zoom для ноутбуков — хук должен быть здесь, до условных return
+  useEffect(() => {
+    const isSmallScreen = window.screen.width <= 1440;
+    if (isSmallScreen) {
+      document.documentElement.style.zoom = '0.82';
+    }
+    return () => { document.documentElement.style.zoom = ''; };
+  }, []);
+
   const onClearCalendarToken = () => {
     setAccessToken(null);
     localStorage.removeItem(ACCESS_TOKEN_KEY);
@@ -314,14 +323,6 @@ export default function App() {
         </div>
     );
   }
-
-  useEffect(() => {
-    const isSmallScreen = window.screen.width <= 1440;
-    if (isSmallScreen) {
-      document.documentElement.style.zoom = '0.82';
-    }
-    return () => { document.documentElement.style.zoom = ''; };
-  }, []);
 
   return (
       <div className="flex h-screen bg-bg transition-colors duration-base overflow-hidden">
