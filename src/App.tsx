@@ -315,8 +315,18 @@ export default function App() {
     );
   }
 
+  const isSmallScreen = typeof window !== 'undefined' && window.screen.width <= 1440;
+  const appScale = isSmallScreen ? 0.82 : 1;
+
   return (
-      <div className="flex h-screen bg-bg transition-colors duration-base overflow-hidden">
+      <div
+          className="flex bg-bg transition-colors duration-base overflow-hidden"
+          style={{
+            zoom: appScale,
+            height: `${100 / appScale}vh`,
+            width: `${100 / appScale}%`,
+          }}
+      >
         <AnimatePresence>
           {isSidebarOpen && isMobile && (
               <motion.div

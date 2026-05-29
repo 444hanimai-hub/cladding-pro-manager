@@ -111,13 +111,3 @@
     font-family: var(--font-serif);
   }
 }
-
-/* ── Автомасштаб для ноутбуков (≤ 1440px) ── */
-@media screen and (max-width: 1440px) {
-  body {
-    transform: scale(0.82);
-    transform-origin: top left;
-    width: calc(100% / 0.82);
-    min-height: calc(100vh / 0.82);
-  }
-}
