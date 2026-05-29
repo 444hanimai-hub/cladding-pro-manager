@@ -114,7 +114,7 @@
 
 /* ── Автомасштаб для ноутбуков (≤ 1440px) ── */
 @media screen and (max-width: 1440px) {
-  #root {
+  html {
     zoom: 0.82;
   }
 }
