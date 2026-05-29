@@ -212,8 +212,13 @@ export default function App() {
     const isSmallScreen = window.screen.width <= 1440;
     if (isSmallScreen) {
       document.documentElement.style.zoom = '0.82';
+      // Компенсируем h-screen который становится меньше при zoom на html
+      document.documentElement.style.height = `${100 / 0.82}vh`;
     }
-    return () => { document.documentElement.style.zoom = ''; };
+    return () => {
+      document.documentElement.style.zoom = '';
+      document.documentElement.style.height = '';
+    };
   }, []);
 
   const onClearCalendarToken = () => {
