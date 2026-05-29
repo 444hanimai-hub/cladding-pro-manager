@@ -315,19 +315,16 @@ export default function App() {
     );
   }
 
-  const isSmallScreen = typeof window !== 'undefined' && window.screen.width <= 1440;
-  const appScale = isSmallScreen ? 0.82 : 1;
+  useEffect(() => {
+    const isSmallScreen = window.screen.width <= 1440;
+    if (isSmallScreen) {
+      document.documentElement.style.zoom = '0.82';
+    }
+    return () => { document.documentElement.style.zoom = ''; };
+  }, []);
 
   return (
-      <div
-          className="flex bg-bg transition-colors duration-base overflow-hidden"
-          style={{
-            zoom: appScale,
-            height: `${100 / appScale}vh`,
-            width: '100%',
-            overflowX: 'hidden',
-          }}
-      >
+      <div className="flex h-screen bg-bg transition-colors duration-base overflow-hidden">
         <AnimatePresence>
           {isSidebarOpen && isMobile && (
               <motion.div
