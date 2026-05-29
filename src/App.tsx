@@ -324,7 +324,8 @@ export default function App() {
           style={{
             zoom: appScale,
             height: `${100 / appScale}vh`,
-            width: `${100 / appScale}%`,
+            width: '100%',
+            overflowX: 'hidden',
           }}
       >
         <AnimatePresence>
