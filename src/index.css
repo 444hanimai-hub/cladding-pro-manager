@@ -111,3 +111,10 @@
     font-family: var(--font-serif);
   }
 }
+
+/* ── Автомасштаб для ноутбуков (≤ 1440px) ── */
+@media screen and (max-width: 1440px) {
+  #root {
+    zoom: 0.82;
+  }
+}
