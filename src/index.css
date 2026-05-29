@@ -74,7 +74,7 @@
   }
 }
 
-/* Custom scrollbar matching the architectural theme */
+/* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 4px;
   height: 4px;
@@ -114,7 +114,10 @@
 
 /* ── Автомасштаб для ноутбуков (≤ 1440px) ── */
 @media screen and (max-width: 1440px) {
-  html {
-    zoom: 0.82;
+  body {
+    transform: scale(0.82);
+    transform-origin: top left;
+    width: calc(100% / 0.82);
+    min-height: calc(100vh / 0.82);
   }
 }
