@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { X } from 'lucide-react';
 import { Button } from './Button';
@@ -16,7 +17,7 @@ interface ModalProps {
 }
 
 const Modal = ({ isOpen, onClose, title, description, children, footer, maxWidth = '520px', className }: ModalProps) => {
-  return (
+  const modal = (
       <AnimatePresence>
         {isOpen && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
@@ -26,11 +27,7 @@ const Modal = ({ isOpen, onClose, title, description, children, footer, maxWidth
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.18 }}
                   onClick={onClose}
-                  className="absolute inset-0 bg-ink/40"
-                  style={{
-                    backdropFilter: 'blur(6px)',
-                    WebkitBackdropFilter: 'blur(6px)',
-                  }}
+                  className="absolute inset-0 bg-ink/40 backdrop-blur-sm"
               />
               <motion.div
                   initial={{ opacity: 0, y: 8, scale: 0.98 }}
@@ -46,10 +43,7 @@ const Modal = ({ isOpen, onClose, title, description, children, footer, maxWidth
                 <div className="px-5.5 py-4.5 border-b border-line bg-surface sticky top-0 z-10">
                   <div className="flex justify-between items-center mb-1">
                     <h2 className="font-display text-xl font-medium text-ink">{title}</h2>
-                    <button
-                        onClick={onClose}
-                        className="text-ink-3 hover:text-ink transition-colors p-1"
-                    >
+                    <button onClick={onClose} className="text-ink-3 hover:text-ink transition-colors p-1">
                       <X size={16} />
                     </button>
                   </div>
@@ -72,6 +66,8 @@ const Modal = ({ isOpen, onClose, title, description, children, footer, maxWidth
         )}
       </AnimatePresence>
   );
+
+  return createPortal(modal, document.body);
 };
 
 export { Modal };
