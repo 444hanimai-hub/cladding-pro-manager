@@ -20,9 +20,10 @@ import { Button } from './ui/Button';
 import { Modal } from './ui/Modal';
 import { PeriodSelector, DateTypeSelector, StatusSelector, ManagerSelector, PeriodType } from './shared/DashboardFilters';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
-import { Project, AppUser, ProjectTask, ProjectEvent, TrustDeed } from '../types';
+import { Project, AppUser, ProjectTask, ProjectEvent } from '../types';
 import { FinanceCodeGate } from './CodeProtection';
 import { useFinanceAccess } from '../hooks/useFinanceAccess';
+import { PortalDropdown } from './ui/PortalDropdown';
 
 function getPeriodRange(type: PeriodType) {
   const now = new Date();
@@ -56,7 +57,6 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
   const [projects, setProjects] = useState<Project[]>([]);
   const [allTasks, setAllTasks] = useState<ProjectTask[]>([]);
   const [allEvents, setAllEvents] = useState<ProjectEvent[]>([]);
-  const [allTrustDeeds, setAllTrustDeeds] = useState<(TrustDeed & { projectId: string })[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -120,22 +120,14 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
       }));
     }, (error) => { console.error("ProjectList events group snapshot error:", error); });
 
-    const unsubTrustDeeds = onSnapshot(collectionGroup(db, 'trust_deeds'), (snap) => {
-      setAllTrustDeeds(snap.docs.map(doc => {
-        const data = doc.data();
-        const parts = doc.ref.path.split('/');
-        const projectId = parts.length >= 2 ? parts[1] : '';
-        return { id: doc.id, projectId, ...data } as TrustDeed & { projectId: string };
-      }));
-    }, (error) => { console.error("ProjectList trust_deeds group snapshot error:", error); });
-
-    return () => { unsubTasks(); unsubEvents(); unsubTrustDeeds(); };
+    return () => { unsubTasks(); unsubEvents(); };
   }, [appUser?.uid]);
 
   useEffect(() => {
     if (!appUser) return;
     setLoading(true);
 
+    // ── Полный доступ: грузим все проекты ──────────────────────────────────
     if (appUser.fullProjectAccess) {
       const q = query(collection(db, 'projects'), orderBy('createdAt', 'desc'));
       const unsub = onSnapshot(q, (snapshot) => {
@@ -145,6 +137,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
       return () => unsub();
     }
 
+    // ── Ограниченный доступ: только leadManager + явные projectsAccess ─────
     const unsubs: (() => void)[] = [];
     const projectsMap = new Map<string, Project>();
 
@@ -159,22 +152,28 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
       setLoading(false);
     };
 
+    // 1. Проекты где пользователь — ведущий менеджер
     const currentUid = appUser.uid || auth.currentUser?.uid;
-    if (!currentUid) { setLoading(false); return; }
-
+    if (!currentUid) {
+      setLoading(false);
+      return;
+    }
     const q1 = query(collection(db, 'projects'), where('leadManagerId', '==', currentUid));
     unsubs.push(onSnapshot(q1, (snapshot) => {
       snapshot.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
       updateProjectsState();
     }, (error) => { console.error("ProjectList manager projects error:", error); setLoading(false); }));
 
+    // 2. Проекты из projectsAccess (только 'view' и 'edit', не закрытые)
     const accessProjectIds = Object.entries(appUser.projectsAccess || {})
         .filter(([, v]) => v === 'view' || v === 'edit')
         .map(([k]) => k);
 
     if (accessProjectIds.length > 0) {
       const chunks: string[][] = [];
-      for (let i = 0; i < accessProjectIds.length; i += 30) chunks.push(accessProjectIds.slice(i, i + 30));
+      for (let i = 0; i < accessProjectIds.length; i += 30) {
+        chunks.push(accessProjectIds.slice(i, i + 30));
+      }
       chunks.forEach(chunk => {
         const q = query(collection(db, 'projects'), where(documentId(), 'in', chunk));
         unsubs.push(onSnapshot(q, (snapshot) => {
@@ -185,20 +184,29 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
     }
 
     const timeout = setTimeout(() => { if (projectsMap.size === 0) setLoading(false); }, 2000);
+
     return () => { clearTimeout(timeout); unsubs.forEach(u => u()); };
   }, [appUser?.uid, appUser?.fullProjectAccess, JSON.stringify(appUser?.projectsAccess)]);
 
+  // isOwner только для удаления проектов
   const isOwner = appUser?.email === '444hanimai@gmail.com';
 
   const deleteProject = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!isOwner && !appUser?.accessSettings) { alert('Только администратор может удалять проекты'); return; }
+    if (!isOwner && !appUser?.accessSettings) {
+      alert('Только администратор может удалять проекты');
+      return;
+    }
     if (window.confirm('Вы уверены, что хотите удалить проект? Это действие нельзя отменить.')) {
-      try { await deleteDoc(fireDoc(db, 'projects', id)); }
-      catch (error) { handleFirestoreError(error, OperationType.DELETE, 'projects/' + id); }
+      try {
+        await deleteDoc(fireDoc(db, 'projects', id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, 'projects/' + id);
+      }
     }
   };
 
+  // ── Фильтрация: показываем только доступные проекты ────────────────────
   const accessibleProjects = useMemo(() => {
     const currentUid = appUser?.uid || auth.currentUser?.uid;
     return projects.filter(p =>
@@ -237,10 +245,24 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
     });
   }, [accessibleProjects, filterManagerId, filterStatuses, activeRange, dateFilterType, searchQuery]);
 
+  const canEditProject = (project: Project) => {
+    const currentUid = appUser?.uid || auth.currentUser?.uid;
+    if (appUser?.fullProjectAccess) return true;
+    if (appUser?.projectsAccess?.[project.id] === 'edit') return true;
+    if (project.leadManagerId === currentUid) return true;
+    return false;
+  };
+
   const { canDisplayFinancialAmounts, needsCodeGate, unlock } = useFinanceAccess(appUser);
 
   if (needsCodeGate) {
-    return <FinanceCodeGate correctCode={appUser?.financeCode || ''} onSuccess={unlock} moduleName="Проекты" />;
+    return (
+        <FinanceCodeGate
+            correctCode={appUser?.financeCode || ''}
+            onSuccess={unlock}
+            moduleName="Проекты"
+        />
+    );
   }
 
   const showFinancialInCards = canDisplayFinancialAmounts;
@@ -259,7 +281,9 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <Button onClick={() => setShowAddForm(true)} variant="ochre" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Plus size={14} />}>Новый проект</Button>
+              <Button onClick={() => setShowAddForm(true)} variant="ochre" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Plus size={14} />}>
+                Новый проект
+              </Button>
               <div className="flex items-center bg-surface-2 rounded-lg p-0.5">
                 <button onClick={() => setViewMode('grid')} className={cn("w-8 h-8 flex items-center justify-center rounded-md transition-all", viewMode === 'grid' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40")}><LayoutGrid size={15} /></button>
                 <button onClick={() => setViewMode('list')} className={cn("w-8 h-8 flex items-center justify-center rounded-md transition-all", viewMode === 'list' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40")}><ListIcon size={15} /></button>
@@ -281,12 +305,9 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
             </div>
         ) : viewMode === 'grid' ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(310px,1fr))] gap-[14px]">
-              {filteredProjects.map((project) => {
-                const projectTrustDeeds = allTrustDeeds.filter(d => d.projectId === project.id);
-                return (
-                    <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} trustDeeds={projectTrustDeeds} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
-                );
-              })}
+              {filteredProjects.map((project) => (
+                  <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
+              ))}
             </div>
         ) : (
             <Card className="p-0 overflow-hidden">
@@ -337,24 +358,15 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
   );
 }
 
-function ProjectCard({ project, allTasks, allEvents, trustDeeds, showContract, onClick, canDelete, onDelete }: {
-  key?: any;
-  project: Project;
-  allTasks: ProjectTask[];
-  allEvents: ProjectEvent[];
-  trustDeeds: TrustDeed[];
-  showContract: boolean;
-  onClick: () => void;
-  canDelete: boolean;
-  onDelete: (e: React.MouseEvent) => void | Promise<void>;
-}) {
+function ProjectCard({ project, allTasks, allEvents, showContract, onClick, canDelete, onDelete }: { key?: any; project: Project; allTasks: ProjectTask[]; allEvents: ProjectEvent[]; showContract: boolean; onClick: () => void; canDelete: boolean; onDelete: (e: React.MouseEvent) => void | Promise<void>; }) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-  const shippingProgress = getShippingProgress(project, trustDeeds);
+  const shippingProgress = getShippingProgress(project);
 
   const nextItem = useMemo(() => {
     const now = new Date();
 
     const parseTaskDate = (item: any): Date => {
+      // Приоритет: строковая date > Timestamp date > Timestamp dueDate
       if (item.date && typeof item.date === 'string' && item.date.trim()) {
         const parts = item.date.split('-');
         if (parts.length === 3) return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
@@ -450,11 +462,12 @@ function ProjectForm({ onClose, onCreated }: { onClose: () => void, onCreated: (
   const [address, setAddress] = useState('');
   const [deadline, setDeadline] = useState('');
   const [creationDate, setCreationDate] = useState(new Date().toISOString().split('T')[0]);
-  const [contractSum, setContractSum] = useState<number>(0);
+  const [contractSum, setContractSum] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [assignedUsers, setAssignedUsers] = useState<Record<string, 'view' | 'edit'>>({});
   const [leadManagerId, setLeadManagerId] = useState<string>('');
+  const [managerDropdownOpen, setManagerDropdownOpen] = useState(false);
+  const managerTriggerRef = React.useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -464,6 +477,9 @@ function ProjectForm({ onClose, onCreated }: { onClose: () => void, onCreated: (
     });
     return () => unsub();
   }, [leadManagerId]);
+
+  const inputClass = "w-full bg-surface border border-line rounded-md px-3 py-2.5 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
+  const labelClass = "text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 block mb-1.5";
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -484,12 +500,12 @@ function ProjectForm({ onClose, onCreated }: { onClose: () => void, onCreated: (
         leadManagerId: leadManagerId,
         leadManagerName: leadManager?.displayName || '',
         stakeholders: { client: { companyId: finalClientId || '', companyName: client, contactIds: [] } },
-        finance: { contractSum: Number(contractSum) || 0, managerPercentage: 0, expenses: [] },
+        finance: { contractSum: contractSum ? Number(contractSum.replace(/\D/g, '')) : 0, managerPercentage: 0, expenses: [] },
         createdAt: (creationDate && creationDate.trim() !== "") ? new Date(creationDate) : serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
 
-      const accessUpdates: Record<string, 'view' | 'edit'> = { ...assignedUsers };
+      const accessUpdates: Record<string, 'view' | 'edit'> = {};
       if (leadManagerId) accessUpdates[leadManagerId] = 'edit';
       accessUpdates[auth.currentUser.uid] = 'edit';
 
@@ -509,34 +525,85 @@ function ProjectForm({ onClose, onCreated }: { onClose: () => void, onCreated: (
     }
   };
 
-  const toggleUserAccess = (uid: string) => {
-    setAssignedUsers(prev => { const next = { ...prev }; if (next[uid]) delete next[uid]; else next[uid] = 'edit'; return next; });
-  };
+  const selectedManager = users.find(u => u.uid === leadManagerId);
 
   return (
       <Modal isOpen={true} onClose={onClose} title="Новый проект" description="Заполните основные данные объекта"
              footer={<div className="flex gap-4"><Button variant="outline" onClick={onClose} disabled={submitting}>Отмена</Button><Button variant="ochre" onClick={handleSubmit} disabled={submitting || !name || !client}>{submitting ? 'Создание...' : 'Создать проект'}</Button></div>}
       >
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="grid grid-cols-2 gap-6">
-            <div className="space-y-1.5"><label className="text-eyebrow text-ink-3 ml-2">Название проекта</label><input required value={name} onChange={e => setName(e.target.value)} className="w-full bg-surface-2 border-line rounded-lg px-4 py-3 text-sm focus:ring-ochre/20 transition-all font-medium" placeholder="Введите название..." /></div>
-            <div className="space-y-1.5"><label className="text-eyebrow text-ink-3 ml-2">Адрес объекта</label><input value={address} onChange={e => setAddress(e.target.value)} className="w-full bg-surface-2 border-line rounded-lg px-4 py-3 text-sm focus:ring-ochre/20 transition-all font-medium" placeholder="Город, улица..." /></div>
-            <div className="space-y-1.5"><label className="text-eyebrow text-ink-3 ml-2">Дата создания</label><DatePicker value={creationDate} onChange={setCreationDate} /></div>
-            <div className="space-y-1.5"><label className="text-eyebrow text-ink-3 ml-2">Срок (Дедлайн)</label><DatePicker value={deadline} onChange={setDeadline} /></div>
-            <div className="space-y-1.5"><label className="text-eyebrow text-ink-3 ml-2">Ведущий менеджер</label><select value={leadManagerId} onChange={e => setLeadManagerId(e.target.value)} className="w-full bg-surface-2 border-line rounded-lg px-4 py-3 text-sm focus:ring-ochre/20 appearance-none transition-all font-medium cursor-pointer"><option value="">Выбрать...</option>{users.map(user => (<option key={user.uid} value={user.uid}>{user.displayName}</option>))}</select></div>
-            <div className="space-y-1.5"><label className="text-eyebrow text-ink-3 ml-2">Сумма контракта, Р</label><input type="number" value={contractSum} onChange={e => setContractSum(Number(e.target.value))} className="w-full bg-surface-2 border-line rounded-lg px-4 py-3 text-sm focus:ring-ochre/20 transition-all font-medium" placeholder="0" /></div>
-          </div>
-          <div className="space-y-2"><label className="text-eyebrow text-ink-3 ml-2">Заказчик</label><CompanySelect value={client} onChange={(val, id) => { setClient(val); setClientId(id); }} placeholder="Выбрать компанию из справочника..." /></div>
-          <div className="space-y-4 pt-4 border-t border-line">
-            <label className="text-eyebrow text-ink-3 ml-2 block italic uppercase tracking-widest">Доступ пользователей</label>
-            <div className="grid grid-cols-2 gap-4">
-              {users.filter(u => u.uid !== leadManagerId).map(user => (
-                  <div key={user.uid} className="flex items-center justify-between p-3 rounded-lg bg-surface-2 border border-line">
-                    <div className="flex items-center gap-3"><UserAvatar uid={user.uid} name={user.displayName || '—'} size="sm" /><div><p className="text-xs font-bold text-ink">{user.displayName}</p><p className={cn("text-[9px] font-bold tracking-widest uppercase mt-0.5", assignedUsers[user.uid] ? "text-profit" : "text-ink-4")}>{assignedUsers[user.uid] ? 'Доступ есть' : 'Нет доступа'}</p></div></div>
-                    <button type="button" onClick={() => toggleUserAccess(user.uid)} className={cn("w-8 h-4 rounded-full relative transition-colors", assignedUsers[user.uid] ? "bg-ochre" : "bg-ink-4/20")}><div className={cn("absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all", assignedUsers[user.uid] ? "left-4.5" : "left-0.5")} /></button>
-                  </div>
-              ))}
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={labelClass}>Название проекта</label>
+              <input required value={name} onChange={e => setName(e.target.value)} className={inputClass} placeholder="Введите название..." />
             </div>
+            <div>
+              <label className={labelClass}>Адрес объекта</label>
+              <input value={address} onChange={e => setAddress(e.target.value)} className={inputClass} placeholder="Город, улица..." />
+            </div>
+            <div>
+              <label className={labelClass}>Дата создания</label>
+              <DatePicker value={creationDate} onChange={setCreationDate} variant="compact" />
+            </div>
+            <div>
+              <label className={labelClass}>Срок проекта</label>
+              <DatePicker value={deadline} onChange={setDeadline} variant="compact" />
+            </div>
+            <div className="relative">
+              <label className={labelClass}>Ведущий менеджер</label>
+              <button
+                  ref={managerTriggerRef}
+                  type="button"
+                  onClick={() => setManagerDropdownOpen(o => !o)}
+                  className="w-full flex items-center justify-between gap-2 bg-surface border border-line rounded-md px-3 py-2.5 text-[13px] text-ink hover:bg-surface-2 focus:border-ochre focus:outline-none transition-colors"
+              >
+              <span className="flex items-center gap-2 min-w-0">
+                <UserAvatar uid={selectedManager?.uid || ''} name={selectedManager?.displayName || ''} size="xs" />
+                <span className={selectedManager ? 'text-ink truncate' : 'text-ink-4'}>
+                  {selectedManager?.displayName || 'Не назначен'}
+                </span>
+              </span>
+                <ChevronDown size={14} className="text-ink-3 shrink-0" />
+              </button>
+              <PortalDropdown anchorRef={managerTriggerRef} open={managerDropdownOpen} onClose={() => setManagerDropdownOpen(false)}>
+                <button type="button"
+                        onClick={() => { setLeadManagerId(''); setManagerDropdownOpen(false); }}
+                        className={cn("w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-left transition-colors",
+                            !leadManagerId ? "bg-[var(--ochre-bg)] text-[var(--ochre)] font-semibold" : "text-ink hover:bg-surface-2"
+                        )}>
+                  <UserAvatar uid="" name="" size="xs" />
+                  <span>Не назначен</span>
+                </button>
+                {users.map(u => (
+                    <button key={u.uid} type="button"
+                            onClick={() => { setLeadManagerId(u.uid); setManagerDropdownOpen(false); }}
+                            className={cn("w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-left transition-colors",
+                                u.uid === leadManagerId ? "bg-[var(--ochre-bg)] text-[var(--ochre)] font-semibold" : "text-ink hover:bg-surface-2"
+                            )}>
+                      <UserAvatar uid={u.uid} name={u.displayName} photoURL={u.photoURL} size="xs" />
+                      <span className="truncate">{u.displayName}</span>
+                    </button>
+                ))}
+              </PortalDropdown>
+            </div>
+            <div>
+              <label className={labelClass}>Сумма контракта, ₽</label>
+              <input
+                  type="text"
+                  inputMode="numeric"
+                  value={contractSum}
+                  onChange={e => {
+                    const raw = e.target.value.replace(/\D/g, '');
+                    setContractSum(raw ? Number(raw).toLocaleString('ru-RU') : '');
+                  }}
+                  className={inputClass}
+                  placeholder="0"
+              />
+            </div>
+          </div>
+          <div>
+            <label className={labelClass}>Заказчик</label>
+            <CompanySelect value={client} onChange={(val, id) => { setClient(val); setClientId(id); }} placeholder="Выбрать компанию из справочника..." />
           </div>
         </form>
       </Modal>
