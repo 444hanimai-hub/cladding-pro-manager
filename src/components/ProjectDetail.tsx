@@ -995,8 +995,7 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
-                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto overflow-visible"
-                style={{ borderRadius: '16px' }}
+                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto overflow-hidden"
             >
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between gap-3">
@@ -1013,7 +1012,7 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                 </div>
 
                 {/* Body */}
-                <div className="px-6 py-5 flex-1 overflow-visible flex flex-col gap-5">
+                <div className="px-6 py-5 flex-1 overflow-y-auto flex flex-col gap-5">
                     {/* Материал */}
                     <div>
                         <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-2">
@@ -1208,7 +1207,7 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                 </div>
 
                 {/* Footer */}
-                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-between items-center shrink-0">
+                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-between items-center shrink-0 rounded-b-2xl">
                     <div>
                         {editingId && (
                             <button
@@ -2626,8 +2625,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
                 transition={{ type: 'spring', stiffness: 380, damping: 28 }}
-                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col max-h-[90vh] overflow-visible"
-                style={{ borderRadius: '16px' }}
+                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col max-h-[90vh] overflow-hidden"
             >
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between gap-3">
@@ -2643,7 +2641,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 </div>
 
                 {/* Body */}
-                <div className="px-6 py-5 flex-1 overflow-visible flex flex-col gap-5">
+                <div className="px-6 py-5 flex-1 overflow-y-auto flex flex-col gap-5">
                     {/* Компания */}
                     <div>
                         <label className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 block mb-2">
@@ -2803,7 +2801,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 </div>
 
                 {/* Footer */}
-                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-end gap-2">
+                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-end gap-2 rounded-b-2xl">
                     <button
                         onClick={onClose}
                         className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors"
