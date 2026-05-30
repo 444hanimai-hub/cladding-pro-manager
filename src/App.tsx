@@ -77,6 +77,24 @@ export default function App() {
     }
   }, []);
 
+  // Zoom для ноутбуков — до условных return
+  useEffect(() => {
+    const isSmallScreen = window.screen.width <= 1440;
+    if (isSmallScreen) {
+      const scale = 0.82;
+      document.documentElement.style.zoom = String(scale);
+      // h-screen при zoom на html = viewport / scale
+      // Компенсируем: растягиваем html и body чтобы покрыть реальный экран
+      document.documentElement.style.height = `${(1 / scale) * 100}%`;
+      document.body.style.height = `${(1 / scale) * 100}%`;
+    }
+    return () => {
+      document.documentElement.style.zoom = '';
+      document.documentElement.style.height = '';
+      document.body.style.height = '';
+    };
+  }, []);
+
   useEffect(() => {
     const testConnection = async () => {
       try {
@@ -115,15 +133,10 @@ export default function App() {
         const q = query(usersRef, where('email', '==', normalizedEmail));
         const querySnap = await getDocs(q);
 
-        // ── Защита от дублей: если несколько документов с одним email ──────
-        // Оставляем только один (приоритет — документ с id == user.uid, иначе первый)
         if (querySnap.docs.length > 1) {
           const correctDoc = querySnap.docs.find(d => d.id === user.uid) || querySnap.docs[0];
           const duplicates = querySnap.docs.filter(d => d.id !== correctDoc.id);
-          // Удаляем все дубли тихо
           await Promise.all(duplicates.map(d => deleteDoc(doc(db, 'users', d.id))));
-
-          // Если нужного документа с uid нет — мигрируем из correctDoc
           if (correctDoc.id !== user.uid) {
             const dataToMove = correctDoc.data();
             await setDoc(doc(db, 'users', user.uid), {
@@ -136,7 +149,6 @@ export default function App() {
         } else if (querySnap.docs.length === 1) {
           const docSnap = querySnap.docs[0];
           if (docSnap.id !== user.uid) {
-            // Pre-registered user logging in for the first time
             const dataToMove = docSnap.data();
             await setDoc(doc(db, 'users', user.uid), {
               ...dataToMove,
@@ -150,7 +162,6 @@ export default function App() {
             await deleteDoc(doc(db, 'users', docSnap.id));
           }
         } else {
-          // Новый пользователь — создаём документ
           await setDoc(doc(db, 'users', user.uid), {
             uid: user.uid,
             email: user.email || '',
@@ -168,11 +179,8 @@ export default function App() {
           if (snap.exists()) {
             const data = snap.data() as AppUser;
             setAppUser({ uid: snap.id, ...data });
-
             if (user.email === '444hanimai@gmail.com' && !data.accessSettings) {
-              updateDoc(doc(db, 'users', user.uid), {
-                accessSettings: true
-              });
+              updateDoc(doc(db, 'users', user.uid), { accessSettings: true });
             }
           }
           setLoading(false);
@@ -191,11 +199,9 @@ export default function App() {
 
   useEffect(() => {
     if (!appUser) return;
-
     const canDashboard = appUser.accessDashboard;
     const canDirectories = appUser.accessDirectories;
     const canSettings = appUser.accessSettings;
-
     if (activeTab === 'dashboard' && !canDashboard) {
       setActiveTab('projects');
     } else if (activeTab === 'directories' && !canDirectories) {
@@ -206,20 +212,6 @@ export default function App() {
       else setActiveTab('projects');
     }
   }, [appUser, activeTab]);
-
-  // Zoom для ноутбуков — хук должен быть здесь, до условных return
-  useEffect(() => {
-    const isSmallScreen = window.screen.width <= 1440;
-    if (isSmallScreen) {
-      document.documentElement.style.zoom = '0.82';
-      // Компенсируем h-screen который становится меньше при zoom на html
-      document.documentElement.style.height = `${100 / 0.82}vh`;
-    }
-    return () => {
-      document.documentElement.style.zoom = '';
-      document.documentElement.style.height = '';
-    };
-  }, []);
 
   const onClearCalendarToken = () => {
     setAccessToken(null);
@@ -233,7 +225,6 @@ export default function App() {
         alert('Не удалось получить доступ к Google Календарю. Выберите аккаунт и разрешите доступ к календарю.');
         return false;
       }
-
       const { valid, unauthorized } = await verifyCalendarAccess(token);
       if (!valid) {
         if (unauthorized) {
@@ -243,18 +234,13 @@ export default function App() {
         }
         return false;
       }
-
       setAccessToken(token);
       localStorage.setItem(ACCESS_TOKEN_KEY, token);
       return true;
     } catch (error: unknown) {
-      const code =
-          error && typeof error === 'object' && 'code' in error
-              ? String((error as { code: string }).code)
-              : '';
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        return false;
-      }
+      const code = error && typeof error === 'object' && 'code' in error
+          ? String((error as { code: string }).code) : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return false;
       console.error('Calendar connect failed', error);
       const message = error instanceof Error ? error.message : 'Неизвестная ошибка';
       alert('Ошибка подключения календаря: ' + message);
@@ -267,11 +253,8 @@ export default function App() {
   if (loading) {
     return (
         <div className={cn("flex items-center justify-center min-h-screen", theme === 'dark' ? "bg-[#12120e]" : "bg-[#F5F5F0]")}>
-          <motion.div
-              animate={{ rotate: 360 }}
-              transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
-              className={cn("w-8 h-8 border-2 border-t-transparent rounded-full", theme === 'dark' ? "border-[#c4a484]" : "border-[#5A5A40]")}
-          />
+          <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
+                      className={cn("w-8 h-8 border-2 border-t-transparent rounded-full", theme === 'dark' ? "border-[#c4a484]" : "border-[#5A5A40]")} />
         </div>
     );
   }
@@ -279,22 +262,13 @@ export default function App() {
   if (accessDenied) {
     return (
         <div className={cn("flex flex-col items-center justify-center min-h-screen p-4 text-[#e5e5e0]", theme === 'dark' ? "bg-[#12120e]" : "bg-[#F5F5F0]")}>
-          <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn("max-w-md w-full p-12 rounded-2xl shadow-sm border text-center", theme === 'dark' ? "bg-[#1c1c16] border-[#e5e5e0]/5 text-[#e5e5e0]" : "bg-white border-[#141414]/5 text-[#141414]")}
-          >
-            <div className="w-16 h-16 bg-rose-500/10 text-rose-500 rounded-2xl flex items-center justify-center mx-auto mb-8">
-              <XCircle size={32} />
-            </div>
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+                      className={cn("max-w-md w-full p-12 rounded-2xl shadow-sm border text-center", theme === 'dark' ? "bg-[#1c1c16] border-[#e5e5e0]/5 text-[#e5e5e0]" : "bg-white border-[#141414]/5 text-[#141414]")}>
+            <div className="w-16 h-16 bg-rose-500/10 text-rose-500 rounded-2xl flex items-center justify-center mx-auto mb-8"><XCircle size={32} /></div>
             <h1 className="text-3xl font-serif font-medium mb-4">Доступ ограничен</h1>
-            <p className={cn("mb-10 text-balance", theme === 'dark' ? "text-[#e5e5e0]/60" : "text-[#141414]/60")}>
-              Ваш аккаунт не найден в списке разрешенных. Обратитесь к администратору.
-            </p>
-            <button
-                onClick={() => { setAccessDenied(false); signOut(auth); }}
-                className={cn("w-full flex items-center justify-center gap-3 py-4 px-6 rounded-full font-medium transition-all", theme === 'dark' ? "bg-[#e5e5e0] text-[#12120e] hover:bg-[#e5e5e0]/90" : "bg-[#141414] text-white hover:bg-[#141414]/90")}
-            >
+            <p className={cn("mb-10 text-balance", theme === 'dark' ? "text-[#e5e5e0]/60" : "text-[#141414]/60")}>Ваш аккаунт не найден в списке разрешенных. Обратитесь к администратору.</p>
+            <button onClick={() => { setAccessDenied(false); signOut(auth); }}
+                    className={cn("w-full flex items-center justify-center gap-3 py-4 px-6 rounded-full font-medium transition-all", theme === 'dark' ? "bg-[#e5e5e0] text-[#12120e] hover:bg-[#e5e5e0]/90" : "bg-[#141414] text-white hover:bg-[#141414]/90")}>
               Вернуться ко входу
             </button>
           </motion.div>
@@ -305,11 +279,8 @@ export default function App() {
   if (!appUser) {
     return (
         <div className={cn("flex flex-col items-center justify-center min-h-screen p-4", theme === 'dark' ? "bg-[#12120e] text-[#e5e5e0]" : "bg-[#F5F5F0] text-[#141414]")}>
-          <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn("max-w-md w-full p-12 rounded-2xl shadow-sm border text-center", theme === 'dark' ? "bg-[#1c1c16] border-white/5" : "bg-white border-[#141414]/5")}
-          >
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+                      className={cn("max-w-md w-full p-12 rounded-2xl shadow-sm border text-center", theme === 'dark' ? "bg-[#1c1c16] border-white/5" : "bg-white border-[#141414]/5")}>
             <div className={cn("w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-lg", theme === 'dark' ? "bg-[#c4a484]" : "bg-[#5A5A40]")}>
               <Briefcase className={cn("w-8 h-8", theme === 'dark' ? "text-[#12120e]" : "text-white")} />
             </div>
@@ -317,10 +288,8 @@ export default function App() {
             <p className={cn("mb-10 text-balance", theme === 'dark' ? "text-[#e5e5e0]/60" : "text-[#141414]/60")}>
               Войдите в систему для управления проектами по подбору и поставке облицовочного материала
             </p>
-            <button
-                onClick={loginWithCalendar}
-                className={cn("w-full flex items-center justify-center gap-3 py-4 px-6 rounded-full font-medium transition-all active:scale-95", theme === 'dark' ? "bg-[#e5e5e0] text-[#12120e] hover:bg-[#e5e5e0]/90" : "bg-[#141414] text-white hover:bg-[#141414]/90")}
-            >
+            <button onClick={loginWithCalendar}
+                    className={cn("w-full flex items-center justify-center gap-3 py-4 px-6 rounded-full font-medium transition-all active:scale-95", theme === 'dark' ? "bg-[#e5e5e0] text-[#12120e] hover:bg-[#e5e5e0]/90" : "bg-[#141414] text-white hover:bg-[#141414]/90")}>
               <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5 bg-white rounded-full" alt="Google" />
               Войти через Google
             </button>
@@ -330,71 +299,39 @@ export default function App() {
   }
 
   return (
-      <div className="flex h-screen bg-bg transition-colors duration-base overflow-hidden">
+      <div className="flex h-full bg-bg transition-colors duration-base overflow-hidden" style={{ minHeight: '100vh' }}>
         <AnimatePresence>
           {isSidebarOpen && isMobile && (
-              <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.18 }}
-                  onClick={() => setIsSidebarOpen(false)}
-                  className="fixed inset-0 z-40 bg-ink/30 backdrop-blur-sm lg:hidden"
-              />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                          transition={{ duration: 0.18 }} onClick={() => setIsSidebarOpen(false)}
+                          className="fixed inset-0 z-40 bg-ink/30 backdrop-blur-sm lg:hidden" />
           )}
         </AnimatePresence>
 
-        <Sidebar
-            activeTab={activeTab}
-            onTabChange={handleNavClick}
-            isOpen={isSidebarOpen}
-            onLogout={logout}
-            appUser={appUser}
-            isMobile={isMobile}
-        />
+        <Sidebar activeTab={activeTab} onTabChange={handleNavClick} isOpen={isSidebarOpen}
+                 onLogout={logout} appUser={appUser} isMobile={isMobile} />
 
         <div className="flex-1 flex flex-col min-w-0 transition-all duration-base">
           <Topbar
-              title={
-                selectedProjectId
-                    ? ''
-                    : activeTab === 'dashboard' ? 'Дашборд'
-                        : activeTab === 'projects' ? 'Проекты'
-                            : activeTab === 'directories' ? 'Справочники'
-                                : 'Настройки'
-              }
+              title={selectedProjectId ? '' : activeTab === 'dashboard' ? 'Дашборд' : activeTab === 'projects' ? 'Проекты' : activeTab === 'directories' ? 'Справочники' : 'Настройки'}
               onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
               isSidebarOpen={isSidebarOpen}
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
           />
-
           <main className="flex-1 overflow-y-auto p-4 scroll-smooth">
             <AnimatePresence mode="wait">
-              <motion.div
-                  key={selectedProjectId || activeTab}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.22, ease: [0.3, 0.7, 0.4, 1] }}
-              >
+              <motion.div key={selectedProjectId || activeTab}
+                          initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+                          transition={{ duration: 0.22, ease: [0.3, 0.7, 0.4, 1] }}>
                 {selectedProjectId ? (
-                    <ProjectDetail
-                        projectId={selectedProjectId}
-                        initialTaskId={selectedTaskId}
-                        onBack={() => { setSelectedProjectId(null); setSelectedTaskId(null); }}
-                        appUser={appUser}
-                        accessToken={accessToken}
-                        onConnectCalendar={loginWithCalendar}
-                        onClearCalendarToken={onClearCalendarToken}
-                    />
+                    <ProjectDetail projectId={selectedProjectId} initialTaskId={selectedTaskId}
+                                   onBack={() => { setSelectedProjectId(null); setSelectedTaskId(null); }}
+                                   appUser={appUser} accessToken={accessToken}
+                                   onConnectCalendar={loginWithCalendar} onClearCalendarToken={onClearCalendarToken} />
                 ) : activeTab === 'dashboard' ? (
-                    <Dashboard
-                        onSelectProject={id => { setSelectedProjectId(id); setActiveTab('projects'); }}
-                        onSelectTask={handleSelectTask}
-                        onViewAllProjects={() => setActiveTab('projects')}
-                        appUser={appUser}
-                    />
+                    <Dashboard onSelectProject={id => { setSelectedProjectId(id); setActiveTab('projects'); }}
+                               onSelectTask={handleSelectTask} onViewAllProjects={() => setActiveTab('projects')} appUser={appUser} />
                 ) : activeTab === 'projects' ? (
                     <ProjectList onSelectProject={setSelectedProjectId} appUser={appUser} />
                 ) : activeTab === 'directories' ? (

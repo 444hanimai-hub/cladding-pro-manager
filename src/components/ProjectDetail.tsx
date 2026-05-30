@@ -981,14 +981,15 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
 
     const isContactFormOpen = supplierId && (availableContacts.length === 0 || showAddSupplierContact);
 
-    return (
+    return createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
             <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={onClose}
-                className="fixed inset-0 bg-ink/40 backdrop-blur-sm"
+                className="fixed inset-0"
+                style={{ backgroundColor: 'rgba(31,28,20,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
             />
             <motion.div
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
@@ -1233,7 +1234,8 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                     </div>
                 </div>
             </motion.div>
-        </div>
+        </div>,
+        document.body
     );
 }
 
@@ -1354,14 +1356,15 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
         "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4"
     );
 
-    return (
+    return createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
             <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={onClose}
-                className="fixed inset-0 bg-ink/40 backdrop-blur-sm"
+                className="fixed inset-0"
+                style={{ backgroundColor: 'rgba(31,28,20,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
             />
             <motion.div
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
@@ -1633,7 +1636,8 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                     </div>
                 </div>
             </motion.div>
-        </div>
+        </div>,
+        document.body
     );
 }
 
@@ -2603,7 +2607,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
 
     const isContactFormOpen = showAddContact || (Boolean(companyId) && availableContacts.length === 0);
 
-    return (
+    return createPortal(
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             {/* Backdrop */}
             <motion.div
@@ -2611,7 +2615,8 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={onClose}
-                className="absolute inset-0 bg-ink/40 backdrop-blur-sm"
+                className="absolute inset-0"
+                style={{ backgroundColor: 'rgba(31,28,20,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
             />
 
             {/* Dialog */}
@@ -2811,7 +2816,8 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                     </button>
                 </div>
             </motion.div>
-        </div>
+        </div>,
+        document.body
     );
 }
 
@@ -4601,9 +4607,9 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
 
     const driverOptions = (directories.drivers || []).map((d: any) => ({ id: d.id, name: d.name }));
 
-    return (
+    return createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-ink/40 backdrop-blur-sm" />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0" style={{ backgroundColor: 'rgba(31,28,20,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }} />
             <motion.div
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -4789,7 +4795,8 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                     </button>
                 </div>
             </motion.div>
-        </div>
+        </div>,
+        document.body
     );
 }
 
