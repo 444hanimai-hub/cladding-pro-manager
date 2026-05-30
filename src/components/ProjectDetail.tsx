@@ -996,6 +996,7 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
                 className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto overflow-visible"
+                style={{ borderRadius: '16px' }}
             >
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between gap-3">
@@ -2626,6 +2627,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
                 transition={{ type: 'spring', stiffness: 380, damping: 28 }}
                 className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col max-h-[90vh] overflow-visible"
+                style={{ borderRadius: '16px' }}
             >
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between gap-3">
