@@ -59,9 +59,18 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
     { id: 'settings',    label: 'Настройки',   icon: SettingsIcon, access: appUser.accessSettings,    count: null },
   ];
 
-  const navHeight = typeof window !== 'undefined'
-      ? `${(1 / (parseFloat(document.documentElement.style.zoom) || 1)) * 100}%`
-      : '100%';
+  const [navHeight, setNavHeight] = React.useState('100%');
+
+  React.useEffect(() => {
+    const update = () => {
+      const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+      setNavHeight(`${(1 / zoom) * 100}%`);
+    };
+    update();
+    // Пересчитываем при изменении размера окна
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
 
   return (
       <motion.nav
