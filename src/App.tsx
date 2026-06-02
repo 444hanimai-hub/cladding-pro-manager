@@ -216,7 +216,7 @@ export default function App() {
     try {
       const token = await connectGoogleCalendar();
       if (!token) {
-        alert('Не удалось получить доступ к Google Календарю. Выберите аккаунт и разрешите доступ к kalendарю.');
+        alert('Не удалось получить доступ к Google Календарю. Выберите аккаунт и разрешите доступ к календарю.');
         return false;
       }
       const { valid, unauthorized } = await verifyCalendarAccess(token);
@@ -292,8 +292,12 @@ export default function App() {
     );
   }
 
+  // KEY FIX: sidebar теперь fixed, поэтому основному контенту нужен отступ слева.
+  // Используем transition на ml, синхронизированный с анимацией сайдбара (0.2s).
+  const sidebarWidth = isSidebarOpen && !isMobile ? '240px' : '0px';
+
   return (
-      <div className="flex bg-bg transition-colors duration-base overflow-hidden" style={{ minHeight: '100svh' }}>
+      <div className="flex bg-bg transition-colors duration-base" style={{ minHeight: '100svh' }}>
         <AnimatePresence>
           {isSidebarOpen && isMobile && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -305,7 +309,11 @@ export default function App() {
         <Sidebar activeTab={activeTab} onTabChange={handleNavClick} isOpen={isSidebarOpen}
                  onLogout={logout} appUser={appUser} isMobile={isMobile} />
 
-        <div className="flex-1 flex flex-col min-w-0 min-h-full transition-all duration-base">
+        {/* Основной контент получает отступ слева равный ширине сайдбара */}
+        <div
+            className="flex-1 flex flex-col min-w-0 min-h-full transition-all duration-[200ms]"
+            style={{ marginLeft: isMobile ? 0 : sidebarWidth }}
+        >
           <Topbar
               title={selectedProjectId ? '' : activeTab === 'dashboard' ? 'Дашборд' : activeTab === 'projects' ? 'Проекты' : activeTab === 'directories' ? 'Справочники' : 'Настройки'}
               onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}

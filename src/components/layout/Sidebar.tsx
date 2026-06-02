@@ -65,14 +65,17 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
           animate={{ width: isOpen ? (isMobile ? '100%' : '240px') : '0px' }}
           transition={{ duration: 0.2 }}
           className={cn(
-              "fixed lg:sticky top-0 z-50 h-screen border-r border-line flex flex-col bg-bg-elev overflow-hidden shrink-0",
+              // KEY FIX: используем h-screen + overflow-hidden на самом nav,
+              // убираем lg:sticky — вместо этого используем fixed с полной высотой
+              "fixed top-0 left-0 z-50 h-screen border-r border-line flex flex-col bg-bg-elev overflow-hidden shrink-0",
               !isOpen && "border-none"
           )}
       >
-        <div className="w-[240px] flex flex-col h-full overflow-hidden">
+        {/* Внутренний контейнер: фиксированная ширина, flex колонка на всю высоту */}
+        <div className="w-[240px] h-full flex flex-col">
 
-          {/* Logo */}
-          <div className="px-6 pt-7 pb-6 flex items-center gap-3">
+          {/* Logo — shrink-0 чтобы не сжималось */}
+          <div className="shrink-0 px-6 pt-7 pb-6 flex items-center gap-3">
             <BrandLogo size={36} />
             <div className="flex flex-col leading-none">
               <span className="font-display text-[19px] font-medium tracking-[0.04em] text-ink leading-none">АРХИХАБ</span>
@@ -80,13 +83,13 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
             </div>
           </div>
 
-          {/* Section eyebrow */}
-          <div className="px-6 pt-3 pb-2">
+          {/* Section eyebrow — shrink-0 */}
+          <div className="shrink-0 px-6 pt-3 pb-2">
             <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-4">Рабочее пространство</span>
           </div>
 
-          {/* Navigation */}
-          <div className="px-3 flex flex-col gap-1">
+          {/* Navigation — flex-1 чтобы занять всё свободное пространство */}
+          <div className="flex-1 px-3 flex flex-col gap-1 overflow-y-auto">
             {navItems.filter(item => item.access).map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
@@ -124,8 +127,8 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
             })}
           </div>
 
-          {/* Footer */}
-          <div className="mt-auto px-6 pb-5">
+          {/* Footer — shrink-0, всегда прибит к низу */}
+          <div className="shrink-0 px-6 pb-5">
             <div className="border-t border-dashed border-line pt-3 pb-4">
               <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1.5">Подсказка</div>
               <div className="text-[11.5px] text-ink-3 leading-snug">
