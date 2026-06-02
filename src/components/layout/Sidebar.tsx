@@ -64,26 +64,15 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
           initial={false}
           animate={{ width: isOpen ? (isMobile ? '100%' : '240px') : '0px' }}
           transition={{ duration: 0.2 }}
-          style={{
-            // Используем style вместо Tailwind для надёжности при zoom
-            position: 'sticky',
-            top: 0,
-            height: '100svh',        // svh игнорирует zoom-артефакты лучше чем vh
-            flexShrink: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            overflowX: 'hidden',
-            overflowY: 'hidden',
-            borderRight: isOpen ? '1px solid var(--line)' : 'none',
-            backgroundColor: 'var(--bg-elev)',
-            zIndex: 50,
-          }}
+          className={cn(
+              "fixed lg:sticky top-0 z-50 h-screen border-r border-line flex flex-col bg-bg-elev overflow-hidden shrink-0",
+              !isOpen && "border-none"
+          )}
       >
-        {/* Внутренний контейнер строго 240px, flex-колонка на полную высоту */}
-        <div style={{ width: '240px', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div className="w-[240px] flex flex-col h-full overflow-hidden">
 
-          {/* Лого — не сжимается */}
-          <div style={{ flexShrink: 0, padding: '28px 24px 24px' }} className="flex items-center gap-3">
+          {/* Logo */}
+          <div className="px-6 pt-7 pb-6 flex items-center gap-3 shrink-0">
             <BrandLogo size={36} />
             <div className="flex flex-col leading-none">
               <span className="font-display text-[19px] font-medium tracking-[0.04em] text-ink leading-none">АРХИХАБ</span>
@@ -91,13 +80,13 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
             </div>
           </div>
 
-          {/* Eyebrow — не сжимается */}
-          <div style={{ flexShrink: 0 }} className="px-6 pt-3 pb-2">
+          {/* Section eyebrow */}
+          <div className="px-6 pt-3 pb-2 shrink-0">
             <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-4">Рабочее пространство</span>
           </div>
 
-          {/* Навигация — занимает всё свободное место, скроллится если не влезает */}
-          <div style={{ flex: '1 1 0', overflowY: 'auto', minHeight: 0 }} className="px-3 flex flex-col gap-1">
+          {/* Navigation */}
+          <div className="px-3 flex flex-col gap-1 flex-1 overflow-y-auto min-h-0">
             {navItems.filter(item => item.access).map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
@@ -135,8 +124,8 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
             })}
           </div>
 
-          {/* Футер — НЕ сжимается, прибит к низу */}
-          <div style={{ flexShrink: 0 }} className="px-6 pb-5">
+          {/* Footer */}
+          <div className="shrink-0 px-6 pb-5">
             <div className="border-t border-dashed border-line pt-3 pb-4">
               <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1.5">Подсказка</div>
               <div className="text-[11.5px] text-ink-3 leading-snug">
