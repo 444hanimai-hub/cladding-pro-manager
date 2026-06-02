@@ -36,6 +36,7 @@ import {
   ManagerSelector,
   PeriodType
 } from './shared/DashboardFilters';
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
 
 export const getNormalizedStatus = (raw: string | undefined): 'in_progress' | 'shipping' | 'done' | 'canceled' => {
   if (!raw) return 'in_progress';
@@ -294,6 +295,53 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     return { totalCount: baseList.length, displayProjects: [...inProgress, ...shipping] };
   }, [filteredProjects]);
 
+  // Данные для диаграммы расходов по всем отфильтрованным проектам
+  const expensesChartData = useMemo(() => {
+    const map = new Map<string, number>();
+    filteredProjects.forEach(p => {
+      const expenses = p.finance?.expenses || [];
+      expenses.forEach((e: any) => {
+        const cat = e.category || 'Прочее';
+        map.set(cat, (map.get(cat) || 0) + (e.amount || 0));
+      });
+    });
+    return Array.from(map.entries())
+        .map(([name, value]) => ({ name, value }))
+        .sort((a, b) => b.value - a.value);
+  }, [filteredProjects]);
+
+  const conversion = useMemo(() => {
+    const s1 = filteredProjects.filter(p => { const n = getNormalizedStatus(p.status as string); return n === 'in_progress' || n === 'shipping'; }).length;
+    const s2 = filteredProjects.filter(p => getNormalizedStatus(p.status as string) === 'shipping').length;
+    if (s1 === 0) return 0;
+    return Math.round((s2 * 100) / s1);
+  }, [filteredProjects]);
+
+  const avgDuration = useMemo(() => {
+    const rel = filteredProjects.filter(p => p.createdAt && p.completedAt);
+    if (rel.length === 0) return 0;
+    const total = rel.reduce((sum, p) => {
+      const start = p.createdAt.toDate().getTime();
+      const end = p.completedAt.toDate ? p.completedAt.toDate().getTime() : new Date(p.completedAt).getTime();
+      return sum + (end - start) / (1000 * 60 * 60 * 24 * 7);
+    }, 0);
+    return Math.ceil(total / rel.length);
+  }, [filteredProjects]);
+
+  const overdueCount = useMemo(() => {
+    const now = new Date().getTime();
+    return filteredProjects.filter(p => {
+      if (!p.deadline) return false;
+      const dl = p.deadline.toDate ? p.deadline.toDate().getTime() : new Date(p.deadline).getTime();
+      if (p.status === 'completed' && p.completedAt) {
+        const cd = p.completedAt.toDate ? p.completedAt.toDate().getTime() : new Date(p.completedAt).getTime();
+        return cd > dl;
+      }
+      if (p.status === 'active') return now > dl;
+      return false;
+    }).length;
+  }, [filteredProjects]);
+
   useEffect(() => {
     if (!auth.currentUser) return;
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -302,7 +350,6 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     return () => unsub();
   }, []);
 
-  // ── Подписка на tasks, events и trust_deeds через collectionGroup ──
   useEffect(() => {
     if (!appUser) return;
 
@@ -324,7 +371,6 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
       }));
     }, (error) => { console.error("Dashboard events group snapshot error:", error); });
 
-    // ── НОВОЕ: доверенности ──
     const unsubTrustDeeds = onSnapshot(collectionGroup(db, 'trust_deeds'), (snap) => {
       setAllTrustDeeds(snap.docs.map(doc => {
         const parts = doc.ref.path.split('/');
@@ -384,38 +430,6 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     const timeout = setTimeout(() => { if (projectsMap.size === 0) setLoading(false); }, 2000);
     return () => { clearTimeout(timeout); unsubs.forEach(u => u()); };
   }, [appUser?.uid, appUser?.fullProjectAccess]);
-
-  const conversion = useMemo(() => {
-    const s1 = filteredProjects.filter(p => { const n = getNormalizedStatus(p.status as string); return n === 'in_progress' || n === 'shipping'; }).length;
-    const s2 = filteredProjects.filter(p => getNormalizedStatus(p.status as string) === 'shipping').length;
-    if (s1 === 0) return 0;
-    return Math.round((s2 * 100) / s1);
-  }, [filteredProjects]);
-
-  const avgDuration = useMemo(() => {
-    const rel = filteredProjects.filter(p => p.createdAt && p.completedAt);
-    if (rel.length === 0) return 0;
-    const total = rel.reduce((sum, p) => {
-      const start = p.createdAt.toDate().getTime();
-      const end = p.completedAt.toDate ? p.completedAt.toDate().getTime() : new Date(p.completedAt).getTime();
-      return sum + (end - start) / (1000 * 60 * 60 * 24 * 7);
-    }, 0);
-    return Math.ceil(total / rel.length);
-  }, [filteredProjects]);
-
-  const overdueCount = useMemo(() => {
-    const now = new Date().getTime();
-    return filteredProjects.filter(p => {
-      if (!p.deadline) return false;
-      const dl = p.deadline.toDate ? p.deadline.toDate().getTime() : new Date(p.deadline).getTime();
-      if (p.status === 'completed' && p.completedAt) {
-        const cd = p.completedAt.toDate ? p.completedAt.toDate().getTime() : new Date(p.completedAt).getTime();
-        return cd > dl;
-      }
-      if (p.status === 'active') return now > dl;
-      return false;
-    }).length;
-  }, [filteredProjects]);
 
   if (loading) return (
       <div className="h-96 flex items-center justify-center">
@@ -520,43 +534,150 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pb-4">
-          <div className="lg:col-span-6">
-            <div className="h-full bg-surface border border-line rounded-2xl shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] px-5 py-4">
+        {/* Нижний ряд: Воронка + Расходы */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pb-4 items-start">
+          {/* Воронка проектов + метрики */}
+          <div className="lg:col-span-5">
+            <div className="bg-surface border border-line rounded-2xl shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] px-5 py-4 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-display text-[17px] font-medium text-ink leading-tight">Воронка проектов</h3>
                 <span className="text-[11.5px] text-ink-3">по сумме контрактов</span>
               </div>
               <ProjectFunnel projects={filteredProjects} />
-            </div>
-          </div>
-          <div className="lg:col-span-6">
-            <div className="h-full bg-surface border border-line rounded-2xl shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] px-5 py-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-display text-[17px] font-medium text-ink leading-tight">Аналитика</h3>
-                <span className="text-[11.5px] text-ink-3">за выбранный период</span>
-              </div>
+
+              {/* Разделитель */}
+              <div className="border-t border-line mt-5 mb-4" />
+
+              {/* Метрики */}
               <div className="grid grid-cols-3 gap-3">
-                <div className="rounded-[10px] bg-surface-2 px-4 py-3.5 flex flex-col gap-2 min-h-[100px]">
-                  <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 leading-snug">Конверсия «В&nbsp;работе» → «Отгрузки»</p>
-                  <p className="font-display text-[30px] font-normal text-ink tabular-nums leading-none mt-auto">{conversion}<span className="text-[18px] opacity-60">%</span></p>
+                <div className="flex flex-col gap-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-3 leading-snug">Конверсия В работе → Отгрузки</p>
+                  <p className="font-display text-[28px] font-normal text-ink tabular-nums leading-none mt-1">{conversion}<span className="text-[16px] opacity-60">%</span></p>
                 </div>
-                <div className="rounded-[10px] bg-surface-2 px-4 py-3.5 flex flex-col gap-2 min-h-[100px]">
-                  <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 leading-snug">Средний цикл</p>
-                  <div className="flex items-baseline gap-1.5 mt-auto">
-                    <p className="font-display text-[30px] font-normal text-ink tabular-nums leading-none">{avgDuration}</p>
-                    <span className="font-display text-[14px] italic text-ink-3">нед.</span>
+                <div className="flex flex-col gap-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-3 leading-snug">Средний цикл</p>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <p className="font-display text-[28px] font-normal text-ink tabular-nums leading-none">{avgDuration}</p>
+                    <span className="font-display text-[13px] italic text-ink-3">нед.</span>
                   </div>
                 </div>
-                <div className="rounded-[10px] bg-surface-2 px-4 py-3.5 flex flex-col gap-2 min-h-[100px]">
-                  <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 leading-snug">Просрочено</p>
-                  <p className="font-display text-[30px] font-normal tabular-nums leading-none mt-auto" style={{ color: 'var(--terracotta)' }}>{overdueCount}</p>
+                <div className="flex flex-col gap-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-3 leading-snug">Просрочено</p>
+                  <p className="font-display text-[28px] font-normal tabular-nums leading-none mt-1" style={{ color: overdueCount > 0 ? 'var(--terracotta)' : 'var(--ink)' }}>{overdueCount}</p>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* Диаграмма расходов */}
+          <div className="lg:col-span-7">
+            <div className="bg-surface border border-line rounded-2xl shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] px-5 py-4 flex flex-col">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-display text-[17px] font-medium text-ink leading-tight">Расходы по категориям</h3>
+                <span className="text-[11.5px] text-ink-3">за выбранный период</span>
+              </div>
+              <ExpensesChart data={expensesChartData} />
             </div>
           </div>
         </div>
       </motion.div>
+  );
+}
+
+// ── Цвета для категорий расходов ─────────────────────────────────────────────
+const EXPENSE_COLORS: Record<string, string> = {
+  Логистика: '#b07a2c',
+  Мокап: '#2d4f35',
+  Образцы: '#3b4a55',
+  Монтаж: '#a04930',
+  Закупка: '#5a6b3c',
+  'Бонус менеджера': '#7a5c2e',
+};
+const FALLBACK_COLORS = ['#b07a2c', '#2d4f35', '#3b4a55', '#a04930', '#5a6b3c', '#7a7565', '#4a6b6b', '#6b4a6b'];
+function getExpenseColor(name: string, idx: number) {
+  return EXPENSE_COLORS[name] ?? FALLBACK_COLORS[idx % FALLBACK_COLORS.length];
+}
+
+function ExpensesChart({ data }: { data: { name: string; value: number }[] }) {
+  const formatVal = (v: number) => {
+    if (v >= 1000000) return `${(v / 1000000).toFixed(1)} млн ₽`;
+    if (v >= 1000) return `${(v / 1000).toFixed(0)} тыс ₽`;
+    return `${v} ₽`;
+  };
+
+  if (data.length === 0) {
+    return (
+        <div className="flex-1 flex flex-col items-center justify-center text-center py-10">
+          <div className="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center mb-3 text-ink-4">
+            <TrendingDown size={22} />
+          </div>
+          <p className="text-[13px] font-medium text-ink-3">Расходов нет</p>
+          <p className="text-[11px] text-ink-4 mt-1">Добавьте расходы в карточках проектов</p>
+        </div>
+    );
+  }
+
+  const total = data.reduce((s, d) => s + d.value, 0);
+
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (!active || !payload?.length) return null;
+    const { name, value } = payload[0].payload;
+    const pct = total > 0 ? ((value / total) * 100).toFixed(1) : '0';
+    return (
+        <div className="bg-surface border border-line rounded-lg px-3 py-2 shadow-lg">
+          <p className="text-[12px] font-semibold text-ink">{name}</p>
+          <p className="text-[12px] text-ink-2 tabular-nums">{formatVal(value)}</p>
+          <p className="text-[11px] text-ink-3">{pct}%</p>
+        </div>
+    );
+  };
+
+  return (
+      <div className="flex gap-4 min-h-0 items-center">
+        {/* Диаграмма */}
+        <div className="w-[200px] h-[200px] shrink-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                  data={data.map((d, i) => ({ ...d, fill: getExpenseColor(d.name, i) }))}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={55}
+                  outerRadius={85}
+                  paddingAngle={2}
+                  stroke="none"
+              >
+                {data.map((entry, index) => (
+                    <Cell key={entry.name} fill={getExpenseColor(entry.name, index)} />
+                ))}
+              </Pie>
+              <Tooltip content={<CustomTooltip />} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Легенда справа */}
+        <div className="flex-1 flex flex-col gap-1.5 overflow-y-auto max-h-[220px] min-w-0">
+          {data.map((entry, idx) => {
+            const color = getExpenseColor(entry.name, idx);
+            const pct = total > 0 ? ((entry.value / total) * 100).toFixed(1) : '0';
+            return (
+                <div key={entry.name} className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                  <span className="text-[12px] text-ink flex-1 truncate">{entry.name}</span>
+                  <span className="text-[11px] text-ink-3 tabular-nums shrink-0">{pct}%</span>
+                  <span className="text-[11px] font-semibold text-ink tabular-nums shrink-0 min-w-[65px] text-right">{formatVal(entry.value)}</span>
+                </div>
+            );
+          })}
+          <div className="flex items-center gap-2 border-t border-line pt-1.5 mt-0.5">
+            <span className="w-2 h-2 shrink-0" />
+            <span className="text-[12px] font-semibold text-ink flex-1">Итого</span>
+            <span className="text-[11px] text-ink-3 shrink-0">100%</span>
+            <span className="text-[11px] font-bold text-ink tabular-nums shrink-0 min-w-[65px] text-right">{formatVal(total)}</span>
+          </div>
+        </div>
+      </div>
   );
 }
 
