@@ -77,7 +77,7 @@ export default function App() {
     }
   }, []);
 
-  // Zoom для ноутбуков — до условных return
+  // Zoom для ноутбуков
   useEffect(() => {
     const isSmallScreen = window.screen.width <= 1440;
     if (isSmallScreen) {
@@ -292,12 +292,13 @@ export default function App() {
     );
   }
 
-  // KEY FIX: sidebar теперь fixed, поэтому основному контенту нужен отступ слева.
-  // Используем transition на ml, синхронизированный с анимацией сайдбара (0.2s).
-  const sidebarWidth = isSidebarOpen && !isMobile ? '240px' : '0px';
-
   return (
-      <div className="flex bg-bg transition-colors duration-base" style={{ minHeight: '100svh' }}>
+      // КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: корневой контейнер — overflow-hidden + 100svh высота,
+      // чтобы страница НЕ скроллилась целиком, а скроллился только main внутри
+      <div
+          className="flex bg-bg transition-colors duration-base"
+          style={{ height: '100svh', overflow: 'hidden' }}
+      >
         <AnimatePresence>
           {isSidebarOpen && isMobile && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -309,11 +310,8 @@ export default function App() {
         <Sidebar activeTab={activeTab} onTabChange={handleNavClick} isOpen={isSidebarOpen}
                  onLogout={logout} appUser={appUser} isMobile={isMobile} />
 
-        {/* Основной контент получает отступ слева равный ширине сайдбара */}
-        <div
-            className="flex-1 flex flex-col min-w-0 min-h-full transition-all duration-[200ms]"
-            style={{ marginLeft: isMobile ? 0 : sidebarWidth }}
-        >
+        {/* Правая часть — тоже полная высота, скроллится только main */}
+        <div className="flex-1 flex flex-col min-w-0" style={{ height: '100%', overflow: 'hidden' }}>
           <Topbar
               title={selectedProjectId ? '' : activeTab === 'dashboard' ? 'Дашборд' : activeTab === 'projects' ? 'Проекты' : activeTab === 'directories' ? 'Справочники' : 'Настройки'}
               onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -321,7 +319,7 @@ export default function App() {
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
           />
-          <main className="flex-1 overflow-y-auto p-4 scroll-smooth">
+          <main className="flex-1 overflow-y-auto p-4 scroll-smooth" style={{ minHeight: 0 }}>
             <AnimatePresence mode="wait">
               <motion.div key={selectedProjectId || activeTab}
                           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
