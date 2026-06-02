@@ -318,11 +318,27 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
   }, [filteredProjects]);
 
   const avgDuration = useMemo(() => {
-    const rel = filteredProjects.filter(p => p.createdAt && p.completedAt);
+    const getCompletionDate = (p: Project): Date | null => {
+      const raw = p.actualCompletionDate || p.completedAt || p.completed;
+      if (!raw) return null;
+      if (raw.toDate) return raw.toDate();
+      const d = new Date(raw);
+      return isNaN(d.getTime()) ? null : d;
+    };
+    const rel = filteredProjects.filter(p => {
+      const norm = getNormalizedStatus(p.status as string);
+      if (norm !== 'done') return false;
+      if (!p.createdAt) return false;
+      const end = getCompletionDate(p);
+      if (!end) return false;
+      // Отбрасываем проекты где дата завершения раньше даты создания (некорректные данные)
+      const start = p.createdAt.toDate ? p.createdAt.toDate() : new Date(p.createdAt);
+      return end.getTime() > start.getTime();
+    });
     if (rel.length === 0) return 0;
     const total = rel.reduce((sum, p) => {
-      const start = p.createdAt.toDate().getTime();
-      const end = p.completedAt.toDate ? p.completedAt.toDate().getTime() : new Date(p.completedAt).getTime();
+      const start = p.createdAt.toDate ? p.createdAt.toDate().getTime() : new Date(p.createdAt).getTime();
+      const end = getCompletionDate(p)!.getTime();
       return sum + (end - start) / (1000 * 60 * 60 * 24 * 7);
     }, 0);
     return Math.ceil(total / rel.length);
@@ -333,11 +349,14 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     return filteredProjects.filter(p => {
       if (!p.deadline) return false;
       const dl = p.deadline.toDate ? p.deadline.toDate().getTime() : new Date(p.deadline).getTime();
-      if (p.status === 'completed' && p.completedAt) {
+      const norm = getNormalizedStatus(p.status as string);
+      // Завершённые — просрочка если сдали позже дедлайна
+      if ((norm === 'done') && p.completedAt) {
         const cd = p.completedAt.toDate ? p.completedAt.toDate().getTime() : new Date(p.completedAt).getTime();
         return cd > dl;
       }
-      if (p.status === 'active') return now > dl;
+      // Активные и в отгрузках — просрочка если дедлайн уже прошёл
+      if (norm === 'in_progress' || norm === 'shipping') return now > dl;
       return false;
     }).length;
   }, [filteredProjects]);
@@ -454,11 +473,10 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
           <Button variant="soft" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Download size={14} />} onClick={() => {}}>Экспорт</Button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1.5fr_1fr_1fr_1fr_1fr] gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1.5fr_1fr_1fr_1fr] gap-4">
           <SummaryCard title="СУММА КОНТРАКТОВ" value={totals.contractSum} isDark trendVal={trends.contract.val} isPositive={trends.contract.isPositive} customPath="M0,25 L15,22 L32,25 L45,18 L58,20 L70,12 L82,15 L92,5 L100,5" />
           <SummaryCard title="ЧИСТАЯ ПРИБЫЛЬ" value={totals.netProfit} trendVal={trends.profit.val} isPositive={trends.profit.isPositive} color="#2f5e3f" customPath="M0,24 L10,22 L20,26 L35,22 L50,18 L65,20 L80,12 L90,14 L100,8" />
           <SummaryCard title="РАСХОДЫ" value={totals.expenses} trendVal={trends.expenses.val} isPositive={trends.expenses.isPositive} color="#8a3f47" customPath="M0,18 L12,22 L25,16 L38,20 L50,14 L62,18 L75,12 L88,16 L100,10" />
-          <SummaryCard title="БОНУСЫ МЕНЕДЖЕРОВ" value={totals.bonuses} trendVal={trends.bonuses.val} isPositive={trends.bonuses.isPositive} color="#b07a2c" customPath="M0,26 L15,24 L30,22 L45,20 L60,18 L75,15 L90,12 L100,10" />
           <SummaryCard title="СРЕДНЯЯ МАРЖА" value={avgMargin} isPercentage trendVal={trends.margin.val} isPositive={trends.margin.isPositive} color="#1f1c14" customPath="M0,22 L15,18 L35,24 L55,20 L75,22 L90,12 L100,8" />
         </div>
 
