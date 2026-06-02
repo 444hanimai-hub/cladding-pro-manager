@@ -59,15 +59,20 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
     { id: 'settings',    label: 'Настройки',   icon: SettingsIcon, access: appUser.accessSettings,    count: null },
   ];
 
+  const navHeight = typeof window !== 'undefined'
+      ? `${(1 / (parseFloat(document.documentElement.style.zoom) || 1)) * 100}%`
+      : '100%';
+
   return (
       <motion.nav
           initial={false}
           animate={{ width: isOpen ? (isMobile ? '100%' : '240px') : '0px' }}
           transition={{ duration: 0.2 }}
           className={cn(
-              "fixed lg:relative z-50 h-screen border-r border-line flex flex-col bg-bg-elev overflow-hidden",
+              "fixed lg:relative z-50 border-r border-line flex flex-col bg-bg-elev overflow-hidden",
               !isOpen && "border-none"
           )}
+          style={{ height: navHeight }}
       >
         <div className="w-[240px] flex flex-col h-full">
 
