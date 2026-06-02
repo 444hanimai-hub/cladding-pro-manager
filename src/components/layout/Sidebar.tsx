@@ -65,11 +65,11 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
           animate={{ width: isOpen ? (isMobile ? '100%' : '240px') : '0px' }}
           transition={{ duration: 0.2 }}
           className={cn(
-              "fixed lg:relative z-50 border-r border-line flex flex-col bg-bg-elev overflow-hidden self-stretch",
+              "fixed lg:sticky top-0 z-50 h-screen border-r border-line flex flex-col bg-bg-elev overflow-hidden shrink-0",
               !isOpen && "border-none"
           )}
       >
-        <div className="w-[240px] flex flex-col h-full">
+        <div className="w-[240px] flex flex-col h-full overflow-hidden">
 
           {/* Logo */}
           <div className="px-6 pt-7 pb-6 flex items-center gap-3">
