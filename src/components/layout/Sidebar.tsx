@@ -59,29 +59,15 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
     { id: 'settings',    label: 'Настройки',   icon: SettingsIcon, access: appUser.accessSettings,    count: null },
   ];
 
-  const [navHeight, setNavHeight] = React.useState('100%');
-
-  React.useEffect(() => {
-    const update = () => {
-      const zoom = parseFloat(document.documentElement.style.zoom) || 1;
-      setNavHeight(`${(1 / zoom) * 100}%`);
-    };
-    update();
-    // Пересчитываем при изменении размера окна
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-
   return (
       <motion.nav
           initial={false}
           animate={{ width: isOpen ? (isMobile ? '100%' : '240px') : '0px' }}
           transition={{ duration: 0.2 }}
           className={cn(
-              "fixed lg:relative z-50 border-r border-line flex flex-col bg-bg-elev overflow-hidden",
+              "fixed lg:relative z-50 border-r border-line flex flex-col bg-bg-elev overflow-hidden self-stretch",
               !isOpen && "border-none"
           )}
-          style={{ height: navHeight }}
       >
         <div className="w-[240px] flex flex-col h-full">
 

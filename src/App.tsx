@@ -83,15 +83,9 @@ export default function App() {
     if (isSmallScreen) {
       const scale = 0.82;
       document.documentElement.style.zoom = String(scale);
-      // h-screen при zoom на html = viewport / scale
-      // Компенсируем: растягиваем html и body чтобы покрыть реальный экран
-      document.documentElement.style.height = `${(1 / scale) * 100}%`;
-      document.body.style.height = `${(1 / scale) * 100}%`;
     }
     return () => {
       document.documentElement.style.zoom = '';
-      document.documentElement.style.height = '';
-      document.body.style.height = '';
     };
   }, []);
 
@@ -222,7 +216,7 @@ export default function App() {
     try {
       const token = await connectGoogleCalendar();
       if (!token) {
-        alert('Не удалось получить доступ к Google Календарю. Выберите аккаунт и разрешите доступ к календарю.');
+        alert('Не удалось получить доступ к Google Календарю. Выберите аккаунт и разрешите доступ к kalendарю.');
         return false;
       }
       const { valid, unauthorized } = await verifyCalendarAccess(token);
@@ -299,7 +293,7 @@ export default function App() {
   }
 
   return (
-      <div className="flex h-full bg-bg transition-colors duration-base overflow-hidden" style={{ minHeight: '100vh' }}>
+      <div className="flex bg-bg transition-colors duration-base overflow-hidden" style={{ minHeight: '100svh' }}>
         <AnimatePresence>
           {isSidebarOpen && isMobile && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -311,7 +305,7 @@ export default function App() {
         <Sidebar activeTab={activeTab} onTabChange={handleNavClick} isOpen={isSidebarOpen}
                  onLogout={logout} appUser={appUser} isMobile={isMobile} />
 
-        <div className="flex-1 flex flex-col min-w-0 transition-all duration-base">
+        <div className="flex-1 flex flex-col min-w-0 min-h-full transition-all duration-base">
           <Topbar
               title={selectedProjectId ? '' : activeTab === 'dashboard' ? 'Дашборд' : activeTab === 'projects' ? 'Проекты' : activeTab === 'directories' ? 'Справочники' : 'Настройки'}
               onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
