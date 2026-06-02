@@ -3,31 +3,16 @@ import { auth, db } from './lib/firebase';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import { connectGoogleCalendar } from './services/googleCalendarAuth';
 import { verifyCalendarAccess } from './services/googleCalendarService';
-import { doc, getDoc, setDoc, collection, onSnapshot, query, where, orderBy, getDocFromServer, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
+import { doc, setDoc, collection, onSnapshot, query, where, getDocFromServer, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import {
-  Plus,
-  LayoutDashboard,
   Briefcase,
-  Users,
   Settings as SettingsIcon,
-  LogOut,
-  Search,
-  Bell,
-  Calendar,
-  ChevronRight,
-  TrendingUp,
-  DollarSign,
-  Package,
-  Clock,
   XCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { format } from 'date-fns';
-import { ru } from 'date-fns/locale';
 
-import { formatCurrency, cn } from './lib/utils';
+import { cn } from './lib/utils';
 import { useTheme } from './lib/ThemeContext';
-import { Sun, Moon } from 'lucide-react';
 
 import { Project, AppUser } from './types';
 
@@ -41,6 +26,9 @@ import DirectoryManager from './components/DirectoryManager';
 import Settings from './components/Settings';
 
 const ACCESS_TOKEN_KEY = 'google_calendar_access_token';
+
+// Единственный аккаунт которому всегда принудительно выставляется accessSettings: true
+const SETTINGS_ALWAYS_ON_EMAIL = '444hanimai@gmail.com';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -108,7 +96,6 @@ export default function App() {
 
       if (user) {
         setLoading(true);
-        const isOwner = user.email === '444hanimai@gmail.com';
 
         const normalizedEmail = user.email?.toLowerCase().trim();
         const usersRef = collection(db, 'users');
@@ -116,6 +103,7 @@ export default function App() {
         const querySnap = await getDocs(q);
 
         if (querySnap.docs.length > 1) {
+          // Дедупликация: оставляем документ с правильным uid
           const correctDoc = querySnap.docs.find(d => d.id === user.uid) || querySnap.docs[0];
           const duplicates = querySnap.docs.filter(d => d.id !== correctDoc.id);
           await Promise.all(duplicates.map(d => deleteDoc(doc(db, 'users', d.id))));
@@ -129,6 +117,7 @@ export default function App() {
             await deleteDoc(doc(db, 'users', correctDoc.id));
           }
         } else if (querySnap.docs.length === 1) {
+          // Перемещаем документ если id не совпадает с uid
           const docSnap = querySnap.docs[0];
           if (docSnap.id !== user.uid) {
             const dataToMove = docSnap.data();
@@ -137,22 +126,23 @@ export default function App() {
               uid: user.uid,
               accessDashboard: dataToMove.accessDashboard ?? false,
               fullProjectAccess: dataToMove.fullProjectAccess ?? false,
-              accessDirectories: dataToMove.accessDirectories ?? true,
+              accessDirectories: dataToMove.accessDirectories ?? false,
               accessSettings: dataToMove.accessSettings ?? false,
               photoURL: user.photoURL || dataToMove.photoURL || ''
             });
             await deleteDoc(doc(db, 'users', docSnap.id));
           }
         } else {
+          // Новый пользователь — все права по умолчанию false, настройки выдаст админ
           await setDoc(doc(db, 'users', user.uid), {
             uid: user.uid,
             email: user.email || '',
             displayName: user.displayName || 'Пользователь',
             photoURL: user.photoURL || '',
-            accessDashboard: isOwner,
-            fullProjectAccess: isOwner,
-            accessDirectories: isOwner,
-            accessSettings: isOwner,
+            accessDashboard: false,
+            fullProjectAccess: false,
+            accessDirectories: false,
+            accessSettings: false,
             createdAt: new Date()
           });
         }
@@ -161,7 +151,9 @@ export default function App() {
           if (snap.exists()) {
             const data = snap.data() as AppUser;
             setAppUser({ uid: snap.id, ...data });
-            if (user.email === '444hanimai@gmail.com' && !data.accessSettings) {
+
+            // Единственная привилегия фиксированного аккаунта — accessSettings всегда true
+            if (user.email === SETTINGS_ALWAYS_ON_EMAIL && !data.accessSettings) {
               updateDoc(doc(db, 'users', user.uid), { accessSettings: true });
             }
           }
@@ -181,17 +173,12 @@ export default function App() {
 
   useEffect(() => {
     if (!appUser) return;
-    const canDashboard = appUser.accessDashboard;
-    const canDirectories = appUser.accessDirectories;
-    const canSettings = appUser.accessSettings;
-    if (activeTab === 'dashboard' && !canDashboard) {
+    if (activeTab === 'dashboard' && !appUser.accessDashboard) {
       setActiveTab('projects');
-    } else if (activeTab === 'directories' && !canDirectories) {
-      if (canDashboard) setActiveTab('dashboard');
-      else setActiveTab('projects');
-    } else if (activeTab === 'settings' && !canSettings) {
-      if (canDashboard) setActiveTab('dashboard');
-      else setActiveTab('projects');
+    } else if (activeTab === 'directories' && !appUser.accessDirectories) {
+      setActiveTab(appUser.accessDashboard ? 'dashboard' : 'projects');
+    } else if (activeTab === 'settings' && !appUser.accessSettings) {
+      setActiveTab(appUser.accessDashboard ? 'dashboard' : 'projects');
     }
   }, [appUser, activeTab]);
 

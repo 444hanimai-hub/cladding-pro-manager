@@ -131,16 +131,18 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
 
   const activeRange = useMemo(() => getPeriodRange(selectedPeriod), [selectedPeriod]);
   const previousRange = useMemo(() => getPreviousPeriodRange(selectedPeriod), [selectedPeriod]);
-  const isOwner = appUser?.email === '444hanimai@gmail.com';
 
+  // Явная клиентская фильтрация по правам доступа — независимо от того что вернул Firebase
   const accessibleProjects = useMemo(() => {
+    if (!appUser) return [];
+    if (appUser.fullProjectAccess) return projects;
+    const uid = auth.currentUser?.uid;
+    const accessIds = new Set(Object.keys(appUser.projectsAccess || {}));
     return projects.filter(p =>
-        isOwner ||
-        appUser?.fullProjectAccess === true ||
-        !!appUser?.projectsAccess?.[p.id] ||
-        p.leadManagerId === auth.currentUser?.uid
+        p.leadManagerId === uid ||
+        accessIds.has(p.id)
     );
-  }, [projects, appUser, isOwner]);
+  }, [projects, appUser]);
 
   const filteredProjects = useMemo(() => {
     return accessibleProjects.filter(p => {
@@ -295,7 +297,6 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     return { totalCount: baseList.length, displayProjects: [...inProgress, ...shipping] };
   }, [filteredProjects]);
 
-  // Данные для диаграммы расходов по всем отфильтрованным проектам
   const expensesChartData = useMemo(() => {
     const map = new Map<string, number>();
     filteredProjects.forEach(p => {
@@ -331,7 +332,6 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
       if (!p.createdAt) return false;
       const end = getCompletionDate(p);
       if (!end) return false;
-      // Отбрасываем проекты где дата завершения раньше даты создания (некорректные данные)
       const start = p.createdAt.toDate ? p.createdAt.toDate() : new Date(p.createdAt);
       return end.getTime() > start.getTime();
     });
@@ -350,12 +350,10 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
       if (!p.deadline) return false;
       const dl = p.deadline.toDate ? p.deadline.toDate().getTime() : new Date(p.deadline).getTime();
       const norm = getNormalizedStatus(p.status as string);
-      // Завершённые — просрочка если сдали позже дедлайна
       if ((norm === 'done') && p.completedAt) {
         const cd = p.completedAt.toDate ? p.completedAt.toDate().getTime() : new Date(p.completedAt).getTime();
         return cd > dl;
       }
-      // Активные и в отгрузках — просрочка если дедлайн уже прошёл
       if (norm === 'in_progress' || norm === 'shipping') return now > dl;
       return false;
     }).length;
@@ -404,8 +402,18 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
   useEffect(() => {
     if (!appUser) return;
     setLoading(true);
-    const isOwner = appUser?.email === '444hanimai@gmail.com';
-    const projectIds = Object.keys(appUser.projectsAccess || {});
+
+    // Полный доступ — грузим все проекты
+    if (appUser.fullProjectAccess) {
+      const q = query(collection(db, 'projects'), orderBy('updatedAt', 'desc'));
+      const unsub = onSnapshot(q, (snap) => {
+        setProjects(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Project)));
+        setLoading(false);
+      }, () => setLoading(false));
+      return () => unsub();
+    }
+
+    // Ограниченный доступ
     const unsubs: (() => void)[] = [];
     const projectsMap = new Map<string, Project>();
 
@@ -416,39 +424,41 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
         return dB.getTime() - dA.getTime();
       });
       setProjects(all);
-      if (projectsMap.size > 0) setLoading(false);
+      setLoading(false);
     };
 
-    if (isOwner || appUser.fullProjectAccess) {
-      const q = query(collection(db, 'projects'), orderBy('updatedAt', 'desc'));
-      unsubs.push(onSnapshot(q, (snap) => {
-        snap.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
-        updateProjectsState();
-        setLoading(false);
-      }));
-    } else {
-      const qManager = query(collection(db, 'projects'), where('leadManagerId', '==', auth.currentUser?.uid));
-      unsubs.push(onSnapshot(qManager, (snap) => {
-        snap.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
-        updateProjectsState();
-        setLoading(false);
-      }));
-      if (projectIds.length > 0) {
-        for (let i = 0; i < projectIds.length; i += 30) {
-          const chunk = projectIds.slice(i, i + 30);
-          const q = query(collection(db, 'projects'), where(documentId(), 'in', chunk));
-          unsubs.push(onSnapshot(q, (snap) => {
-            snap.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
-            updateProjectsState();
-            setLoading(false);
-          }));
-        }
+    const currentUid = appUser.uid || auth.currentUser?.uid;
+    if (!currentUid) {
+      setLoading(false);
+      return;
+    }
+
+    // Проекты где пользователь — ведущий менеджер
+    const qManager = query(collection(db, 'projects'), where('leadManagerId', '==', currentUid));
+    unsubs.push(onSnapshot(qManager, (snap) => {
+      snap.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
+      updateProjectsState();
+    }, () => setLoading(false)));
+
+    // Проекты из projectsAccess
+    const accessProjectIds = Object.entries(appUser.projectsAccess || {})
+        .filter(([, v]) => v === 'view' || v === 'edit')
+        .map(([k]) => k);
+
+    if (accessProjectIds.length > 0) {
+      for (let i = 0; i < accessProjectIds.length; i += 30) {
+        const chunk = accessProjectIds.slice(i, i + 30);
+        const q = query(collection(db, 'projects'), where(documentId(), 'in', chunk));
+        unsubs.push(onSnapshot(q, (snap) => {
+          snap.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
+          updateProjectsState();
+        }, () => setLoading(false)));
       }
     }
 
     const timeout = setTimeout(() => { if (projectsMap.size === 0) setLoading(false); }, 2000);
     return () => { clearTimeout(timeout); unsubs.forEach(u => u()); };
-  }, [appUser?.uid, appUser?.fullProjectAccess]);
+  }, [appUser?.uid, appUser?.fullProjectAccess, JSON.stringify(appUser?.projectsAccess)]);
 
   if (loading) return (
       <div className="h-96 flex items-center justify-center">
@@ -552,9 +562,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
           </div>
         </div>
 
-        {/* Нижний ряд: Воронка + Расходы */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pb-4 items-start">
-          {/* Воронка проектов + метрики */}
           <div className="lg:col-span-5">
             <div className="bg-surface border border-line rounded-2xl shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] px-5 py-4 flex flex-col">
               <div className="flex items-center justify-between mb-4">
@@ -562,11 +570,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
                 <span className="text-[11.5px] text-ink-3">по сумме контрактов</span>
               </div>
               <ProjectFunnel projects={filteredProjects} />
-
-              {/* Разделитель */}
               <div className="border-t border-line mt-5 mb-4" />
-
-              {/* Метрики */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="flex flex-col gap-1">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-3 leading-snug">Конверсия В работе → Отгрузки</p>
@@ -587,7 +591,6 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
             </div>
           </div>
 
-          {/* Диаграмма расходов */}
           <div className="lg:col-span-7">
             <div className="bg-surface border border-line rounded-2xl shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] px-5 py-4 flex flex-col">
               <div className="flex items-center justify-between mb-4">
@@ -652,7 +655,6 @@ function ExpensesChart({ data }: { data: { name: string; value: number }[] }) {
 
   return (
       <div className="flex gap-4 min-h-0 items-center">
-        {/* Диаграмма */}
         <div className="w-[200px] h-[200px] shrink-0">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
@@ -673,8 +675,6 @@ function ExpensesChart({ data }: { data: { name: string; value: number }[] }) {
             </PieChart>
           </ResponsiveContainer>
         </div>
-
-        {/* Легенда справа */}
         <div className="flex-1 flex flex-col gap-1.5 overflow-y-auto max-h-[220px] min-w-0">
           {data.map((entry, idx) => {
             const color = getExpenseColor(entry.name, idx);
