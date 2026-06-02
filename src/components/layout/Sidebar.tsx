@@ -65,7 +65,7 @@ const Sidebar = ({ activeTab, onTabChange, isOpen, onLogout, appUser, isMobile }
           animate={{ width: isOpen ? (isMobile ? '100%' : '240px') : '0px' }}
           transition={{ duration: 0.2 }}
           className={cn(
-              "fixed lg:relative z-50 h-full border-r border-line flex flex-col bg-bg-elev overflow-hidden",
+              "fixed lg:relative z-50 h-screen border-r border-line flex flex-col bg-bg-elev overflow-hidden",
               !isOpen && "border-none"
           )}
       >

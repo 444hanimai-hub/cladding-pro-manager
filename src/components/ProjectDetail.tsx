@@ -63,7 +63,7 @@ import ExpenseCategorySelect from './ExpenseCategorySelect';
 import { DatePicker } from './ui/DatePicker';
 import { TimeInput } from './ui/TimeInput';
 import { PortalDropdown } from './ui/PortalDropdown';
-import { generateTrustDeedDocx, downloadBlob, TrustDeedDocxData } from '../lib/generateTrustDeedDocx';
+import { generateTrustDeedDocx, downloadBlob, uploadTrustDeedToDrive, TrustDeedDocxData } from '../lib/generateTrustDeedDocx';
 import { Button } from './ui/Button';
 import { todayLocalISO } from '../lib/dates';
 
@@ -454,7 +454,7 @@ export default function ProjectDetail({
                             />
                         </motion.div>
                     )}
-                    {activeSegment === 'trust' && <motion.div key="trust"><TrustDeedsTab project={project} canEdit={canEdit} directories={directories} trustDeeds={trustDeeds} /></motion.div>}
+                    {activeSegment === 'trust' && <motion.div key="trust"><TrustDeedsTab project={project} canEdit={canEdit} directories={directories} trustDeeds={trustDeeds} accessToken={accessToken} /></motion.div>}
                 </AnimatePresence>
             </div>
         </motion.div>
@@ -981,21 +981,20 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
 
     const isContactFormOpen = supplierId && (availableContacts.length === 0 || showAddSupplierContact);
 
-    return createPortal(
+    return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
             <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={onClose}
-                className="fixed inset-0"
-                style={{ backgroundColor: 'rgba(31,28,20,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+                className="fixed inset-0 bg-ink/40 backdrop-blur-sm"
             />
             <motion.div
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
-                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto overflow-hidden"
+                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto overflow-visible"
             >
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between gap-3">
@@ -1012,7 +1011,7 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                 </div>
 
                 {/* Body */}
-                <div className="px-6 py-5 flex-1 overflow-y-auto flex flex-col gap-5">
+                <div className="px-6 py-5 flex-1 overflow-visible flex flex-col gap-5">
                     {/* Материал */}
                     <div>
                         <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-2">
@@ -1207,7 +1206,7 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                 </div>
 
                 {/* Footer */}
-                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-between items-center shrink-0 rounded-b-2xl">
+                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-between items-center shrink-0">
                     <div>
                         {editingId && (
                             <button
@@ -1234,8 +1233,7 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
                     </div>
                 </div>
             </motion.div>
-        </div>,
-        document.body
+        </div>
     );
 }
 
@@ -1356,15 +1354,14 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
         "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4"
     );
 
-    return createPortal(
+    return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
             <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={onClose}
-                className="fixed inset-0"
-                style={{ backgroundColor: 'rgba(31,28,20,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+                className="fixed inset-0 bg-ink/40 backdrop-blur-sm"
             />
             <motion.div
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
@@ -1636,8 +1633,7 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                     </div>
                 </div>
             </motion.div>
-        </div>,
-        document.body
+        </div>
     );
 }
 
@@ -2607,7 +2603,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
 
     const isContactFormOpen = showAddContact || (Boolean(companyId) && availableContacts.length === 0);
 
-    return createPortal(
+    return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             {/* Backdrop */}
             <motion.div
@@ -2615,8 +2611,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={onClose}
-                className="absolute inset-0"
-                style={{ backgroundColor: 'rgba(31,28,20,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+                className="absolute inset-0 bg-ink/40 backdrop-blur-sm"
             />
 
             {/* Dialog */}
@@ -2625,7 +2620,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
                 transition={{ type: 'spring', stiffness: 380, damping: 28 }}
-                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col max-h-[90vh] overflow-hidden"
+                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col max-h-[90vh] overflow-visible"
             >
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between gap-3">
@@ -2641,7 +2636,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 </div>
 
                 {/* Body */}
-                <div className="px-6 py-5 flex-1 overflow-y-auto flex flex-col gap-5">
+                <div className="px-6 py-5 flex-1 overflow-visible flex flex-col gap-5">
                     {/* Компания */}
                     <div>
                         <label className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 block mb-2">
@@ -2801,7 +2796,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                 </div>
 
                 {/* Footer */}
-                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-end gap-2 rounded-b-2xl">
+                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-end gap-2">
                     <button
                         onClick={onClose}
                         className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors"
@@ -2816,8 +2811,7 @@ function StakeholderEditForm({ projectId, role, currentData, onClose }: { projec
                     </button>
                 </div>
             </motion.div>
-        </div>,
-        document.body
+        </div>
     );
 }
 
@@ -4179,7 +4173,7 @@ function TaskItem({
 }
 
 
-function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project: Project, canEdit: boolean, directories: any, trustDeeds: TrustDeed[] }) {
+function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken }: { project: Project, canEdit: boolean, directories: any, trustDeeds: TrustDeed[], accessToken?: string | null }) {
     const [selectedDeedId, setSelectedDeedId] = useState<string | null>(null);
     const [isAdding, setIsAdding] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -4227,9 +4221,20 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds }: { project:
 
         try {
             const blob = await generateTrustDeedDocx(data);
-            downloadBlob(blob, filename);
+            if (accessToken) {
+                await uploadTrustDeedToDrive(blob, filename, accessToken);
+            } else {
+                downloadBlob(blob, filename);
+            }
         } catch (e) {
             console.error('Ошибка генерации документа:', e);
+            alert('Не удалось загрузить доверенность в Google Drive. Файл будет скачан на компьютер.');
+            try {
+                const blob2 = await generateTrustDeedDocx(data);
+                downloadBlob(blob2, filename);
+            } catch (e2) {
+                console.error('Fallback download failed:', e2);
+            }
         }
     };
 
@@ -4607,9 +4612,9 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
 
     const driverOptions = (directories.drivers || []).map((d: any) => ({ id: d.id, name: d.name }));
 
-    return createPortal(
+    return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0" style={{ backgroundColor: 'rgba(31,28,20,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }} />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-ink/40 backdrop-blur-sm" />
             <motion.div
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -4795,8 +4800,7 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                     </button>
                 </div>
             </motion.div>
-        </div>,
-        document.body
+        </div>
     );
 }
 

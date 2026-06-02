@@ -2,27 +2,25 @@
  * generateTrustDeedDocx.ts
  *
  * Берёт оригинальный шаблон доверенности (template_dov.docx),
- * заменяет данные прямо в XML и отдаёт Blob для скачивания.
- *
- * Зависимость: jszip (npm install jszip)
- * Положи template_dov.docx в папку public/ проекта.
+ * заменяет данные прямо в XML и либо загружает в Google Drive,
+ * либо скачивает на компьютер.
  */
 
 import JSZip from 'jszip';
 
 export interface TrustDeedDocxData {
   number: string;
-  issueDate: string;            // DD.MM.YYYY
-  expiryDate: string;           // DD.MM.YYYY
+  issueDate: string;
+  expiryDate: string;
   driverName: string;
   driverPosition?: string;
   driverPassportSeries: string;
   driverPassportNumber: string;
   driverPassportIssuedBy: string;
-  driverPassportIssuedDate: string; // DD.MM.YYYY
+  driverPassportIssuedDate: string;
   supplierName: string;
   accountNumber: string;
-  accountDate: string;          // DD.MM.YYYY
+  accountDate: string;
   materialName: string;
   materialUnit: string;
   quantity: string;
@@ -50,6 +48,9 @@ const TPL = {
   unit:                'Шт.',
   quantity:            '56',
 };
+
+// ID папки в Google Drive куда сохраняются все доверенности
+const DRIVE_FOLDER_ID = '13JZCVB9HPU_30InOBVCqbVxcZpk3nscW';
 
 function replaceWt(xml: string, oldText: string, newText: string): string {
   xml = xml.split(`<w:t>${oldText}</w:t>`).join(`<w:t>${newText}</w:t>`);
@@ -87,35 +88,27 @@ export async function generateTrustDeedDocx(data: TrustDeedDocxData): Promise<Bl
       ? (data.driverPassportIssuedDate.endsWith('г.') ? data.driverPassportIssuedDate : data.driverPassportIssuedDate + 'г.')
       : '';
 
-  // Корешок: даты и водитель
   xml = replaceWt(xml, TPL.issueDate, data.issueDate);
   xml = replaceWt(xml, TPL.expiryDate, data.expiryDate);
   xml = replaceWt(xml, TPL.driverName, drv);
 
-  // Поставщик в корешке (2 run-а: 'ООО "' + 'Инностек"')
   xml = xml.split(`<w:t>${TPL.stubSupplierPart1}</w:t>`).join('<w:t></w:t>');
   xml = xml.split(`<w:t xml:space="preserve">${TPL.stubSupplierPart1}</w:t>`).join('<w:t xml:space="preserve"></w:t>');
   xml = xml.split(`<w:t>${TPL.stubSupplierPart2}</w:t>`).join(`<w:t>${sup}</w:t>`);
   xml = xml.split(`<w:t xml:space="preserve">${TPL.stubSupplierPart2}</w:t>`).join(`<w:t xml:space="preserve">${sup}</w:t>`);
 
-  // Номер доверенности (первое <w:t>1</w:t>)
   xml = xml.replace('<w:t>1</w:t>', `<w:t>${escapeXml(data.number)}</w:t>`);
 
-  // Паспорт
   xml = replaceWt(xml, TPL.passportSeries, escapeXml(data.driverPassportSeries));
   xml = replaceWt(xml, TPL.passportNumber, escapeXml(data.driverPassportNumber));
   xml = replaceWt(xml, TPL.passportIssuedBy, pib);
   xml = xml.split(TPL.passportIssuedBy).join(pib);
   xml = replaceWt(xml, TPL.passportIssuedDate, pidFormatted);
 
-  // Поставщик (основная часть)
   xml = xml.split(`<w:t>${TPL.supplierFull}</w:t>`).join(`<w:t>${sup}</w:t>`);
   xml = xml.split(`<w:t xml:space="preserve">${TPL.supplierFull}</w:t>`).join(`<w:t xml:space="preserve">${sup}</w:t>`);
 
-  // Счёт
   xml = replaceWt(xml, TPL.accountRef, accRef);
-
-  // Материал, единица, количество
   xml = replaceWt(xml, TPL.materialName, mat);
   xml = replaceWt(xml, TPL.unit, escapeXml(data.materialUnit));
   xml = replaceWt(xml, TPL.quantity, escapeXml(data.quantityText || data.quantity));
@@ -126,6 +119,48 @@ export async function generateTrustDeedDocx(data: TrustDeedDocxData): Promise<Bl
     type: 'blob',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
+}
+
+/**
+ * Загружает docx в Google Drive в папку доверенностей.
+ * Возвращает ссылку на документ в Google Drive и открывает её в новой вкладке.
+ */
+export async function uploadTrustDeedToDrive(
+    blob: Blob,
+    filename: string,
+    accessToken: string
+): Promise<string> {
+  const metadata = {
+    name: filename,
+    parents: [DRIVE_FOLDER_ID],
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  };
+
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', blob);
+
+  const response = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+      }
+  );
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Ошибка загрузки в Google Drive: ${err}`);
+  }
+
+  const result = await response.json();
+  const link = result.webViewLink as string;
+
+  // Открываем документ в новой вкладке
+  window.open(link, '_blank');
+
+  return link;
 }
 
 export function downloadBlob(blob: Blob, filename: string): void {
