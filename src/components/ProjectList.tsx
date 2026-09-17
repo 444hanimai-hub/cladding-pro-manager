@@ -1,0 +1,611 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, orderBy, doc, updateDoc, documentId, deleteDoc, doc as fireDoc, collectionGroup } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
+import { motion, AnimatePresence } from 'motion/react';
+import {
+  Plus, MapPin, User as UserIcon, LayoutGrid, List as ListIcon,
+  X, Briefcase, Trash2, Users, ChevronRight, ChevronDown,
+  Clock, Calendar, ListFilter, Search, CheckCircle2, Circle, TrendingDown
+} from 'lucide-react';
+import { formatCurrency, cn, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
+import { getMarginPercent } from '../lib/financeCalculations';
+import CompanySelect from './CompanySelect';
+import { DatePicker } from './ui/DatePicker';
+import UserAvatar from './UserAvatar';
+import StatusPill from './StatusPill';
+import { Card } from './ui/Card';
+import { Pill } from './ui/Pill';
+import { Progress } from './ui/Progress';
+import { Button } from './ui/Button';
+import { Modal } from './ui/Modal';
+import { PeriodSelector, DateTypeSelector, StatusSelector, ManagerSelector, PeriodType } from './shared/DashboardFilters';
+import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
+import { Project, AppUser, ProjectTask, ProjectEvent } from '../types';
+import { FinanceCodeGate } from './CodeProtection';
+import { useFinanceAccess } from '../hooks/useFinanceAccess';
+import { PortalDropdown } from './ui/PortalDropdown';
+
+function getPeriodRange(type: PeriodType) {
+  const now = new Date();
+  if (type === 'quarter') {
+    const quarter = Math.floor(now.getMonth() / 3);
+    const qStart = new Date(now.getFullYear(), quarter * 3, 1);
+    const qEnd = new Date(now.getFullYear(), (quarter + 1) * 3, 0);
+    return { start: qStart, end: qEnd };
+  }
+  if (type === 'year') {
+    const yStart = new Date(now.getFullYear(), 0, 1);
+    const yEnd = new Date(now.getFullYear(), 11, 31);
+    return { start: yStart, end: yEnd };
+  }
+  return { start: null, end: null };
+}
+
+function formatDateRange(period: PeriodType, start: Date | null, end: Date | null) {
+  if (!start || !end) return 'Всё время';
+  if (period === 'year') return `${start.getFullYear()}г.`;
+  const f = (d: Date) => d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return `${f(start)} – ${f(end)}`;
+}
+
+interface ProjectListProps {
+  onSelectProject: (id: string) => void;
+  appUser: AppUser | null;
+}
+
+export default function ProjectList({ onSelectProject, appUser }: ProjectListProps) {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [allTasks, setAllTasks] = useState<ProjectTask[]>([]);
+  const [allEvents, setAllEvents] = useState<ProjectEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [users, setUsers] = useState<AppUser[]>([]);
+
+  const [dateFilterType, setDateFilterType] = useState<'createdAt' | 'deadline'>('createdAt');
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodType>('year');
+  const [filterManagerId, setFilterManagerId] = useState('');
+  const [filterStatuses, setFilterStatuses] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const isInitialized = React.useRef(false);
+
+  const activeRange = useMemo(() => getPeriodRange(selectedPeriod), [selectedPeriod]);
+
+  useEffect(() => {
+    if (!appUser?.uid || isInitialized.current) return;
+    const saved = localStorage.getItem(`projectListFilters_${appUser.uid}`);
+    if (saved) {
+      try {
+        const filters = JSON.parse(saved);
+        if (filters.dateFilterType) setDateFilterType(filters.dateFilterType);
+        if (filters.selectedPeriod) setSelectedPeriod(filters.selectedPeriod);
+        if (filters.filterManagerId !== undefined) setFilterManagerId(filters.filterManagerId);
+        if (filters.filterStatuses) setFilterStatuses(filters.filterStatuses);
+        if (filters.searchQuery !== undefined) setSearchQuery(filters.searchQuery);
+      } catch (e) { console.error("Error loading saved filters:", e); }
+    }
+    isInitialized.current = true;
+  }, [appUser?.uid]);
+
+  useEffect(() => {
+    if (!appUser?.uid || !isInitialized.current) return;
+    const filters = { dateFilterType, selectedPeriod, filterManagerId, filterStatuses, searchQuery };
+    localStorage.setItem(`projectListFilters_${appUser.uid}`, JSON.stringify(filters));
+  }, [dateFilterType, selectedPeriod, filterManagerId, filterStatuses, searchQuery, appUser?.uid]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'users'), (snap) => {
+      setUsers(snap.docs.map(doc => ({ uid: doc.id, ...doc.data() } as AppUser)));
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!appUser) return;
+    const unsubTasks = onSnapshot(collectionGroup(db, 'tasks'), (snap) => {
+      setAllTasks(snap.docs.map(doc => {
+        const data = doc.data();
+        const parts = doc.ref.path.split('/');
+        const projectId = data.projectId || (parts.length >= 2 ? parts[1] : null);
+        return { id: doc.id, projectId, ...data } as ProjectTask;
+      }));
+    }, (error) => { console.error("ProjectList tasks group snapshot error:", error); });
+
+    const unsubEvents = onSnapshot(collectionGroup(db, 'events'), (snap) => {
+      setAllEvents(snap.docs.map(doc => {
+        const data = doc.data();
+        const parts = doc.ref.path.split('/');
+        const projectId = data.projectId || (parts.length >= 2 ? parts[1] : null);
+        return { id: doc.id, projectId, ...data } as ProjectEvent;
+      }));
+    }, (error) => { console.error("ProjectList events group snapshot error:", error); });
+
+    return () => { unsubTasks(); unsubEvents(); };
+  }, [appUser?.uid]);
+
+  useEffect(() => {
+    if (!appUser) return;
+    setLoading(true);
+
+    // ── Полный доступ: грузим все проекты ──────────────────────────────────
+    if (appUser.fullProjectAccess) {
+      const q = query(collection(db, 'projects'), orderBy('createdAt', 'desc'));
+      const unsub = onSnapshot(q, (snapshot) => {
+        setProjects(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Project)));
+        setLoading(false);
+      }, (error) => { console.error("Projects list full access error:", error); setLoading(false); });
+      return () => unsub();
+    }
+
+    // ── Ограниченный доступ: только leadManager + явные projectsAccess ─────
+    const unsubs: (() => void)[] = [];
+    const projectsMap = new Map<string, Project>();
+
+    const updateProjectsState = () => {
+      const fetched = Array.from(projectsMap.values());
+      fetched.sort((a, b) => {
+        const dateA = a.createdAt?.toDate?.() || new Date(0);
+        const dateB = b.createdAt?.toDate?.() || new Date(0);
+        return dateB.getTime() - dateA.getTime();
+      });
+      setProjects(fetched);
+      setLoading(false);
+    };
+
+    // 1. Проекты где пользователь — ведущий менеджер
+    const currentUid = appUser.uid || auth.currentUser?.uid;
+    if (!currentUid) {
+      setLoading(false);
+      return;
+    }
+    const q1 = query(collection(db, 'projects'), where('leadManagerId', '==', currentUid));
+    unsubs.push(onSnapshot(q1, (snapshot) => {
+      snapshot.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
+      updateProjectsState();
+    }, (error) => { console.error("ProjectList manager projects error:", error); setLoading(false); }));
+
+    // 2. Проекты из projectsAccess (только 'view' и 'edit', не закрытые)
+    const accessProjectIds = Object.entries(appUser.projectsAccess || {})
+        .filter(([, v]) => v === 'view' || v === 'edit')
+        .map(([k]) => k);
+
+    if (accessProjectIds.length > 0) {
+      const chunks: string[][] = [];
+      for (let i = 0; i < accessProjectIds.length; i += 30) {
+        chunks.push(accessProjectIds.slice(i, i + 30));
+      }
+      chunks.forEach(chunk => {
+        const q = query(collection(db, 'projects'), where(documentId(), 'in', chunk));
+        unsubs.push(onSnapshot(q, (snapshot) => {
+          snapshot.docs.forEach(doc => projectsMap.set(doc.id, { id: doc.id, ...doc.data() } as Project));
+          updateProjectsState();
+        }, (error) => { console.error("ProjectList shared chunk error:", error); setLoading(false); }));
+      });
+    }
+
+    const timeout = setTimeout(() => { if (projectsMap.size === 0) setLoading(false); }, 2000);
+
+    return () => { clearTimeout(timeout); unsubs.forEach(u => u()); };
+  }, [appUser?.uid, appUser?.fullProjectAccess, JSON.stringify(appUser?.projectsAccess)]);
+
+  // isOwner только для удаления проектов
+  const isOwner = appUser?.email === '444hanimai@gmail.com';
+
+  const deleteProject = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!isOwner && !appUser?.accessSettings) {
+      alert('Только администратор может удалять проекты');
+      return;
+    }
+    if (window.confirm('Вы уверены, что хотите удалить проект? Это действие нельзя отменить.')) {
+      try {
+        await deleteDoc(fireDoc(db, 'projects', id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, 'projects/' + id);
+      }
+    }
+  };
+
+  // ── Фильтрация: показываем только доступные проекты ────────────────────
+  const accessibleProjects = useMemo(() => {
+    const currentUid = appUser?.uid || auth.currentUser?.uid;
+    return projects.filter(p =>
+        appUser?.fullProjectAccess === true ||
+        appUser?.projectsAccess?.[p.id] === 'view' ||
+        appUser?.projectsAccess?.[p.id] === 'edit' ||
+        p.leadManagerId === currentUid
+    );
+  }, [projects, appUser]);
+
+  const filteredProjects = useMemo(() => {
+    return accessibleProjects.filter(p => {
+      if (searchQuery && !p.name.toLowerCase().includes(searchQuery.toLowerCase()) && !p.client.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (filterManagerId && p.leadManagerId !== filterManagerId) return false;
+      if (filterStatuses.length > 0) {
+        const raw = p.status as string;
+        const normalized =
+            raw === 'lead' || raw === 'active' || raw === 'in_progress' ? 'in_progress' :
+                raw === 'completed' || raw === 'done' ? 'done' :
+                    raw === 'cancelled' || raw === 'canceled' ? 'canceled' :
+                        raw === 'shipping' ? 'shipping' : 'in_progress';
+        if (!filterStatuses.includes(normalized)) return false;
+      }
+      if (activeRange.start && activeRange.end) {
+        if (dateFilterType === 'createdAt') {
+          if (!p.createdAt) return false;
+          const d = p.createdAt.toDate ? p.createdAt.toDate() : new Date(p.createdAt);
+          if (d < activeRange.start || d > new Date(activeRange.end.getTime() + 86400000)) return false;
+        } else {
+          if (!p.deadline) return false;
+          const d = p.deadline.toDate ? p.deadline.toDate() : new Date(p.deadline);
+          if (d < activeRange.start || d > activeRange.end) return false;
+        }
+      }
+      return true;
+    });
+  }, [accessibleProjects, filterManagerId, filterStatuses, activeRange, dateFilterType, searchQuery]);
+
+  const canEditProject = (project: Project) => {
+    const currentUid = appUser?.uid || auth.currentUser?.uid;
+    if (appUser?.fullProjectAccess) return true;
+    if (appUser?.projectsAccess?.[project.id] === 'edit') return true;
+    if (project.leadManagerId === currentUid) return true;
+    return false;
+  };
+
+  const { canDisplayFinancialAmounts, needsCodeGate, unlock } = useFinanceAccess(appUser);
+
+  if (needsCodeGate) {
+    return (
+        <FinanceCodeGate
+            correctCode={appUser?.financeCode || ''}
+            onSuccess={unlock}
+            moduleName="Проекты"
+        />
+    );
+  }
+
+  const showFinancialInCards = canDisplayFinancialAmounts;
+
+  return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+        <div className="space-y-4">
+          <div className="px-[18px] py-3 bg-surface border border-line rounded-2xl shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] flex items-center justify-between gap-4 overflow-visible" style={{ overflow: 'visible' }}>
+            <div className="flex items-center gap-4 overflow-visible">
+              <div className="flex items-center gap-4">
+                <PeriodSelector label="ПЕРИОД" selectedPeriod={selectedPeriod} onPeriodChange={setSelectedPeriod} start={activeRange.start} end={activeRange.end} />
+                <div className="h-6 w-px bg-line mx-1" />
+                <DateTypeSelector value={dateFilterType} onChange={setDateFilterType} />
+                <StatusSelector values={filterStatuses} onChange={setFilterStatuses} />
+                <ManagerSelector value={filterManagerId} onChange={setFilterManagerId} users={users} />
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <Button onClick={() => setShowAddForm(true)} variant="ochre" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Plus size={14} />}>
+                Новый проект
+              </Button>
+              <div className="flex items-center bg-surface-2 rounded-lg p-0.5">
+                <button onClick={() => setViewMode('grid')} className={cn("w-8 h-8 flex items-center justify-center rounded-md transition-all", viewMode === 'grid' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40")}><LayoutGrid size={15} /></button>
+                <button onClick={() => setViewMode('list')} className={cn("w-8 h-8 flex items-center justify-center rounded-md transition-all", viewMode === 'list' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40")}><ListIcon size={15} /></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {loading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {[1, 2, 3].map(i => <div key={i} className="aspect-[4/3] animate-pulse rounded-lg bg-surface border border-line" />)}
+            </div>
+        ) : filteredProjects.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-32 rounded-lg border border-dashed border-line bg-surface">
+              <div className="w-16 h-16 rounded-full bg-surface-2 flex items-center justify-center mb-6 text-ink-4"><Briefcase size={32} /></div>
+              <h3 className="text-xl font-display font-medium text-ink mb-2">Проектов не найдено</h3>
+              <p className="text-sm text-ink-3 mb-8">Попробуйте изменить параметры фильтрации или поиска</p>
+              <Button variant="ochre" onClick={() => { setSearchQuery(''); setFilterStatuses([]); setFilterManagerId(''); setSelectedPeriod('all'); }}>Сбросить фильтры</Button>
+            </div>
+        ) : viewMode === 'grid' ? (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(310px,1fr))] gap-[14px]">
+              {filteredProjects.map((project) => (
+                  <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
+              ))}
+            </div>
+        ) : (
+            <Card className="p-0 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                  <tr className="border-b border-line bg-surface-2">
+                    <th className="px-7 py-4 text-eyebrow text-ink-3">Проект</th>
+                    <th className="px-7 py-4 text-eyebrow text-ink-3">Заказчик</th>
+                    <th className="px-7 py-4 text-eyebrow text-ink-3">Статус</th>
+                    {showFinancialInCards && (<><th className="px-7 py-4 text-eyebrow text-ink-3">Контракт</th><th className="px-7 py-4 text-eyebrow text-ink-3 text-right">Маржа</th></>)}
+                    <th className="px-7 py-4 text-eyebrow text-ink-3">Куратор</th>
+                    <th className="px-7 py-4"></th>
+                  </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                  {filteredProjects.map((project) => {
+                    const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
+                    const profitability = getMarginPercent(f);
+                    return (
+                        <tr key={project.id} onClick={() => onSelectProject(project.id)} className="cursor-pointer transition-colors group hover:bg-surface-2">
+                          <td className="px-7 py-5"><h4 className="font-semibold text-base text-ink group-hover:text-ochre transition-colors truncate mb-1">{project.name}</h4><p className="text-xs text-ink-3 truncate max-w-xs">{project.address}</p></td>
+                          <td className="px-7 py-5 text-sm text-ink-2 font-medium">{project.client}</td>
+                          <td className="px-7 py-5"><StatusPill status={project.status as any} /></td>
+                          {showFinancialInCards && (
+                              <>
+                                <td className="px-7 py-5 text-sm font-display font-medium text-ink">{formatCurrency(f.contractSum).split(',')[0]} <span className="text-[10px] opacity-40 italic">₽</span></td>
+                                <td className={cn("px-7 py-5 text-lg font-display text-right", profitability > 25 ? "text-profit" : profitability > 15 ? "text-ochre" : "text-expense")}>{profitability.toFixed(0)}%</td>
+                              </>
+                          )}
+                          <td className="px-7 py-5"><div className="flex items-center gap-2"><UserAvatar uid={project.leadManagerId || ''} name={project.leadManagerName || '—'} size="sm" /><span className="text-xs font-semibold text-ink-3">{project.leadManagerName}</span></div></td>
+                          <td className="px-7 py-5 text-right"><ChevronRight size={16} className="text-ink-4 group-hover:text-ink transition-colors" /></td>
+                        </tr>
+                    );
+                  })}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+        )}
+
+        <AnimatePresence>
+          {showAddForm && (
+              <ProjectForm onClose={() => setShowAddForm(false)} onCreated={(id) => { setShowAddForm(false); onSelectProject(id); }} />
+          )}
+        </AnimatePresence>
+      </motion.div>
+  );
+}
+
+function ProjectCard({ project, allTasks, allEvents, showContract, onClick, canDelete, onDelete }: { key?: any; project: Project; allTasks: ProjectTask[]; allEvents: ProjectEvent[]; showContract: boolean; onClick: () => void; canDelete: boolean; onDelete: (e: React.MouseEvent) => void | Promise<void>; }) {
+  const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
+  const shippingProgress = getShippingProgress(project);
+
+  const nextItem = useMemo(() => {
+    const now = new Date();
+
+    const parseTaskDate = (item: any): Date => {
+      // Приоритет: строковая date > Timestamp date > Timestamp dueDate
+      if (item.date && typeof item.date === 'string' && item.date.trim()) {
+        const parts = item.date.split('-');
+        if (parts.length === 3) return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        return new Date(item.date);
+      }
+      if (item.date?.toDate) return item.date.toDate();
+      if (item.dueDate?.toDate) return item.dueDate.toDate();
+      if (item.dueDate && typeof item.dueDate === 'string' && item.dueDate.trim()) {
+        const parts = item.dueDate.split('-');
+        if (parts.length === 3) return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        return new Date(item.dueDate);
+      }
+      return new Date('');
+    };
+
+    const items = [
+      ...allTasks.filter(t => t.projectId === project.id && !t.completed && (t.date || t.dueDate)),
+      ...allEvents.filter(e => e.projectId === project.id && e.type === 'planned')
+    ].map(item => ({ ...item, parsedDate: parseTaskDate(item) }))
+        .filter(i => !isNaN(i.parsedDate.getTime()) && i.parsedDate >= now)
+        .sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
+
+    return items[0];
+  }, [project.id, allTasks, allEvents]);
+
+  const daysInfo = useMemo(() => {
+    if (project.status === 'completed' && project.completedAt) {
+      const date = project.completedAt.toDate ? project.completedAt.toDate() : new Date(project.completedAt);
+      return { text: `сдан ${date.toLocaleDateString('ru-RU')}`, isOverdue: false };
+    }
+    if (project.status === 'cancelled') return { text: 'отменён', isOverdue: false };
+    if (!project.deadline) return null;
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    const deadline = project.deadline.toDate ? project.deadline.toDate() : new Date(project.deadline);
+    deadline.setHours(0, 0, 0, 0);
+    const diff = deadline.getTime() - now.getTime();
+    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+    if (days < 0) return { text: `${Math.abs(days)} дн. просрочка`, isOverdue: true };
+    return { text: `${days} дн. до сдачи`, isOverdue: false };
+  }, [project.status, project.completedAt, project.deadline]);
+
+  const formatSumValue = (val: number) => {
+    if (val >= 1000000) { const num = val / 1000000; return `${num % 1 === 0 ? num.toFixed(0) : num.toFixed(1)} млн ₽`; }
+    if (val >= 1000) { const num = val / 1000; return `${num % 1 === 0 ? num.toFixed(0) : num.toFixed(1)} тыс ₽`; }
+    return `${val} ₽`;
+  };
+
+  return (
+      <div onClick={onClick} className={cn("flex flex-col gap-[14px] cursor-pointer group rounded-2xl bg-surface h-full transition-all shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] hover:-translate-y-0.5 hover:shadow-[0_1px_0_rgba(255,255,255,0.5)_inset,0_8px_24px_-8px_rgba(48,42,28,0.18)]", daysInfo?.isOverdue ? "border border-line border-l-[3px] border-l-terracotta pl-[18px] pr-5 py-[18px]" : "border border-line px-5 py-[18px]")}>
+        <div className="flex items-center justify-between gap-3">
+          <StatusPill status={project.status as any} />
+          {daysInfo && (<div className={cn("text-[11px] font-medium flex items-center gap-1", daysInfo.isOverdue ? "text-terracotta font-semibold" : "text-ink-3")}>{daysInfo.isOverdue && (<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.45L20.21 19H3.79L12 5.45zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>)}{daysInfo.text}</div>)}
+        </div>
+        <div>
+          <h3 className="text-[22px] font-display font-normal text-ink leading-[1.1] tracking-[-0.01em] group-hover:text-ochre transition-colors truncate">{project.name}</h3>
+          <div className="flex items-center gap-1.5 mt-1 text-ink-3"><MapPin size={12} className="text-ink-3 shrink-0" /><span className="text-[12.5px] truncate">{project.address}</span></div>
+        </div>
+        <div className={cn('flex justify-between items-end gap-2', !showContract && 'block')}>
+          <div className="flex flex-col min-w-0"><span className="text-[9.5px] font-semibold text-ink-3 uppercase tracking-[0.14em]">ЗАКАЗЧИК</span><span className="text-[13px] font-semibold text-ink leading-tight mt-0.5 truncate">{project.client}</span></div>
+          {showContract && (<div className="flex flex-col items-end shrink-0"><span className="text-[9.5px] font-semibold text-ink-3 uppercase tracking-[0.14em]">КОНТРАКТ</span><span className="text-[17px] font-display font-normal text-ink leading-[1.1] mt-0.5 tabular-nums">{formatSumValue(f.contractSum)}</span></div>)}
+        </div>
+        <div>
+          <div className="flex justify-between items-end gap-2 mb-1.5"><span className="text-[11px] text-ink-3 shrink-0">Отгружено</span><span className="text-[10.5px] font-semibold text-ink tabular-nums text-right leading-tight">{formatShippingProgressLabel(shippingProgress)}</span></div>
+          <div className="h-1.5 w-full bg-surface-2 rounded-full overflow-hidden"><div className={cn("h-full rounded-full transition-all duration-700", !shippingProgress.isComplete && "bg-ochre")} style={{ width: `${shippingProgress.barPercent}%`, ...(shippingProgress.isComplete ? { backgroundColor: SHIPPING_PROGRESS_COMPLETE_COLOR } : {}) }} /></div>
+        </div>
+        {nextItem ? (
+            <div className="py-[10px] px-3 bg-surface-2 rounded-lg border-l-2 border-ochre">
+              <div className="flex items-center gap-1.5 mb-1"><CheckCircle2 size={11} className="text-ochre" /><span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-ochre">БЛИЖАЙШАЯ ЗАДАЧА</span></div>
+              <p className="text-[12.5px] font-medium text-ink leading-[1.35] truncate">{nextItem.title}</p>
+              <div className="text-[11px] text-ink-3 mt-0.5">{(() => {
+                const d = nextItem.parsedDate;
+                const day = d.toLocaleDateString('ru-RU', { day: 'numeric' });
+                const month = d.toLocaleDateString('ru-RU', { month: 'long' });
+                const weekday = d.toLocaleDateString('ru-RU', { weekday: 'short' }).replace('.', '');
+                return `${day} ${month}, ${weekday}`;
+              })()}</div>
+            </div>
+        ) : (
+            <div className="h-[74px] flex items-center justify-center border border-dashed border-line rounded-lg bg-surface-2/30"><p className="text-[10px] font-medium text-ink-4 uppercase tracking-widest opacity-40">Задач нет</p></div>
+        )}
+        <div className="pt-3 mt-auto border-t border-line flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0"><UserAvatar uid={project.leadManagerId || ''} name={project.leadManagerName || ''} size="xs" /><span className={cn("text-[12.5px] truncate", project.leadManagerName ? "font-medium text-ink" : "italic text-ink-3 font-normal")}>{project.leadManagerName || 'Не назначен'}</span></div>
+          <ChevronRight size={14} className="text-ink-3 group-hover:translate-x-0.5 transition-transform shrink-0" />
+        </div>
+      </div>
+  );
+}
+
+function ProjectForm({ onClose, onCreated }: { onClose: () => void, onCreated: (id: string) => void }) {
+  const [name, setName] = useState('');
+  const [client, setClient] = useState('');
+  const [clientId, setClientId] = useState<string | undefined>(undefined);
+  const [address, setAddress] = useState('');
+  const [deadline, setDeadline] = useState('');
+  const [creationDate, setCreationDate] = useState(new Date().toISOString().split('T')[0]);
+  const [contractSum, setContractSum] = useState<string>('');
+  const [submitting, setSubmitting] = useState(false);
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [leadManagerId, setLeadManagerId] = useState<string>('');
+  const [managerDropdownOpen, setManagerDropdownOpen] = useState(false);
+  const managerTriggerRef = React.useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'users'), (snap) => {
+      const allUsers = snap.docs.map(doc => ({ uid: doc.id, ...doc.data() } as AppUser));
+      setUsers(allUsers);
+      if (!leadManagerId && auth.currentUser) setLeadManagerId(auth.currentUser.uid);
+    });
+    return () => unsub();
+  }, [leadManagerId]);
+
+  const inputClass = "w-full bg-surface border border-line rounded-md px-3 py-2.5 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
+  const labelClass = "text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 block mb-1.5";
+
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!auth.currentUser || !name || !client) return;
+    setSubmitting(true);
+    try {
+      let finalClientId = clientId;
+      if (!finalClientId && client) {
+        const companyRef = await addDoc(collection(db, 'companies'), { name: client, managerId: auth.currentUser.uid, createdAt: serverTimestamp() });
+        finalClientId = companyRef.id;
+      }
+      const leadManager = users.find(u => u.uid === leadManagerId);
+      const projectRef = await addDoc(collection(db, 'projects'), {
+        name, client, address,
+        deadline: (deadline && deadline.trim() !== "") ? new Date(deadline) : null,
+        status: 'lead',
+        managerId: auth.currentUser.uid,
+        leadManagerId: leadManagerId,
+        leadManagerName: leadManager?.displayName || '',
+        stakeholders: { client: { companyId: finalClientId || '', companyName: client, contactIds: [] } },
+        finance: { contractSum: contractSum ? Number(contractSum.replace(/\D/g, '')) : 0, managerPercentage: 0, expenses: [] },
+        createdAt: (creationDate && creationDate.trim() !== "") ? new Date(creationDate) : serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      const accessUpdates: Record<string, 'view' | 'edit'> = {};
+      if (leadManagerId) accessUpdates[leadManagerId] = 'edit';
+      accessUpdates[auth.currentUser.uid] = 'edit';
+
+      await Promise.all(Object.entries(accessUpdates).map(async ([uid, access]) => {
+        await updateDoc(fireDoc(db, 'users', uid), { [`projectsAccess.${projectRef.id}`]: access });
+      }));
+
+      const defaultTasks = ["Встреча с архитектором", "Подбор материалов", "Запрос образцов", "Изготовление новых образцов", "Согласование образцов", "КП", "Мокап", "Демонстрация", "Договор", "Счет", "Закупка", "Логистика"];
+      await Promise.all(defaultTasks.map((title, index) =>
+          addDoc(collection(db, 'projects', projectRef.id, 'tasks'), { title, description: '', date: '', completed: false, type: 'task', order: index, createdAt: serverTimestamp() })
+      ));
+      onCreated(projectRef.id);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'projects');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const selectedManager = users.find(u => u.uid === leadManagerId);
+
+  return (
+      <Modal isOpen={true} onClose={onClose} title="Новый проект" description="Заполните основные данные объекта"
+             footer={<div className="flex gap-4"><Button variant="outline" onClick={onClose} disabled={submitting}>Отмена</Button><Button variant="ochre" onClick={handleSubmit} disabled={submitting || !name || !client}>{submitting ? 'Создание...' : 'Создать проект'}</Button></div>}
+      >
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={labelClass}>Название проекта</label>
+              <input required value={name} onChange={e => setName(e.target.value)} className={inputClass} placeholder="Введите название..." />
+            </div>
+            <div>
+              <label className={labelClass}>Адрес объекта</label>
+              <input value={address} onChange={e => setAddress(e.target.value)} className={inputClass} placeholder="Город, улица..." />
+            </div>
+            <div>
+              <label className={labelClass}>Дата создания</label>
+              <DatePicker value={creationDate} onChange={setCreationDate} variant="compact" />
+            </div>
+            <div>
+              <label className={labelClass}>Срок проекта</label>
+              <DatePicker value={deadline} onChange={setDeadline} variant="compact" />
+            </div>
+            <div className="relative">
+              <label className={labelClass}>Ведущий менеджер</label>
+              <button
+                  ref={managerTriggerRef}
+                  type="button"
+                  onClick={() => setManagerDropdownOpen(o => !o)}
+                  className="w-full flex items-center justify-between gap-2 bg-surface border border-line rounded-md px-3 py-2.5 text-[13px] text-ink hover:bg-surface-2 focus:border-ochre focus:outline-none transition-colors"
+              >
+              <span className="flex items-center gap-2 min-w-0">
+                <UserAvatar uid={selectedManager?.uid || ''} name={selectedManager?.displayName || ''} size="xs" />
+                <span className={selectedManager ? 'text-ink truncate' : 'text-ink-4'}>
+                  {selectedManager?.displayName || 'Не назначен'}
+                </span>
+              </span>
+                <ChevronDown size={14} className="text-ink-3 shrink-0" />
+              </button>
+              <PortalDropdown anchorRef={managerTriggerRef} open={managerDropdownOpen} onClose={() => setManagerDropdownOpen(false)}>
+                <button type="button"
+                        onClick={() => { setLeadManagerId(''); setManagerDropdownOpen(false); }}
+                        className={cn("w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-left transition-colors",
+                            !leadManagerId ? "bg-[var(--ochre-bg)] text-[var(--ochre)] font-semibold" : "text-ink hover:bg-surface-2"
+                        )}>
+                  <UserAvatar uid="" name="" size="xs" />
+                  <span>Не назначен</span>
+                </button>
+                {users.map(u => (
+                    <button key={u.uid} type="button"
+                            onClick={() => { setLeadManagerId(u.uid); setManagerDropdownOpen(false); }}
+                            className={cn("w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-left transition-colors",
+                                u.uid === leadManagerId ? "bg-[var(--ochre-bg)] text-[var(--ochre)] font-semibold" : "text-ink hover:bg-surface-2"
+                            )}>
+                      <UserAvatar uid={u.uid} name={u.displayName} photoURL={u.photoURL} size="xs" />
+                      <span className="truncate">{u.displayName}</span>
+                    </button>
+                ))}
+              </PortalDropdown>
+            </div>
+            <div>
+              <label className={labelClass}>Сумма контракта, ₽</label>
+              <input
+                  type="text"
+                  inputMode="numeric"
+                  value={contractSum}
+                  onChange={e => {
+                    const raw = e.target.value.replace(/\D/g, '');
+                    setContractSum(raw ? Number(raw).toLocaleString('ru-RU') : '');
+                  }}
+                  className={inputClass}
+                  placeholder="0"
+              />
+            </div>
+          </div>
+          <div>
+            <label className={labelClass}>Заказчик</label>
+            <CompanySelect value={client} onChange={(val, id) => { setClient(val); setClientId(id); }} placeholder="Выбрать компанию из справочника..." />
+          </div>
+        </form>
+      </Modal>
+  );
+}

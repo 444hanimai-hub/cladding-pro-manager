@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Cladding Pro Manager</title>
+    <script>
+      // SPA redirect: сохраняем путь в sessionStorage и редиректим на index.html
+      var path = window.location.pathname;
+      var base = '/cladding-pro-manager';
+      var rest = path.replace(base, '');
+      sessionStorage.setItem('spa-redirect', rest || '/');
+      window.location.replace(base + '/');
+    </script>
+  </head>
+  <body></body>
+</html>
