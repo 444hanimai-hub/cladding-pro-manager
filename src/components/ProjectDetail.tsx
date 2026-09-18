@@ -66,6 +66,13 @@ import { PortalDropdown } from './ui/PortalDropdown';
 import { generateTrustDeedDocx, downloadBlob, uploadTrustDeedToDrive, TrustDeedDocxData } from '../lib/generateTrustDeedDocx';
 import { Button } from './ui/Button';
 import { todayLocalISO } from '../lib/dates';
+import {
+    getSuggestedTrustDeedNumber,
+    createTrustDeedWithNumber,
+    updateTrustDeedWithNumber,
+    deleteTrustDeedWithNumber,
+    NumberTakenError,
+} from '../lib/trustDeedNumbering';
 
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
 import CodeProtection from './CodeProtection';
@@ -224,11 +231,17 @@ export default function ProjectDetail({
             handleFirestoreError(error, OperationType.GET, `projects/${projectId}/tasks`);
         });
 
-        const unsubTrustDeeds = onSnapshot(collection(db, 'projects', projectId, 'trust_deeds'), (snapshot) => {
-            setTrustDeeds(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TrustDeed)));
-        }, (error) => {
-            console.error("Trust deeds error:", error);
-        });
+        // trust_deeds теперь коллекция верхнего уровня (не подколлекция проекта) — так номер
+        // доверенности можно сделать сквозным по всей системе, а не только в рамках проекта.
+        // Связь с проектом — через поле projectId, поэтому фильтруем через where().
+        const unsubTrustDeeds = onSnapshot(
+            query(collection(db, 'trust_deeds'), where('projectId', '==', projectId)),
+            (snapshot) => {
+                setTrustDeeds(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TrustDeed)));
+            }, (error) => {
+                console.error("Trust deeds error:", error);
+            }
+        );
 
         return () => {
             unsubProject();
@@ -4178,12 +4191,17 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
     const [isAdding, setIsAdding] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [formData, setFormData] = useState<Partial<TrustDeed>>({});
+    // Номер доверенности на момент начала редактирования — нужен, чтобы понять,
+    // изменился ли номер при сохранении (тогда нужно переносить "замок" номера).
+    const [originalNumber, setOriginalNumber] = useState<string | null>(null);
 
     const selectedDeed = trustDeeds.find(d => d.id === selectedDeedId);
 
     const handleGenerateDeed = async (deed: TrustDeed) => {
         const mat = project.materials?.find(m => m.id === deed.materialId || m.materialName === deed.materialName);
-        const materialSupplier = (mat as any)?.supplierName || deed.supplierName || '';
+        // Поставщик берётся ТОЛЬКО из материала проекта — доверенность больше не хранит
+        // supplierName отдельно (раньше это приводило к рассинхронизации данных).
+        const materialSupplier = (mat as any)?.supplierName || '';
 
         const data: TrustDeedDocxData = {
             number: deed.number,
@@ -4238,14 +4256,6 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
         }
     };
 
-    const allTrustDeeds: any[] = [];
-
-    const getNextNumber = () => {
-        if (allTrustDeeds.length === 0 && trustDeeds.length === 0) return "1";
-        const all = [...allTrustDeeds, ...trustDeeds];
-        return (Math.max(...all.map(d => parseInt(d.number) || 0)) + 1).toString();
-    };
-
     const addExpiryWeek = (issueDate: string) => {
         if (!issueDate) return '';
         const d = new Date(issueDate);
@@ -4253,14 +4263,19 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
         return d.toISOString().split('T')[0];
     };
 
-    const handleAdd = () => {
+    const handleAdd = async () => {
         if (!canEdit) return;
         const issueDate = new Date().toISOString().split('T')[0];
+        // Подсказка "следующий свободный номер" по сквозному счётчику (по всей системе,
+        // не только в рамках проекта). Поле в форме остаётся редактируемым — можно
+        // стереть и вписать любой номер вручную (например, чтобы продолжить нумерацию,
+        // которая уже велась у заказчика до перехода на эту систему).
+        const suggested = await getSuggestedTrustDeedNumber(db);
         setFormData({
-            number: getNextNumber(),
+            number: suggested,
             issueDate,
             expiryDate: addExpiryWeek(issueDate),
-            supplierId: '', supplierName: '',
+            supplierId: '',
             carrierId: '', carrierName: '',
             accountNumber: '', accountDate: '',
             rate: 0,
@@ -4270,21 +4285,29 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
             materialId: '', materialName: '',
             quantity: 0,
         });
+        setOriginalNumber(null);
         setIsAdding(true);
         setIsEditing(false);
     };
 
     const handleEdit = (deed: TrustDeed) => {
         setFormData(deed);
+        setOriginalNumber(deed.number);
         setIsAdding(true);
         setIsEditing(true);
     };
 
     const handleSave = async () => {
         if (!canEdit) return;
+        const number = String(formData.number || '').trim();
+        if (!number) {
+            alert('Укажите номер доверенности — это обязательное поле.');
+            return;
+        }
+
         const path = isEditing && formData.id
-            ? `projects/${project.id}/trust_deeds/${formData.id}`
-            : `projects/${project.id}/trust_deeds`;
+            ? `trust_deeds/${formData.id}`
+            : `trust_deeds`;
         try {
             // ── Синхронизация водителя со справочником ────────────────────────────
             let driverId = formData.driverId || '';
@@ -4312,19 +4335,20 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
                 }
             }
 
-            // Обновляем formData с актуальным driverId перед сохранением доверенности
-            const dataToSave = { ...formData, driverId };
+            // Собираем данные доверенности для сохранения — без id/number (id не хранится
+            // внутри документа, number передаётся отдельным аргументом в функции ниже).
+            const { id: _omitId, number: _omitNumber, ...rest } = formData as any;
+            const dataToSave = { ...rest, driverId, projectId: project.id };
 
+            let deedId: string;
             if (isEditing && formData.id) {
-                await updateDoc(doc(db, 'projects', project.id, 'trust_deeds', formData.id), {
-                    ...dataToSave, updatedAt: serverTimestamp()
-                });
+                await updateTrustDeedWithNumber(db, formData.id, originalNumber || number, number, dataToSave);
+                deedId = formData.id;
             } else {
-                // Сохраняем доверенность
-                const deedRef = await addDoc(collection(db, 'projects', project.id, 'trust_deeds'), {
-                    ...dataToSave, createdAt: serverTimestamp()
-                });
+                deedId = await createTrustDeedWithNumber(db, number, dataToSave);
+            }
 
+            if (!isEditing) {
                 // Автоматически создаём строку в таблице отгрузок
                 const existingShipments = project.shipments || [];
                 const mat = project.materials?.find(
@@ -4337,9 +4361,9 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
                 const newShipment: any = {
                     id: crypto.randomUUID(),
                     autoNumber: String(existingShipments.length + 1),
-                    trustDeedId: deedRef.id,
-                    trustDeedNumber: dataToSave.number || '',
-                    poaNumber: dataToSave.number || '',
+                    trustDeedId: deedId,
+                    trustDeedNumber: number,
+                    poaNumber: number,
                     materialName: matLabel,
                     materialId: dataToSave.materialId || '',
                     quantity: dataToSave.quantity || 0,
@@ -4363,7 +4387,14 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
             }
             setIsAdding(false);
             setFormData({});
+            setOriginalNumber(null);
         } catch (error) {
+            if (error instanceof NumberTakenError) {
+                const suggested = await getSuggestedTrustDeedNumber(db);
+                setFormData(prev => ({ ...prev, number: suggested }));
+                alert(`Доверенность с номером «${number}» уже существует. Номер в форме обновлён на следующий свободный: ${suggested}.`);
+                return;
+            }
             handleFirestoreError(error, OperationType.WRITE, path);
         }
     };
@@ -4371,16 +4402,19 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
     const handleSaveAndGenerate = async () => {
         const snapshot = { ...formData } as TrustDeed;
         await handleSave();
+        // Если сохранение прервалось из-за занятого номера, formData.number уже
+        // обновлён на подсказку — не генерируем документ со старыми (несохранёнными) данными.
+        if (isAdding) return;
         await handleGenerateDeed(snapshot);
     };
 
-    const handleDelete = async (id: string) => {
+    const handleDelete = async (id: string, number: string) => {
         if (!canEdit || !window.confirm('Вы уверены, что хотите удалить эту доверенность?')) return;
         try {
-            await deleteDoc(doc(db, 'projects', project.id, 'trust_deeds', id));
+            await deleteTrustDeedWithNumber(db, id, number);
             if (selectedDeedId === id) setSelectedDeedId(null);
         } catch (error) {
-            handleFirestoreError(error, OperationType.DELETE, `projects/${project.id}/trust_deeds/${id}`);
+            handleFirestoreError(error, OperationType.DELETE, `trust_deeds/${id}`);
         }
     };
 
@@ -4482,7 +4516,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
                                         {canEdit && (
                                             <>
                                                 <button onClick={() => handleEdit(selectedDeed)} title="Редактировать" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><Pencil size={13} /></button>
-                                                <button onClick={() => handleDelete(selectedDeed.id)} title="Удалить" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#A04930] hover:bg-[#F5E6E2] transition-colors"><Trash2 size={13} /></button>
+                                                <button onClick={() => handleDelete(selectedDeed.id, selectedDeed.number)} title="Удалить" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#A04930] hover:bg-[#F5E6E2] transition-colors"><Trash2 size={13} /></button>
                                             </>
                                         )}
                                         <button onClick={() => setSelectedDeedId(null)} title="Свернуть" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><X size={13} /></button>
@@ -4575,7 +4609,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
                                 setFormData(data);
                             }
                         }}
-                        onClose={() => { setIsAdding(false); setFormData({}); }}
+                        onClose={() => { setIsAdding(false); setFormData({}); setOriginalNumber(null); }}
                         onSave={handleSave}
                         onSaveAndGenerate={handleSaveAndGenerate}
                         directories={directories}
@@ -4626,7 +4660,7 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                         <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
                             {isEditing ? 'Редактировать доверенность' : 'Новая доверенность'}
                         </h2>
-                        <p className="text-[11px] text-ink-3 mt-0.5">Номер сквозной по всем проектам, доступен для редактирования</p>
+                        <p className="text-[11px] text-ink-3 mt-0.5">Номер сквозной по всей системе (не по проекту) — при желании введите свой</p>
                     </div>
                     <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
                         <X size={16} />

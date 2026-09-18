@@ -388,13 +388,12 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
       }));
     }, (error) => { console.error("Dashboard events group snapshot error:", error); });
 
-    const unsubTrustDeeds = onSnapshot(collectionGroup(db, 'trust_deeds'), (snap) => {
-      setAllTrustDeeds(snap.docs.map(doc => {
-        const parts = doc.ref.path.split('/');
-        const projectId = parts.length >= 2 ? parts[1] : '';
-        return { id: doc.id, projectId, ...doc.data() };
-      }));
-    }, (error) => { console.error("Dashboard trust_deeds group snapshot error:", error); });
+    // trust_deeds теперь коллекция верхнего уровня (не подколлекция проекта), поэтому
+    // не нужен collectionGroup — обычной коллекции достаточно. projectId лежит
+    // прямо в документе, поэтому не нужно вытаскивать его из пути документа.
+    const unsubTrustDeeds = onSnapshot(collection(db, 'trust_deeds'), (snap) => {
+      setAllTrustDeeds(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => { console.error("Dashboard trust_deeds snapshot error:", error); });
 
     return () => { unsubTasks(); unsubEvents(); unsubTrustDeeds(); };
   }, [appUser]);

@@ -9,8 +9,8 @@
         "address": { "type": "string", "description": "Адрес проекта" },
         "client": { "type": "string", "description": "Заказчик" },
         "deadline": { "type": "string", "format": "date", "description": "Срок проекта" },
-        "status": { 
-          "type": "string", 
+        "status": {
+          "type": "string",
           "enum": ["lead", "active", "completed", "cancelled"],
           "description": "Статус проекта"
         },
@@ -140,7 +140,7 @@
       "properties": {
         "companyId": { "type": "string" },
         "companyName": { "type": "string" },
-        "contactIds": { 
+        "contactIds": {
           "type": "array",
           "items": { "type": "string" }
         }
@@ -183,28 +183,50 @@
     },
     "TrustDeed": {
       "title": "TrustDeed",
-      "description": "Доверенность на получение/перевозку груза",
+      "description": "Доверенность на получение/перевозку груза. Хранится в единой коллекции верхнего уровня trust_deeds (не как подколлекция проекта), чтобы номер был сквозным по всей системе. Поставщик в доверенности отдельно не хранится — берётся из материала проекта (ProjectMaterial.supplierName) по materialId/materialName.",
       "type": "object",
       "properties": {
-        "number": { "type": "string" },
+        "projectId": { "type": "string", "description": "ID проекта, к которому относится доверенность" },
+        "number": { "type": "string", "description": "Номер доверенности — уникален по всей системе (гарантируется коллекцией trust_deed_numbers)" },
         "issueDate": { "type": "string", "format": "date" },
         "expiryDate": { "type": "string", "format": "date" },
         "supplierId": { "type": "string" },
-        "supplierName": { "type": "string" },
         "customerName": { "type": "string" },
         "carrierId": { "type": "string" },
         "carrierName": { "type": "string" },
         "accountNumber": { "type": "string" },
+        "accountDate": { "type": "string", "format": "date" },
         "rate": { "type": "number" },
         "driverId": { "type": "string" },
         "driverName": { "type": "string" },
         "driverPassportSeries": { "type": "string" },
         "driverPassportNumber": { "type": "string" },
+        "driverPassportIssuedBy": { "type": "string" },
+        "driverPassportIssuedDate": { "type": "string", "format": "date" },
         "materialId": { "type": "string" },
         "materialName": { "type": "string" },
         "quantity": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "number"]
+    },
+    "TrustDeedNumberLock": {
+      "title": "TrustDeedNumberLock",
+      "description": "Служебный документ-\"замок\" для гарантии уникальности номера доверенности. ID документа = номеру доверенности. Существование документа означает, что номер занят. Создаётся/удаляется атомарно вместе с доверенностью.",
+      "type": "object",
+      "properties": {
+        "deedId": { "type": "string", "description": "ID доверенности, занявшей этот номер" },
+        "projectId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Counter": {
+      "title": "Counter",
+      "description": "Служебный счётчик. Документ counters/trustDeeds хранит последний использованный номер доверенности — используется только как подсказка для формы, не как источник истины об уникальности.",
+      "type": "object",
+      "properties": {
+        "lastNumber": { "type": "number" }
       }
     },
     "Event": {
@@ -250,13 +272,21 @@
       "schema": "Event",
       "description": "Журнал мероприятий проекта"
     },
-    "projects/{projectId}/trust_deeds": {
-      "schema": "TrustDeed",
-      "description": "Доверенности проекта"
-    },
     "projects/{projectId}/documents": {
       "schema": "ProjectDocument",
       "description": "Документы проекта"
+    },
+    "trust_deeds": {
+      "schema": "TrustDeed",
+      "description": "Все доверенности системы (коллекция верхнего уровня, сквозная нумерация по всем проектам). Связь с проектом — через поле projectId."
+    },
+    "trust_deed_numbers": {
+      "schema": "TrustDeedNumberLock",
+      "description": "Служебные \"замки\" номеров доверенностей для гарантии уникальности (ID документа = номеру)"
+    },
+    "counters": {
+      "schema": "Counter",
+      "description": "Служебные счётчики (документ trustDeeds хранит последний использованный номер доверенности)"
     },
     "companies": {
       "schema": "Company",

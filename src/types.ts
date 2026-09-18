@@ -98,26 +98,45 @@ export interface ProjectMaterial {
   supplierContactId?: string;
 }
 
+/**
+ * Доверенность на получение/перевозку груза.
+ *
+ * Хранится в единой коллекции верхнего уровня `trust_deeds` (не как подколлекция
+ * внутри проекта) — так номер доверенности можно сделать сквозным по всей системе,
+ * а не только в рамках одного проекта. Связь с проектом — через поле projectId.
+ *
+ * Уникальность номера (поле number) гарантируется отдельной служебной коллекцией
+ * trust_deed_numbers (документ с ID = номеру), которая создаётся/удаляется атомарно
+ * вместе с самой доверенностью в транзакции — см. lib/trustDeedNumbering.ts.
+ *
+ * Поле supplierName сознательно отсутствует: поставщик всегда берётся из материала
+ * проекта (ProjectMaterial.supplierName), а не хранится отдельно в доверенности —
+ * это раньше приводило к рассинхронизации данных.
+ */
 export interface TrustDeed {
   id: string;
+  projectId: string;
   number: string;
   issueDate: string;
   expiryDate: string;
   supplierId: string;
-  supplierName: string;
   customerName: string;
   carrierId: string;
   carrierName: string;
   accountNumber: string;
+  accountDate?: string;
   rate: number;
   driverId: string;
   driverName: string;
   driverPassportSeries: string;
   driverPassportNumber: string;
+  driverPassportIssuedBy?: string;
+  driverPassportIssuedDate?: string;
   materialId: string;
   materialName: string;
   quantity: number;
   createdAt?: any;
+  updatedAt?: any;
 }
 
 export interface Project {
@@ -138,7 +157,6 @@ export interface Project {
   materials?: ProjectMaterial[];
   allMaterialsSingleSupplier?: boolean;
   shipments?: Shipment[];
-  trustDeeds?: TrustDeed[];
   managerId: string;
   leadManagerId?: string;
   leadManagerName?: string;
