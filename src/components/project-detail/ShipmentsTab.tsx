@@ -10,7 +10,7 @@ import { Project, Shipment, TrustDeed } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import { Button } from '../ui/Button';
 import { STATUS_BG, STATUS_COLOR } from '../../lib/statuses';
-import { ShipmentDetailSection, ShipmentDetailField } from './shared/ShipmentDetailField';
+import { ShipmentDetailSection, ShipmentDetailField } from './shared/ShipmentDetailField.tsx';
 
 /**
  * Вкладка «Отгрузки» — таблица отгрузок с деталкой и формой создания/редактирования.

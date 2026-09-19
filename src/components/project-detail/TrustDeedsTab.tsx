@@ -16,7 +16,7 @@ import {
 import { Project, TrustDeed } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import DirectorySelect from './shared/DirectorySelect';
-import { ShipmentDetailField } from './shared/ShipmentDetailField';
+import { ShipmentDetailField } from './shared/ShipmentDetailField.tsx';
 
 function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken }: { project: Project, canEdit: boolean, directories: any, trustDeeds: TrustDeed[], accessToken?: string | null }) {
     const [selectedDeedId, setSelectedDeedId] = useState<string | null>(null);
