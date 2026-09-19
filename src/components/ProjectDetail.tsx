@@ -3,7 +3,7 @@ import { doc, onSnapshot, collection, query, where, updateDoc } from 'firebase/f
 import { db } from '../lib/firebase';
 import { Project, ProjectTask, TrustDeed, AppUser } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Calendar, CheckCircle, ChevronRight, MapPin } from 'lucide-react';
+import { Calendar, CheckCircle, ChevronRight, MapPin, FileText, Truck, Check, DollarSign } from 'lucide-react';
 import { cn, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
 import { getMarginColor, getMarginPercent } from '../lib/financeCalculations';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
@@ -414,12 +414,13 @@ export default function ProjectDetail({
 function TabButton({ active, onClick, label, count }: { active: boolean, onClick: () => void, label: string, count?: number }) {
     // Иконка по лейблу
     const iconNode =
-        label === 'Информация'           ? <FileText size={13} /> :
-            label === 'Материалы и отгрузки' ? <Truck size={13} /> :
-                label === 'Задачи'               ? <Check size={13} /> :
-                    label === 'Финансы и бонусы'     ? <DollarSign size={13} /> :
-                        label === 'Доверенности'         ? <FileText size={13} /> :
-                            null;
+        label === 'Информация'   ? <FileText size={13} /> :
+            label === 'Материалы'    ? <Truck size={13} /> :
+                label === 'Доверенности' ? <FileText size={13} /> :
+                    label === 'Отгрузки'     ? <Truck size={13} /> :
+                        label === 'Задачи'        ? <Check size={13} /> :
+                            label === 'Финансы и бонусы' ? <DollarSign size={13} /> :
+                                null;
 
     return (
         <button
