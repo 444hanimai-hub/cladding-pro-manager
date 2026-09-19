@@ -18,7 +18,7 @@ import { Pill } from './ui/Pill';
 import { Progress } from './ui/Progress';
 import { Button } from './ui/Button';
 import { Modal } from './ui/Modal';
-import { PeriodSelector, DateTypeSelector, StatusSelector, ManagerSelector, PeriodType } from './shared/DashboardFilters';
+import { PeriodSelector, DateTypeSelector, StatusSelector, ManagerSelector, LegalEntitySelector, SELLER_LEGAL_ENTITY_COMPANY_TYPE, PeriodType } from './shared/DashboardFilters';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
 import { Project, AppUser, ProjectTask, ProjectEvent } from '../types';
 import { FinanceCodeGate } from './CodeProtection';
@@ -66,6 +66,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodType>('year');
   const [filterManagerId, setFilterManagerId] = useState('');
   const [filterStatuses, setFilterStatuses] = useState<string[]>([]);
+  const [filterLegalEntityId, setFilterLegalEntityId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const isInitialized = React.useRef(false);
 
@@ -81,6 +82,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
         if (filters.selectedPeriod) setSelectedPeriod(filters.selectedPeriod);
         if (filters.filterManagerId !== undefined) setFilterManagerId(filters.filterManagerId);
         if (filters.filterStatuses) setFilterStatuses(filters.filterStatuses);
+        if (filters.filterLegalEntityId !== undefined) setFilterLegalEntityId(filters.filterLegalEntityId);
         if (filters.searchQuery !== undefined) setSearchQuery(filters.searchQuery);
       } catch (e) { console.error("Error loading saved filters:", e); }
     }
@@ -89,9 +91,9 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
 
   useEffect(() => {
     if (!appUser?.uid || !isInitialized.current) return;
-    const filters = { dateFilterType, selectedPeriod, filterManagerId, filterStatuses, searchQuery };
+    const filters = { dateFilterType, selectedPeriod, filterManagerId, filterStatuses, filterLegalEntityId, searchQuery };
     localStorage.setItem(`projectListFilters_${appUser.uid}`, JSON.stringify(filters));
-  }, [dateFilterType, selectedPeriod, filterManagerId, filterStatuses, searchQuery, appUser?.uid]);
+  }, [dateFilterType, selectedPeriod, filterManagerId, filterStatuses, filterLegalEntityId, searchQuery, appUser?.uid]);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -221,6 +223,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
     return accessibleProjects.filter(p => {
       if (searchQuery && !p.name.toLowerCase().includes(searchQuery.toLowerCase()) && !p.client.toLowerCase().includes(searchQuery.toLowerCase())) return false;
       if (filterManagerId && p.leadManagerId !== filterManagerId) return false;
+      if (filterLegalEntityId && p.sellerLegalEntityId !== filterLegalEntityId) return false;
       if (filterStatuses.length > 0) {
         const raw = p.status as string;
         const normalized =
@@ -243,7 +246,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
       }
       return true;
     });
-  }, [accessibleProjects, filterManagerId, filterStatuses, activeRange, dateFilterType, searchQuery]);
+  }, [accessibleProjects, filterManagerId, filterStatuses, filterLegalEntityId, activeRange, dateFilterType, searchQuery]);
 
   const canEditProject = (project: Project) => {
     const currentUid = appUser?.uid || auth.currentUser?.uid;
@@ -278,6 +281,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
                 <DateTypeSelector value={dateFilterType} onChange={setDateFilterType} />
                 <StatusSelector values={filterStatuses} onChange={setFilterStatuses} />
                 <ManagerSelector value={filterManagerId} onChange={setFilterManagerId} users={users} />
+                <LegalEntitySelector value={filterLegalEntityId} onChange={setFilterLegalEntityId} />
               </div>
             </div>
             <div className="flex items-center gap-4">
@@ -301,7 +305,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
               <div className="w-16 h-16 rounded-full bg-surface-2 flex items-center justify-center mb-6 text-ink-4"><Briefcase size={32} /></div>
               <h3 className="text-xl font-display font-medium text-ink mb-2">Проектов не найдено</h3>
               <p className="text-sm text-ink-3 mb-8">Попробуйте изменить параметры фильтрации или поиска</p>
-              <Button variant="ochre" onClick={() => { setSearchQuery(''); setFilterStatuses([]); setFilterManagerId(''); setSelectedPeriod('all'); }}>Сбросить фильтры</Button>
+              <Button variant="ochre" onClick={() => { setSearchQuery(''); setFilterStatuses([]); setFilterManagerId(''); setFilterLegalEntityId(''); setSelectedPeriod('all'); }}>Сбросить фильтры</Button>
             </div>
         ) : viewMode === 'grid' ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(310px,1fr))] gap-[14px]">
@@ -463,6 +467,8 @@ function ProjectForm({ onClose, onCreated }: { onClose: () => void, onCreated: (
   const [deadline, setDeadline] = useState('');
   const [creationDate, setCreationDate] = useState(new Date().toISOString().split('T')[0]);
   const [contractSum, setContractSum] = useState<string>('');
+  const [sellerLegalEntityName, setSellerLegalEntityName] = useState('');
+  const [sellerLegalEntityId, setSellerLegalEntityId] = useState<string | undefined>(undefined);
   const [submitting, setSubmitting] = useState(false);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [leadManagerId, setLeadManagerId] = useState<string>('');
@@ -499,6 +505,8 @@ function ProjectForm({ onClose, onCreated }: { onClose: () => void, onCreated: (
         managerId: auth.currentUser.uid,
         leadManagerId: leadManagerId,
         leadManagerName: leadManager?.displayName || '',
+        sellerLegalEntityId: sellerLegalEntityId || '',
+        sellerLegalEntityName: sellerLegalEntityName || '',
         stakeholders: { client: { companyId: finalClientId || '', companyName: client, contactIds: [] } },
         finance: { contractSum: contractSum ? Number(contractSum.replace(/\D/g, '')) : 0, managerPercentage: 0, expenses: [] },
         createdAt: (creationDate && creationDate.trim() !== "") ? new Date(creationDate) : serverTimestamp(),
@@ -604,6 +612,15 @@ function ProjectForm({ onClose, onCreated }: { onClose: () => void, onCreated: (
           <div>
             <label className={labelClass}>Заказчик</label>
             <CompanySelect value={client} onChange={(val, id) => { setClient(val); setClientId(id); }} placeholder="Выбрать компанию из справочника..." />
+          </div>
+          <div>
+            <label className={labelClass}>Юр. лицо для продажи</label>
+            <CompanySelect
+                value={sellerLegalEntityName}
+                onChange={(val, id) => { setSellerLegalEntityName(val); setSellerLegalEntityId(id); }}
+                placeholder="Выбрать юр. лицо из справочника..."
+                companyType={SELLER_LEGAL_ENTITY_COMPANY_TYPE}
+            />
           </div>
         </form>
       </Modal>

@@ -1,26 +1,32 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
+import {
   Users as UsersIcon,
   Calendar,
   ChevronDown,
   Check,
   Circle,
   Plus,
-  Flag
+  Flag,
+  Briefcase
 } from 'lucide-react';
+import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { db } from '../../lib/firebase';
 import { cn } from '../../lib/utils';
 import UserAvatar from '../UserAvatar';
-import { AppUser } from '../../types';
+import { AppUser, Company } from '../../types';
 import { STATUS_LIST, STATUS_LABEL, STATUS_COLOR } from '../../lib/statuses';
 
 export type PeriodType = 'quarter' | 'year' | 'all';
+
+/** companyType в справочнике companies, которым помечены юр. лица, от имени которых ведутся продажи */
+export const SELLER_LEGAL_ENTITY_COMPANY_TYPE = 'Юр лицо для продажи';
 
 /* ───────── shared atoms ───────── */
 
 function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
-    <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-ink-3">
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-ink-3">
       {children}
     </span>
   );
@@ -53,38 +59,38 @@ function DDTrigger({ icon, label, value, open, onClick }: {
   onClick: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-2 px-3 py-[7px] rounded-[10px] bg-surface text-[12.5px] transition-colors whitespace-nowrap border",
-        open ? "border-ochre" : "border-line hover:bg-surface-2"
-      )}
-    >
-      <span className="text-ink-3 flex items-center shrink-0">{icon}</span>
-      <span className="text-ink-3 text-[11.5px]">{label}:</span>
-      <span className="text-ink font-medium">{value}</span>
-      <ChevronDown
-        size={12}
-        className={cn("text-ink-3 ml-0.5 transition-transform shrink-0", open && "rotate-180")}
-      />
-    </button>
+      <button
+          onClick={onClick}
+          className={cn(
+              "inline-flex items-center gap-2 px-3 py-[7px] rounded-[10px] bg-surface text-[12.5px] transition-colors whitespace-nowrap border",
+              open ? "border-ochre" : "border-line hover:bg-surface-2"
+          )}
+      >
+        <span className="text-ink-3 flex items-center shrink-0">{icon}</span>
+        <span className="text-ink-3 text-[11.5px]">{label}:</span>
+        <span className="text-ink font-medium">{value}</span>
+        <ChevronDown
+            size={12}
+            className={cn("text-ink-3 ml-0.5 transition-transform shrink-0", open && "rotate-180")}
+        />
+      </button>
   );
 }
 
 function MenuShell({ children, width = 220 }: { children: React.ReactNode; width?: number }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.12 }}
-      className="absolute top-full left-0 mt-1.5 bg-surface border border-line rounded-[10px] p-1.5 z-50"
-      style={{
-        minWidth: width,
-        boxShadow: '0 1px 0 rgba(255,255,255,.5) inset, 0 24px 48px -12px rgba(48,42,28,.28)'
-      }}
-    >
-      {children}
-    </motion.div>
+      <motion.div
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.12 }}
+          className="absolute top-full left-0 mt-1.5 bg-surface border border-line rounded-[10px] p-1.5 z-50"
+          style={{
+            minWidth: width,
+            boxShadow: '0 1px 0 rgba(255,255,255,.5) inset, 0 24px 48px -12px rgba(48,42,28,.28)'
+          }}
+      >
+        {children}
+      </motion.div>
   );
 }
 
@@ -95,17 +101,17 @@ function MenuItem({ selected, onClick, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left text-[13px] transition-colors",
-        selected
-          ? "bg-[var(--ochre-bg)] text-ochre font-semibold"
-          : "text-ink hover:bg-surface-2"
-      )}
-    >
-      {children}
-    </button>
+      <button
+          onClick={onClick}
+          className={cn(
+              "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left text-[13px] transition-colors",
+              selected
+                  ? "bg-[var(--ochre-bg)] text-ochre font-semibold"
+                  : "text-ink hover:bg-surface-2"
+          )}
+      >
+        {children}
+      </button>
   );
 }
 
@@ -126,28 +132,28 @@ export function PeriodSelector({ label, selectedPeriod, onPeriodChange }: Period
     { id: 'all',     label: 'Всё время' },
   ];
   return (
-    <div className="flex items-center gap-2.5">
-      <Eyebrow>{label}</Eyebrow>
-      <div className="inline-flex items-center gap-0.5 p-[2px] rounded-lg bg-surface-2">
-        {opts.map(p => {
-          const active = selectedPeriod === p.id;
-          return (
-            <button
-              key={p.id}
-              onClick={() => onPeriodChange(p.id)}
-              className={cn(
-                "px-3 py-[5px] rounded-md text-[12px] font-semibold transition-all whitespace-nowrap",
-                active
-                  ? "bg-bg text-ink shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-                  : "text-ink-3 hover:text-ink-2 bg-transparent"
-              )}
-            >
-              {p.label}
-            </button>
-          );
-        })}
+      <div className="flex items-center gap-2.5">
+        <Eyebrow>{label}</Eyebrow>
+        <div className="inline-flex items-center gap-0.5 p-[2px] rounded-lg bg-surface-2">
+          {opts.map(p => {
+            const active = selectedPeriod === p.id;
+            return (
+                <button
+                    key={p.id}
+                    onClick={() => onPeriodChange(p.id)}
+                    className={cn(
+                        "px-3 py-[5px] rounded-md text-[12px] font-semibold transition-all whitespace-nowrap",
+                        active
+                            ? "bg-bg text-ink shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
+                            : "text-ink-3 hover:text-ink-2 bg-transparent"
+                    )}
+                >
+                  {p.label}
+                </button>
+            );
+          })}
+        </div>
       </div>
-    </div>
   );
 }
 
@@ -167,32 +173,32 @@ export function DateTypeSelector({ value, onChange }: DateTypeSelectorProps) {
   const selected = options.find(o => o.id === value) || options[0];
 
   return (
-    <div className="relative" ref={ref}>
-      <DDTrigger
-        icon={<Calendar size={13} />}
-        label="Дата"
-        value={selected.label}
-        open={open}
-        onClick={() => setOpen(!open)}
-      />
-      <AnimatePresence>
-        {open && (
-          <MenuShell width={210}>
-            {options.map(opt => (
-              <MenuItem
-                key={opt.id}
-                selected={value === opt.id}
-                onClick={() => { onChange(opt.id); setOpen(false); }}
-              >
-                <span className="text-ink-3 flex items-center w-4 shrink-0">{opt.icon}</span>
-                <span className="flex-1">{opt.label}</span>
-                {value === opt.id && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
-              </MenuItem>
-            ))}
-          </MenuShell>
-        )}
-      </AnimatePresence>
-    </div>
+      <div className="relative" ref={ref}>
+        <DDTrigger
+            icon={<Calendar size={13} />}
+            label="Дата"
+            value={selected.label}
+            open={open}
+            onClick={() => setOpen(!open)}
+        />
+        <AnimatePresence>
+          {open && (
+              <MenuShell width={210}>
+                {options.map(opt => (
+                    <MenuItem
+                        key={opt.id}
+                        selected={value === opt.id}
+                        onClick={() => { onChange(opt.id); setOpen(false); }}
+                    >
+                      <span className="text-ink-3 flex items-center w-4 shrink-0">{opt.icon}</span>
+                      <span className="flex-1">{opt.label}</span>
+                      {value === opt.id && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
+                    </MenuItem>
+                ))}
+              </MenuShell>
+          )}
+        </AnimatePresence>
+      </div>
   );
 }
 
@@ -216,47 +222,47 @@ export function StatusSelector({ values, onChange }: StatusSelectorProps) {
   };
 
   const label =
-    values.length === 0 ? 'Все статусы' :
-    values.length === 1 ? (options.find(o => o.id === values[0])?.label || 'Выбрано') :
-    `${values.length} выбрано`;
+      values.length === 0 ? 'Все статусы' :
+          values.length === 1 ? (options.find(o => o.id === values[0])?.label || 'Выбрано') :
+              `${values.length} выбрано`;
 
   return (
-    <div className="relative" ref={ref}>
-      <DDTrigger
-        icon={<Circle size={13} />}
-        label="Статус"
-        value={label}
-        open={open}
-        onClick={() => setOpen(!open)}
-      />
-      <AnimatePresence>
-        {open && (
-          <MenuShell width={210}>
-            {options.map(opt => {
-              const sel = values.includes(opt.id);
-              return (
-                <MenuItem key={opt.id} selected={sel} onClick={() => toggle(opt.id)}>
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: opt.color }} />
-                  <span className="flex-1">{opt.label}</span>
-                  {sel && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
-                </MenuItem>
-              );
-            })}
-            {values.length > 0 && (
-              <>
-                <div className="h-px bg-line my-1" />
-                <button
-                  onClick={() => { onChange([]); setOpen(false); }}
-                  className="w-full px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-terracotta hover:bg-surface-2 rounded-md transition-colors text-left"
-                >
-                  Сбросить
-                </button>
-              </>
-            )}
-          </MenuShell>
-        )}
-      </AnimatePresence>
-    </div>
+      <div className="relative" ref={ref}>
+        <DDTrigger
+            icon={<Circle size={13} />}
+            label="Статус"
+            value={label}
+            open={open}
+            onClick={() => setOpen(!open)}
+        />
+        <AnimatePresence>
+          {open && (
+              <MenuShell width={210}>
+                {options.map(opt => {
+                  const sel = values.includes(opt.id);
+                  return (
+                      <MenuItem key={opt.id} selected={sel} onClick={() => toggle(opt.id)}>
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: opt.color }} />
+                        <span className="flex-1">{opt.label}</span>
+                        {sel && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
+                      </MenuItem>
+                  );
+                })}
+                {values.length > 0 && (
+                    <>
+                      <div className="h-px bg-line my-1" />
+                      <button
+                          onClick={() => { onChange([]); setOpen(false); }}
+                          className="w-full px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-terracotta hover:bg-surface-2 rounded-md transition-colors text-left"
+                      >
+                        Сбросить
+                      </button>
+                    </>
+                )}
+              </MenuShell>
+          )}
+        </AnimatePresence>
+      </div>
   );
 }
 
@@ -274,39 +280,104 @@ export function ManagerSelector({ value, onChange, users }: ManagerSelectorProps
   const label = selected ? (selected.displayName || '') : 'Все менеджеры';
 
   return (
-    <div className="relative" ref={ref}>
-      <DDTrigger
-        icon={<UsersIcon size={13} />}
-        label="Менеджер"
-        value={label}
-        open={open}
-        onClick={() => setOpen(!open)}
-      />
-      <AnimatePresence>
-        {open && (
-          <MenuShell width={240}>
-            <MenuItem
-              selected={value === ''}
-              onClick={() => { onChange(''); setOpen(false); }}
-            >
-              <span className="w-6 shrink-0" />
-              <span className="flex-1">Все менеджеры</span>
-              {value === '' && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
-            </MenuItem>
-            <div className="h-px bg-line my-1" />
-            {users.map(user => {
-              const sel = value === user.uid;
-              return (
-                <MenuItem key={user.uid} selected={sel} onClick={() => { onChange(user.uid); setOpen(false); }}>
-                  <UserAvatar uid={user.uid} name={user.displayName || ''} size="xs" />
-                  <span className="flex-1 truncate">{user.displayName}</span>
-                  {sel && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
+      <div className="relative" ref={ref}>
+        <DDTrigger
+            icon={<UsersIcon size={13} />}
+            label="Менеджер"
+            value={label}
+            open={open}
+            onClick={() => setOpen(!open)}
+        />
+        <AnimatePresence>
+          {open && (
+              <MenuShell width={240}>
+                <MenuItem
+                    selected={value === ''}
+                    onClick={() => { onChange(''); setOpen(false); }}
+                >
+                  <span className="w-6 shrink-0" />
+                  <span className="flex-1">Все менеджеры</span>
+                  {value === '' && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
                 </MenuItem>
-              );
-            })}
-          </MenuShell>
-        )}
-      </AnimatePresence>
-    </div>
+                <div className="h-px bg-line my-1" />
+                {users.map(user => {
+                  const sel = value === user.uid;
+                  return (
+                      <MenuItem key={user.uid} selected={sel} onClick={() => { onChange(user.uid); setOpen(false); }}>
+                        <UserAvatar uid={user.uid} name={user.displayName || ''} size="xs" />
+                        <span className="flex-1 truncate">{user.displayName}</span>
+                        {sel && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
+                      </MenuItem>
+                  );
+                })}
+              </MenuShell>
+          )}
+        </AnimatePresence>
+      </div>
+  );
+}
+
+/* ───────── LegalEntitySelector ─────────
+ * Фильтр по юр. лицу, через которое ведутся продажи (Project.sellerLegalEntityId).
+ * Список берётся из справочника companies с companyType === SELLER_LEGAL_ENTITY_COMPANY_TYPE.
+ * Сам подписывается на коллекцию, поэтому его можно использовать где угодно без
+ * передачи списка компаний извне — как ManagerSelector сам не получает список задач.
+ */
+
+interface LegalEntitySelectorProps {
+  value: string;
+  onChange: (val: string) => void;
+}
+
+export function LegalEntitySelector({ value, onChange }: LegalEntitySelectorProps) {
+  const { open, setOpen, ref } = usePopover();
+  const [entities, setEntities] = useState<Company[]>([]);
+
+  useEffect(() => {
+    const q = query(collection(db, 'companies'), orderBy('name'));
+    const unsub = onSnapshot(q, (snap) => {
+      const all = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Company & { companyType?: string }));
+      setEntities(all.filter(c => (c as any).companyType === SELLER_LEGAL_ENTITY_COMPANY_TYPE));
+    });
+    return () => unsub();
+  }, []);
+
+  const selected = entities.find(c => c.id === value);
+  const label = selected ? selected.name : 'Все юр. лица';
+
+  return (
+      <div className="relative" ref={ref}>
+        <DDTrigger
+            icon={<Briefcase size={13} />}
+            label="Юр. лицо"
+            value={label}
+            open={open}
+            onClick={() => setOpen(!open)}
+        />
+        <AnimatePresence>
+          {open && (
+              <MenuShell width={240}>
+                <MenuItem
+                    selected={value === ''}
+                    onClick={() => { onChange(''); setOpen(false); }}
+                >
+                  <span className="w-6 shrink-0" />
+                  <span className="flex-1">Все юр. лица</span>
+                  {value === '' && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
+                </MenuItem>
+                {entities.length > 0 && <div className="h-px bg-line my-1" />}
+                {entities.map(entity => {
+                  const sel = value === entity.id;
+                  return (
+                      <MenuItem key={entity.id} selected={sel} onClick={() => { onChange(entity.id); setOpen(false); }}>
+                        <span className="flex-1 truncate">{entity.name}</span>
+                        {sel && <Check size={13} className="text-ochre" strokeWidth={2.5}/>}
+                      </MenuItem>
+                  );
+                })}
+              </MenuShell>
+          )}
+        </AnimatePresence>
+      </div>
   );
 }

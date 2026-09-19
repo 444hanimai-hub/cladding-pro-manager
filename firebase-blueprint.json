@@ -62,6 +62,8 @@
         "managerId": { "type": "string", "description": "ID ответственного менеджера" },
         "leadManagerId": { "type": "string" },
         "leadManagerName": { "type": "string" },
+        "sellerLegalEntityId": { "type": "string", "description": "ID компании-юрлица из справочника companies (companyType: 'Юр лицо для продажи'), от имени которого ведутся продажи по проекту" },
+        "sellerLegalEntityName": { "type": "string", "description": "Наименование юр. лица для продажи (денормализовано для отображения в списках без доп. запросов)" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "completedAt": { "type": "string", "format": "date-time" },

@@ -34,6 +34,7 @@ import {
   DateTypeSelector,
   StatusSelector,
   ManagerSelector,
+  LegalEntitySelector,
   PeriodType
 } from './shared/DashboardFilters';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
@@ -106,6 +107,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodType>('year');
   const [filterManagerId, setFilterManagerId] = useState('');
   const [filterStatuses, setFilterStatuses] = useState<string[]>([]);
+  const [filterLegalEntityId, setFilterLegalEntityId] = useState('');
   const isInitialized = useRef(false);
 
   useEffect(() => {
@@ -118,6 +120,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
         if (filters.selectedPeriod) setSelectedPeriod(filters.selectedPeriod);
         if (filters.filterManagerId !== undefined) setFilterManagerId(filters.filterManagerId);
         if (filters.filterStatuses) setFilterStatuses(filters.filterStatuses);
+        if (filters.filterLegalEntityId !== undefined) setFilterLegalEntityId(filters.filterLegalEntityId);
       } catch (e) { console.error("Failed to load dashboard filters", e); }
     }
     isInitialized.current = true;
@@ -125,9 +128,9 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
 
   useEffect(() => {
     if (!appUser?.uid || !isInitialized.current) return;
-    const filters = { dateFilterType, selectedPeriod, filterManagerId, filterStatuses };
+    const filters = { dateFilterType, selectedPeriod, filterManagerId, filterStatuses, filterLegalEntityId };
     localStorage.setItem(`dashboardFilters_${appUser.uid}`, JSON.stringify(filters));
-  }, [dateFilterType, selectedPeriod, filterManagerId, filterStatuses, appUser?.uid]);
+  }, [dateFilterType, selectedPeriod, filterManagerId, filterStatuses, filterLegalEntityId, appUser?.uid]);
 
   const activeRange = useMemo(() => getPeriodRange(selectedPeriod), [selectedPeriod]);
   const previousRange = useMemo(() => getPreviousPeriodRange(selectedPeriod), [selectedPeriod]);
@@ -147,6 +150,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
   const filteredProjects = useMemo(() => {
     return accessibleProjects.filter(p => {
       if (filterManagerId && p.leadManagerId !== filterManagerId) return false;
+      if (filterLegalEntityId && p.sellerLegalEntityId !== filterLegalEntityId) return false;
       if (filterStatuses.length > 0) {
         const normalized = getNormalizedStatus(p.status as string);
         if (!filterStatuses.includes(normalized)) return false;
@@ -164,12 +168,13 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
       }
       return true;
     });
-  }, [accessibleProjects, filterManagerId, filterStatuses, activeRange, dateFilterType]);
+  }, [accessibleProjects, filterManagerId, filterLegalEntityId, filterStatuses, activeRange, dateFilterType]);
 
   const previousProjects = useMemo(() => {
     if (!previousRange.start || !previousRange.end) return [];
     return accessibleProjects.filter(p => {
       if (filterManagerId && p.leadManagerId !== filterManagerId) return false;
+      if (filterLegalEntityId && p.sellerLegalEntityId !== filterLegalEntityId) return false;
       if (filterStatuses.length > 0) {
         const normalized = getNormalizedStatus(p.status as string);
         if (!filterStatuses.includes(normalized)) return false;
@@ -184,7 +189,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
         return d >= previousRange.start! && d <= previousRange.end!;
       }
     });
-  }, [accessibleProjects, previousRange, filterManagerId, filterStatuses, dateFilterType]);
+  }, [accessibleProjects, previousRange, filterManagerId, filterLegalEntityId, filterStatuses, dateFilterType]);
 
   const totals = useMemo(() => {
     return filteredProjects.reduce((acc, p) => {
@@ -478,6 +483,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
             <DateTypeSelector value={dateFilterType} onChange={setDateFilterType} />
             <StatusSelector values={filterStatuses} onChange={setFilterStatuses} />
             <ManagerSelector value={filterManagerId} onChange={setFilterManagerId} users={users} />
+            <LegalEntitySelector value={filterLegalEntityId} onChange={setFilterLegalEntityId} />
           </div>
           <Button variant="soft" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Download size={14} />} onClick={() => {}}>Экспорт</Button>
         </div>

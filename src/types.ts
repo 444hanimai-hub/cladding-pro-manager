@@ -154,6 +154,9 @@ export interface Project {
   };
   resources: ResourceItem[];
   finance: FinanceData;
+  /** Юр. лицо, через которое продаём по этому проекту — компания из справочника с companyType "Юр лицо для продажи" */
+  sellerLegalEntityId?: string;
+  sellerLegalEntityName?: string;
   materials?: ProjectMaterial[];
   allMaterialsSingleSupplier?: boolean;
   shipments?: Shipment[];

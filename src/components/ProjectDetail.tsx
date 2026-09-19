@@ -64,6 +64,7 @@ import { DatePicker } from './ui/DatePicker';
 import { TimeInput } from './ui/TimeInput';
 import { PortalDropdown } from './ui/PortalDropdown';
 import { generateTrustDeedDocx, downloadBlob, uploadTrustDeedToDrive, TrustDeedDocxData } from '../lib/generateTrustDeedDocx';
+import { SELLER_LEGAL_ENTITY_COMPANY_TYPE } from './shared/DashboardFilters';
 import { Button } from './ui/Button';
 import { todayLocalISO } from '../lib/dates';
 import {
@@ -867,6 +868,34 @@ function PersonalInfoTab({ project, canEdit, users }: { project: Project, canEdi
                                         editedProject.leadManagerName
                                             ? <p className="text-[14px] font-medium text-ink leading-snug">{editedProject.leadManagerName}</p>
                                             : <p className="text-[14px] italic text-ink-4 leading-snug">не назначен</p>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Юр. лицо для продажи */}
+                        <div className="grid items-start gap-3.5 py-3.5" style={{ gridTemplateColumns: '32px 1fr' }}>
+                            <div className="w-8 h-8 rounded-full bg-surface-2 flex items-center justify-center text-ink-3 shrink-0">
+                                <Briefcase size={14} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                                <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1">Юр. лицо для продажи</p>
+                                <div className="max-w-[280px]">
+                                    {isEditing ? (
+                                        <CompanySelect
+                                            value={editedProject.sellerLegalEntityName || ''}
+                                            onChange={(name, id) => setEditedProject({
+                                                ...editedProject,
+                                                sellerLegalEntityName: name,
+                                                sellerLegalEntityId: id || ''
+                                            })}
+                                            placeholder="Выбрать юр. лицо..."
+                                            companyType={SELLER_LEGAL_ENTITY_COMPANY_TYPE}
+                                        />
+                                    ) : (
+                                        editedProject.sellerLegalEntityName
+                                            ? <p className="text-[14px] font-medium text-ink leading-snug">{editedProject.sellerLegalEntityName}</p>
+                                            : <p className="text-[14px] italic text-ink-4 leading-snug">не указано</p>
                                     )}
                                 </div>
                             </div>
