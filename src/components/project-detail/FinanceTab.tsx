@@ -75,7 +75,7 @@ function FinanceTab({
                 <CodeProtection
                     correctCode={appUser?.financeCode || ''}
                     onSuccess={onUnlock}
-                    subtitle="Для просмотра вкладки «Финансы и бонусы» введите код доступа"
+                    subtitle="Для просмотра вкладки «Финансы» введите код доступа"
                 />
             </div>
         );

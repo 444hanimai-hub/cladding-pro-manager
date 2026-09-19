@@ -375,14 +375,14 @@ export default function ProjectDetail({
                 <TabButton active={activeSegment === 'materials'} onClick={() => setActiveSegment('materials')} label="Материалы" count={project.materials?.length} />
                 <TabButton active={activeSegment === 'trust'} onClick={() => setActiveSegment('trust')} label="Доверенности" count={trustDeeds.length} />
                 <TabButton active={activeSegment === 'shipments'} onClick={() => setActiveSegment('shipments')} label="Отгрузки" count={project.shipments?.length} />
-                <TabButton active={activeSegment === 'activity'} onClick={() => setActiveSegment('activity')} label="Задачи" count={tasks.length} />
                 {canSeeFinancialData && (
                     <TabButton
                         active={activeSegment === 'finance'}
                         onClick={() => setActiveSegment('finance')}
-                        label="Финансы и бонусы"
+                        label="Финансы"
                     />
                 )}
+                <TabButton active={activeSegment === 'activity'} onClick={() => setActiveSegment('activity')} label="Задачи" count={tasks.length} />
             </div>
 
             {/* Content Area */}
@@ -392,7 +392,6 @@ export default function ProjectDetail({
                     {activeSegment === 'materials' && <motion.div key="materials"><MaterialsTab project={project} canEdit={canEdit} directories={directories} /></motion.div>}
                     {activeSegment === 'trust' && <motion.div key="trust"><TrustDeedsTab project={project} canEdit={canEdit} directories={directories} trustDeeds={trustDeeds} accessToken={accessToken} /></motion.div>}
                     {activeSegment === 'shipments' && <motion.div key="shipments"><ShipmentsTab project={project} canEdit={canEdit} trustDeeds={trustDeeds} /></motion.div>}
-                    {activeSegment === 'activity' && <motion.div key="activity"><ActivityTab tasks={tasks} projectId={projectId} canEdit={canEdit} project={project} accessToken={accessToken} onConnectCalendar={onConnectCalendar} onClearCalendarToken={onClearCalendarToken} /></motion.div>}
                     {activeSegment === 'finance' && canSeeFinancialData && (
                         <motion.div key="finance">
                             <FinanceTab
@@ -405,6 +404,7 @@ export default function ProjectDetail({
                             />
                         </motion.div>
                     )}
+                    {activeSegment === 'activity' && <motion.div key="activity"><ActivityTab tasks={tasks} projectId={projectId} canEdit={canEdit} project={project} accessToken={accessToken} onConnectCalendar={onConnectCalendar} onClearCalendarToken={onClearCalendarToken} /></motion.div>}
                 </AnimatePresence>
             </div>
         </motion.div>
@@ -419,7 +419,7 @@ function TabButton({ active, onClick, label, count }: { active: boolean, onClick
                 label === 'Доверенности' ? <FileText size={13} /> :
                     label === 'Отгрузки'     ? <Truck size={13} /> :
                         label === 'Задачи'        ? <Check size={13} /> :
-                            label === 'Финансы и бонусы' ? <DollarSign size={13} /> :
+                            label === 'Финансы' ? <DollarSign size={13} /> :
                                 null;
 
     return (
