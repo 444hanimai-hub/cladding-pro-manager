@@ -25,7 +25,7 @@ import CompanySelect from '../CompanySelect';
 import UserAvatar from '../UserAvatar';
 import StatusPill from '../StatusPill';
 import ProjectDocuments from '../ProjectDocuments';
-import EditField from './shared/EditField';
+import EditField from './shared/EditField.tsx';
 import StakeholderCard from './shared/StakeholderCard';
 import StakeholderEditForm from './shared/StakeholderEditForm';
 
