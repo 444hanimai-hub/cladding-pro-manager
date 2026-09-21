@@ -12,24 +12,27 @@ import {
     Check,
     CheckCircle2,
     Pencil,
+    FolderOpen,
+    ExternalLink,
+    Loader2,
 } from 'lucide-react';
 import { ProjectStatus, STATUS_LABEL, STATUS_COLOR, STATUS_LIST } from '../../lib/statuses';
 import { cn, formatDateForInput, formatDateToDisplay } from '../../lib/utils';
 import { todayLocalISO } from '../../lib/dates';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
 import { SELLER_LEGAL_ENTITY_COMPANY_TYPE } from '../shared/DashboardFilters';
+import { createProjectDriveFolder, isValidDriveFolderLink, buildProjectFolderName, formatDateYMD } from '../../lib/googleDriveFolders';
 import { Project, AppUser, StakeholderGroup } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import { PortalDropdown } from '../ui/PortalDropdown';
 import CompanySelect from '../CompanySelect';
 import UserAvatar from '../UserAvatar';
 import StatusPill from '../StatusPill';
-import ProjectDocuments from '../ProjectDocuments';
-import EditField from './shared/EditField.tsx';
-import StakeholderCard from './shared/StakeholderCard.tsx';
-import StakeholderEditForm from './shared/StakeholderEditForm.tsx';
+import EditField from './shared/EditField';
+import StakeholderCard from './shared/StakeholderCard';
+import StakeholderEditForm from './shared/StakeholderEditForm';
 
-function PersonalInfoTab({ project, canEdit, users }: { project: Project, canEdit: boolean, users: AppUser[] }) {
+function PersonalInfoTab({ project, canEdit, users, accessToken, onConnectCalendar }: { project: Project, canEdit: boolean, users: AppUser[], accessToken?: string | null, onConnectCalendar?: () => Promise<boolean> }) {
     const [isEditing, setIsEditing] = useState(false);
     const [editedProject, setEditedProject] = useState(() => ({
         ...project,
@@ -346,7 +349,7 @@ function PersonalInfoTab({ project, canEdit, users }: { project: Project, canEdi
                 </div>
 
                 {/* Документы */}
-                <ProjectDocuments projectId={project.id} canEdit={canEdit} />
+                <ProjectDriveFolder project={project} canEdit={canEdit} accessToken={accessToken} onConnectCalendar={onConnectCalendar} />
             </div>
 
             {/* Правая колонка: Участники проекта */}
@@ -372,5 +375,166 @@ function PersonalInfoTab({ project, canEdit, users }: { project: Project, canEdi
     );
 }
 
+
+/**
+ * Блок «Документы» — вместо загрузки файлов в саму CRM здесь только ссылка на
+ * папку проекта на Google Drive (заказчик хранит документы там). Два способа
+ * привязать папку: вставить готовую ссылку вручную (если уже собирали документы
+ * до создания проекта в системе) или создать новую папку одним кликом.
+ */
+function ProjectDriveFolder({ project, canEdit, accessToken, onConnectCalendar }: {
+    project: Project;
+    canEdit: boolean;
+    accessToken?: string | null;
+    onConnectCalendar?: () => Promise<boolean>;
+}) {
+    const [isEditingLink, setIsEditingLink] = useState(!project.driveDocsFolderLink);
+    const [linkInput, setLinkInput] = useState(project.driveDocsFolderLink || '');
+    const [linkError, setLinkError] = useState<string | null>(null);
+    const [isCreating, setIsCreating] = useState(false);
+    const [isConnecting, setIsConnecting] = useState(false);
+
+    useEffect(() => {
+        setLinkInput(project.driveDocsFolderLink || '');
+        setIsEditingLink(!project.driveDocsFolderLink);
+    }, [project.driveDocsFolderLink]);
+
+    const saveFolderLink = async (folderId: string | null, folderLink: string) => {
+        try {
+            await updateDoc(doc(db, 'projects', project.id), {
+                driveDocsFolderId: folderId || null,
+                driveDocsFolderLink: folderLink,
+                updatedAt: serverTimestamp(),
+            });
+            setIsEditingLink(false);
+        } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, `projects/${project.id}`);
+        }
+    };
+
+    const handleSaveManualLink = async () => {
+        const trimmed = linkInput.trim();
+        if (!trimmed) {
+            setLinkError('Вставьте ссылку на папку.');
+            return;
+        }
+        if (!isValidDriveFolderLink(trimmed)) {
+            setLinkError('Похоже, это не ссылка на папку Google Drive.');
+            return;
+        }
+        setLinkError(null);
+        await saveFolderLink(null, trimmed);
+    };
+
+    const handleCreateFolder = async () => {
+        if (!accessToken) return;
+        setIsCreating(true);
+        try {
+            const dateYMD = formatDateYMD(project.createdAt || (project as any).creationDate);
+            const folderName = buildProjectFolderName(dateYMD, project.name, project.leadManagerName || '');
+            const { id, link } = await createProjectDriveFolder(folderName, accessToken);
+            await saveFolderLink(id, link);
+        } catch (error) {
+            console.error('Не удалось создать папку на Google Drive:', error);
+            alert('Не удалось создать папку на Google Drive. Попробуйте ещё раз или вставьте ссылку на уже существующую папку вручную.');
+        } finally {
+            setIsCreating(false);
+        }
+    };
+
+    const handleConnectGoogle = async () => {
+        if (!onConnectCalendar || isConnecting) return;
+        setIsConnecting(true);
+        try {
+            await onConnectCalendar();
+        } finally {
+            setIsConnecting(false);
+        }
+    };
+
+    return (
+        <div className="bg-surface border border-line rounded-2xl shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
+            <div className="px-5 py-4 flex items-center justify-between gap-3 border-b border-line">
+                <h3 className="font-display text-[17px] font-medium text-ink leading-tight">Документы</h3>
+                {canEdit && !isEditingLink && project.driveDocsFolderLink && (
+                    <button
+                        type="button"
+                        onClick={() => setIsEditingLink(true)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors"
+                    >
+                        <Pencil size={12} /> Изменить
+                    </button>
+                )}
+            </div>
+
+            <div className="px-5 py-4">
+                {!isEditingLink && project.driveDocsFolderLink ? (
+                    <a
+                        href={project.driveDocsFolderLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-line bg-surface-2 hover:bg-surface-2/70 transition-colors text-[13px] font-semibold text-ink"
+                    >
+                        <FolderOpen size={16} className="text-ochre shrink-0" />
+                        Открыть папку с документами
+                        <ExternalLink size={12} className="text-ink-3 shrink-0" />
+                    </a>
+                ) : canEdit ? (
+                    <div className="space-y-3">
+                        {!accessToken && onConnectCalendar && (
+                            <div className="rounded-xl border border-ochre/35 bg-[#FBF5E8] px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                <p className="text-[12px] text-ink-3 leading-snug">
+                                    Чтобы создать папку автоматически, подключите Google.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={handleConnectGoogle}
+                                    disabled={isConnecting}
+                                    className="shrink-0 h-8 px-3 rounded-lg text-[12px] font-semibold bg-[#A67C3C] text-white hover:bg-[#956f35] disabled:opacity-50 transition-colors whitespace-nowrap"
+                                >
+                                    {isConnecting ? 'Подключение…' : 'Подключить Google'}
+                                </button>
+                            </div>
+                        )}
+                        <div className="flex flex-col sm:flex-row gap-2">
+                            <div className="flex-1">
+                                <input
+                                    value={linkInput}
+                                    onChange={e => { setLinkInput(e.target.value); setLinkError(null); }}
+                                    placeholder="Вставьте ссылку на папку Google Drive..."
+                                    className="w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4"
+                                />
+                                {linkError && <p className="text-[11px] text-terracotta mt-1">{linkError}</p>}
+                            </div>
+                            <button
+                                type="button"
+                                onClick={handleSaveManualLink}
+                                className="shrink-0 h-9 px-4 rounded-md text-[12.5px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors"
+                            >
+                                Сохранить
+                            </button>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <div className="h-px flex-1 bg-line" />
+                            <span className="text-[10.5px] uppercase tracking-wide text-ink-4">или</span>
+                            <div className="h-px flex-1 bg-line" />
+                        </div>
+                        <button
+                            type="button"
+                            onClick={handleCreateFolder}
+                            disabled={!accessToken || isCreating}
+                            className="w-full inline-flex items-center justify-center gap-2 h-9 rounded-md text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                            {isCreating ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+                            {isCreating ? 'Создаём папку…' : 'Создать папку на Google Диске'}
+                        </button>
+                    </div>
+                ) : (
+                    <p className="text-[13px] italic text-ink-4">Папка с документами ещё не привязана</p>
+                )}
+            </div>
+        </div>
+    );
+}
 
 export default PersonalInfoTab;

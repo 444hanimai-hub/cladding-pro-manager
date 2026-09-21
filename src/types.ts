@@ -189,6 +189,9 @@ export interface Project {
   /** Юр. лицо, через которое продаём по этому проекту — компания из справочника с companyType "Юр лицо для продажи" */
   sellerLegalEntityId?: string;
   sellerLegalEntityName?: string;
+  /** Папка проекта с документами на Google Drive — документы хранятся там, в CRM только ссылка. */
+  driveDocsFolderId?: string;
+  driveDocsFolderLink?: string;
   materials?: ProjectMaterial[];
   allMaterialsSingleSupplier?: boolean;
   shipments?: Shipment[];

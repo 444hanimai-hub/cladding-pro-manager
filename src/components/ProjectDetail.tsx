@@ -388,7 +388,7 @@ export default function ProjectDetail({
             {/* Content Area */}
             <div className="grid grid-cols-1 gap-8">
                 <AnimatePresence mode="wait">
-                    {activeSegment === 'info' && <motion.div key="info"><PersonalInfoTab project={project} canEdit={canEdit} users={users} /></motion.div>}
+                    {activeSegment === 'info' && <motion.div key="info"><PersonalInfoTab project={project} canEdit={canEdit} users={users} accessToken={accessToken} onConnectCalendar={onConnectCalendar} /></motion.div>}
                     {activeSegment === 'materials' && <motion.div key="materials"><MaterialsTab project={project} canEdit={canEdit} directories={directories} /></motion.div>}
                     {activeSegment === 'trust' && <motion.div key="trust"><TrustDeedsTab project={project} canEdit={canEdit} directories={directories} trustDeeds={trustDeeds} accessToken={accessToken} onConnectCalendar={onConnectCalendar} onClearCalendarToken={onClearCalendarToken} /></motion.div>}
                     {activeSegment === 'shipments' && <motion.div key="shipments"><ShipmentsTab project={project} canEdit={canEdit} trustDeeds={trustDeeds} /></motion.div>}
