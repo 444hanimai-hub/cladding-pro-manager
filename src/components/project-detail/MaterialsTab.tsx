@@ -171,7 +171,7 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                                 <span className="text-[12px] font-mono text-ink">{formatMoney(m.salePrice)}</span>
                                             </td>
                                             <td className="px-4 py-3.5">
-                                                <span className="text-[12px] font-mono font-bold text-ink">{formatMoney(calc.saleSum)}</span>
+                                                <span className="text-[12px] font-mono text-ink">{formatMoney(calc.saleSum)}</span>
                                             </td>
                                             <td className="px-4 py-3.5 text-right">
                                                 <div className="text-[13px] font-mono font-bold" style={{ color: marginColor }}>{formatMoney(calc.marginIncVat)}</div>
