@@ -120,46 +120,75 @@ export async function generateTrustDeedDocx(data: TrustDeedDocxData): Promise<Bl
   });
 }
 
+export interface DriveUploadResult {
+  link: string;
+  fileId: string;
+}
+
 /**
  * Загружает docx в Google Drive в папку доверенностей.
- * Возвращает ссылку на документ в Google Drive и открывает её в новой вкладке.
+ *
+ * Если передан existingFileId — ОБНОВЛЯЕТ содержимое уже существующего файла
+ * (PATCH), а не создаёт новый: так при повторной печати одной и той же
+ * доверенности на Drive не накапливаются дубликаты. Вызывающий код должен
+ * сохранить fileId из результата (в поле TrustDeed.driveFileId), чтобы в
+ * следующий раз снова передать его сюда.
+ *
+ * Если existingFileId не передан — создаёт новый файл (POST), как раньше.
+ * Если по существующему fileId Drive отвечает 404 (файл удалили вручную) —
+ * автоматически создаёт новый файл заново, чтобы печать не ломалась.
+ *
+ * Возвращает ссылку на документ и его fileId; открывает документ в новой вкладке.
  */
 export async function uploadTrustDeedToDrive(
     blob: Blob,
     filename: string,
-    accessToken: string
-): Promise<string> {
-  const metadata = {
+    accessToken: string,
+    existingFileId?: string
+): Promise<DriveUploadResult> {
+  const metadata: Record<string, unknown> = {
     name: filename,
-    parents: [DRIVE_FOLDER_ID],
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   };
+  // parents имеет смысл только при создании — при обновлении (PATCH) Drive API v3
+  // игнорирует это поле в теле запроса (для переноса между папками нужны отдельные
+  // query-параметры addParents/removeParents, которые нам здесь не требуются).
+  if (!existingFileId) {
+    metadata.parents = [DRIVE_FOLDER_ID];
+  }
 
   const form = new FormData();
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', blob);
 
-  const response = await fetch(
-      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',
-      {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: form,
-      }
-  );
+  const url = existingFileId
+      ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart&fields=id,webViewLink`
+      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink';
+
+  const response = await fetch(url, {
+    method: existingFileId ? 'PATCH' : 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
 
   if (!response.ok) {
+    // Файл, на который мы ссылались, кто-то удалил вручную с Google Drive —
+    // не ломаем печать, а создаём новый файл заново.
+    if (existingFileId && response.status === 404) {
+      return uploadTrustDeedToDrive(blob, filename, accessToken, undefined);
+    }
     const err = await response.text();
     throw new Error(`Ошибка загрузки в Google Drive: ${err}`);
   }
 
   const result = await response.json();
   const link = result.webViewLink as string;
+  const fileId = result.id as string;
 
   // Открываем документ в новой вкладке
   window.open(link, '_blank');
 
-  return link;
+  return { link, fileId };
 }
 
 export function downloadBlob(blob: Blob, filename: string): void {

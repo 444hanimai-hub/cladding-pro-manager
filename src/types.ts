@@ -159,6 +159,12 @@ export interface TrustDeed {
   materialId: string;
   materialName: string;
   quantity: number;
+  /**
+   * ID файла на Google Drive, куда была сохранена печатная форма этой доверенности.
+   * Заполняется после первой успешной загрузки — при повторной печати используется,
+   * чтобы ПЕРЕЗАПИСАТЬ тот же файл (PATCH), а не создать дубликат (POST) на Drive.
+   */
+  driveFileId?: string;
   createdAt?: any;
   updatedAt?: any;
 }

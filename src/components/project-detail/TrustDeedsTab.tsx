@@ -16,7 +16,7 @@ import {
 import { Project, TrustDeed } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import DirectorySelect from './shared/DirectorySelect';
-import { ShipmentDetailField } from './shared/ShipmentDetailField.tsx';
+import { ShipmentDetailField } from './shared/ShipmentDetailField';
 
 function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken }: { project: Project, canEdit: boolean, directories: any, trustDeeds: TrustDeed[], accessToken?: string | null }) {
     const [selectedDeedId, setSelectedDeedId] = useState<string | null>(null);
@@ -72,7 +72,18 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken 
         try {
             const blob = await generateTrustDeedDocx(data);
             if (accessToken) {
-                await uploadTrustDeedToDrive(blob, filename, accessToken);
+                // Передаём driveFileId уже существующего файла (если он есть) — тогда
+                // содержимое ПЕРЕЗАПИШЕТСЯ на Drive, а не создастся дублирующий файл.
+                const { fileId } = await uploadTrustDeedToDrive(blob, filename, accessToken, deed.driveFileId);
+                // Сохраняем/обновляем driveFileId в самой доверенности, чтобы при
+                // следующей печати снова перезаписать этот же файл, а не плодить новые.
+                if (fileId && fileId !== deed.driveFileId) {
+                    try {
+                        await updateDoc(doc(db, 'trust_deeds', deed.id), { driveFileId: fileId });
+                    } catch (saveIdErr) {
+                        console.error('Не удалось сохранить driveFileId доверенности:', saveIdErr);
+                    }
+                }
             } else {
                 downloadBlob(blob, filename);
             }
