@@ -31,6 +31,13 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
     const selectedDeed = trustDeeds.find(d => d.id === selectedDeedId);
 
     const handleGenerateDeed = async (deed: TrustDeed) => {
+        // Открываем пустую вкладку СРАЗУ, синхронно — до первого await в этой функции,
+        // то есть в тот же момент, что и клик пользователя. Только так браузер точно не
+        // сочтёт её "неожиданным" попапом. Реальный адрес документа мы узнаем позже
+        // (после проверки на Drive, возможного диалога подтверждения и самой загрузки) —
+        // тогда просто перенаправим уже открытую вкладку на готовую ссылку.
+        const pendingTab = accessToken ? window.open('', '_blank') : null;
+
         const mat = project.materials?.find(m => m.id === deed.materialId || m.materialName === deed.materialName);
         // Поставщик берётся ТОЛЬКО из материала проекта — доверенность больше не хранит
         // supplierName отдельно (раньше это приводило к рассинхронизации данных).
@@ -74,6 +81,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
             const blob = await generateTrustDeedDocx(data);
 
             if (!accessToken) {
+                pendingTab?.close();
                 downloadBlob(blob, filename);
                 return;
             }
@@ -93,12 +101,17 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                     `Доверенность №${deed.number} уже есть на Google Диске. Вы хотите её заменить?`
                 );
                 if (!shouldReplace) {
+                    pendingTab?.close();
                     downloadBlob(blob, filename);
                     return;
                 }
             }
 
             const { fileId, link } = await uploadTrustDeedToDrive(blob, filename, accessToken, existingFileId);
+            // Перенаправляем заранее открытую вкладку на готовый документ.
+            if (pendingTab) {
+                pendingTab.location.href = link;
+            }
             // Сохраняем/обновляем driveFileId и ссылку в самой доверенности — driveFileId
             // нужен, чтобы при следующей печати перезаписать этот же файл, а не плодить
             // новые; driveFileLink — чтобы показать постоянную кнопку "Открыть документ"
@@ -111,6 +124,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                 }
             }
         } catch (e) {
+            pendingTab?.close();
             console.error('Ошибка генерации документа:', e);
             alert('Не удалось загрузить доверенность в Google Drive. Файл будет скачан на компьютер.');
             try {
