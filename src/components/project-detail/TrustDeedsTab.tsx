@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, X, ChevronRight, FileText, Printer, Pencil, Trash2, Download } from 'lucide-react';
+import { Plus, X, ChevronRight, FileText, Printer, Pencil, Trash2, Download, ExternalLink } from 'lucide-react';
 import { cn, formatCurrency, formatDateToDisplay } from '../../lib/utils';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
-import { generateTrustDeedDocx, downloadBlob, uploadTrustDeedToDrive, TrustDeedDocxData } from '../../lib/generateTrustDeedDocx';
+import { generateTrustDeedDocx, downloadBlob, uploadTrustDeedToDrive, driveFileExists, TrustDeedDocxData } from '../../lib/generateTrustDeedDocx';
 import {
     getSuggestedTrustDeedNumber,
     createTrustDeedWithNumber,
@@ -78,10 +78,17 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                 return;
             }
 
-            // Если у доверенности уже есть файл на Google Диске — спрашиваем, заменять ли его.
+            // Если в базе сохранён driveFileId — проверяем, что файл РЕАЛЬНО ещё существует
+            // на Google Диске (его могли удалить вручную), и только тогда спрашиваем,
+            // заменять ли его. Если файла на Диске уже нет — вопрос не задаём, просто
+            // создаём новый (existingFileId ниже станет undefined).
+            const existingFileId = deed.driveFileId && await driveFileExists(deed.driveFileId, accessToken)
+                ? deed.driveFileId
+                : undefined;
+
             // «Да» — перезаписываем существующий файл (без дублей).
             // «Нет» — Диск не трогаем вообще, просто отдаём свежий файл на скачивание/открытие.
-            if (deed.driveFileId) {
+            if (existingFileId) {
                 const shouldReplace = window.confirm(
                     `Доверенность №${deed.number} уже есть на Google Диске. Вы хотите её заменить?`
                 );
@@ -91,12 +98,14 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                 }
             }
 
-            const { fileId } = await uploadTrustDeedToDrive(blob, filename, accessToken, deed.driveFileId);
-            // Сохраняем/обновляем driveFileId в самой доверенности, чтобы при
-            // следующей печати снова перезаписать этот же файл, а не плодить новые.
-            if (fileId && fileId !== deed.driveFileId) {
+            const { fileId, link } = await uploadTrustDeedToDrive(blob, filename, accessToken, existingFileId);
+            // Сохраняем/обновляем driveFileId и ссылку в самой доверенности — driveFileId
+            // нужен, чтобы при следующей печати перезаписать этот же файл, а не плодить
+            // новые; driveFileLink — чтобы показать постоянную кнопку "Открыть документ"
+            // в панели деталей (обычная ссылка <a>, которую не блокирует блокировщик попапов).
+            if (fileId && (fileId !== deed.driveFileId || link !== deed.driveFileLink)) {
                 try {
-                    await updateDoc(doc(db, 'trust_deeds', deed.id), { driveFileId: fileId });
+                    await updateDoc(doc(db, 'trust_deeds', deed.id), { driveFileId: fileId, driveFileLink: link });
                 } catch (saveIdErr) {
                     console.error('Не удалось сохранить driveFileId доверенности:', saveIdErr);
                 }
@@ -419,6 +428,16 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                                         <button onClick={() => setSelectedDeedId(null)} title="Свернуть" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><X size={13} /></button>
                                     </div>
                                 </div>
+                                {selectedDeed.driveFileLink && (
+                                    <a
+                                        href={selectedDeed.driveFileLink}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="mt-2 inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[var(--ochre)] hover:underline"
+                                    >
+                                        <ExternalLink size={11} /> Открыть документ на Google Диске
+                                    </a>
+                                )}
                             </div>
 
                             <div className="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 space-y-4 bg-[#FCF9F2]">

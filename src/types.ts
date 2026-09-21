@@ -165,6 +165,8 @@ export interface TrustDeed {
    * чтобы ПЕРЕЗАПИСАТЬ тот же файл (PATCH), а не создать дубликат (POST) на Drive.
    */
   driveFileId?: string;
+  /** Прямая ссылка на этот файл на Google Drive (webViewLink) — для постоянной кнопки "Открыть документ" в интерфейсе. */
+  driveFileLink?: string;
   createdAt?: any;
   updatedAt?: any;
 }

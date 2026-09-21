@@ -126,6 +126,29 @@ export interface DriveUploadResult {
 }
 
 /**
+ * Проверяет, существует ли файл с данным ID на Google Drive прямо сейчас (не был ли
+ * удалён/перемещён в корзину вручную). Нужна, чтобы не спрашивать пользователя
+ * "заменить существующий файл?", когда файла на самом деле уже нет — иначе вопрос
+ * выглядит как ошибка (мы бы полагались только на сохранённый в Firestore driveFileId,
+ * который в этом случае "осиротел" и не отражает реальное состояние Диска).
+ */
+export async function driveFileExists(fileId: string, accessToken: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,trashed`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!response.ok) return false; // 404 и т.п. — считаем, что файла нет
+    const data = await response.json();
+    // Файл, перемещённый в корзину, для наших целей тоже считаем отсутствующим —
+    // пользователь явно не ожидает, что мы будем "заменять" то, что он удалил.
+    return !data.trashed;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Загружает docx в Google Drive в папку доверенностей.
  *
  * Если передан existingFileId — ОБНОВЛЯЕТ содержимое уже существующего файла
