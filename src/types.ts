@@ -25,12 +25,24 @@ export interface ResourceItem {
   quantity: number;
 }
 
+/** Документ-подтверждение расхода, хранится на Google Drive — здесь только ссылка. */
+export interface ExpenseReceiptFile {
+  id: string;
+  driveFileId: string;
+  driveFileLink: string;
+  fileName: string;
+}
+
 export interface Expense {
   id: string;
   date: string;
   category: string;
   categoryId?: string;
   amount: number;
+  description?: string;
+  /** % от прибыли — только для категории "Бонус менеджера", где сумма считается автоматически. */
+  managerPercent?: number;
+  receipts?: ExpenseReceiptFile[];
 }
 
 export interface DirectoryItem {

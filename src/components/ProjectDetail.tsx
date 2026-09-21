@@ -401,6 +401,8 @@ export default function ProjectDetail({
                                 appUser={appUser}
                                 needsCodeGate={needsCodeGate}
                                 onUnlock={unlock}
+                                accessToken={accessToken}
+                                onConnectCalendar={onConnectCalendar}
                             />
                         </motion.div>
                     )}

@@ -47,6 +47,71 @@ export function isValidDriveFolderLink(url: string): boolean {
     return /^https:\/\/drive\.google\.com\/drive\/folders\/[a-zA-Z0-9_-]+/.test(url.trim());
 }
 
+/** Ищет подпапку с данным именем внутри указанной папки. Возвращает null, если не нашлась. */
+export async function findSubfolder(parentFolderId: string, name: string, accessToken: string): Promise<DriveFolderResult | null> {
+    const escapedName = name.replace(/'/g, "\\'");
+    const q = `name='${escapedName}' and '${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    const response = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,webViewLink)`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`Не удалось найти подпапку на Google Drive: ${err}`);
+    }
+    const data = await response.json();
+    const file = data.files?.[0];
+    return file ? { id: file.id, link: file.webViewLink } : null;
+}
+
+/** Создаёт подпапку с данным именем внутри указанной папки. */
+export async function createSubfolder(parentFolderId: string, name: string, accessToken: string): Promise<DriveFolderResult> {
+    const metadata = {
+        name,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentFolderId],
+    };
+    const response = await fetch('https://www.googleapis.com/drive/v3/files?fields=id,webViewLink', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(metadata),
+    });
+    if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`Не удалось создать подпапку на Google Drive: ${err}`);
+    }
+    const result = await response.json();
+    return { id: result.id as string, link: result.webViewLink as string };
+}
+
+/** Находит подпапку с данным именем внутри указанной папки, а если её нет — создаёт. */
+export async function findOrCreateSubfolder(parentFolderId: string, name: string, accessToken: string): Promise<DriveFolderResult> {
+    const existing = await findSubfolder(parentFolderId, name, accessToken);
+    if (existing) return existing;
+    return createSubfolder(parentFolderId, name, accessToken);
+}
+
+/**
+ * Возвращает папку документов проекта — если она уже привязана (driveDocsFolderId/Link
+ * заполнены), просто отдаёт её; если нет — создаёт новую по стандартной формуле имени.
+ * ВАЖНО: эта функция ничего не пишет в Firestore — если она создала новую папку,
+ * сохранить driveDocsFolderId/Link в сам проект должен вызывающий код.
+ */
+export async function ensureProjectDocsFolder(
+    project: { driveDocsFolderId?: string; driveDocsFolderLink?: string; createdAt?: any; name: string; leadManagerName?: string },
+    accessToken: string
+): Promise<DriveFolderResult> {
+    if (project.driveDocsFolderId && project.driveDocsFolderLink) {
+        return { id: project.driveDocsFolderId, link: project.driveDocsFolderLink };
+    }
+    const dateYMD = formatDateYMD(project.createdAt);
+    const folderName = buildProjectFolderName(dateYMD, project.name, project.leadManagerName || '');
+    return createProjectDriveFolder(folderName, accessToken);
+}
+
 /**
  * Приводит дату (Firestore Timestamp / Date / строку) к виду ГГГГ.ММ.ДД —
  * именно в таком порядке, чтобы папки проектов на Google Drive сортировались

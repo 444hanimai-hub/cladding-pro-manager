@@ -3,14 +3,18 @@ import { createPortal } from 'react-dom';
 import { collection, query, where, onSnapshot, addDoc, serverTimestamp, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronDown, Plus, X, Trash2, PieChart as PieChartIcon } from 'lucide-react';
+import { ChevronDown, Plus, X, Trash2, Pencil, Paperclip, ExternalLink, Loader2, FileText, PieChart as PieChartIcon } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 import { cn, formatCurrency, formatAmountGrouped, parseGroupedAmount } from '../../lib/utils';
-import { getTotalExpenses, getMarginPercent } from '../../lib/financeCalculations';
+import { getTotalExpenses } from '../../lib/financeCalculations';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
-import { Project, AppUser } from '../../types';
+import { Project, AppUser, Expense, ExpenseReceiptFile } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import CodeProtection from '../CodeProtection';
+import { ensureProjectDocsFolder, findOrCreateSubfolder, formatDateYMD } from '../../lib/googleDriveFolders';
+import { uploadFileToDrive, deleteDriveFile, buildReceiptFileName } from '../../lib/googleDriveFiles';
+
+const EXPENSES_SUBFOLDER_NAME = 'Расходы';
 
 function FinanceTab({
                         project,
@@ -19,6 +23,8 @@ function FinanceTab({
                         appUser,
                         needsCodeGate,
                         onUnlock,
+                        accessToken,
+                        onConnectCalendar,
                     }: {
     project: Project;
     canEdit: boolean;
@@ -26,48 +32,11 @@ function FinanceTab({
     appUser: AppUser | null;
     needsCodeGate: boolean;
     onUnlock: () => void;
+    accessToken?: string | null;
+    onConnectCalendar?: () => Promise<boolean>;
 }) {
-    const [isAdding, setIsAdding] = useState(false);
-    const [newExpenseForm, setNewExpenseForm] = useState({
-        date: '',
-        category: '',
-        amount: 0,
-        managerPercent: 0,
-    });
-
-    // Портал-дропдаун категорий
-    const categoryInputRef = React.useRef<HTMLInputElement>(null);
-    const categoryWrapperRef = React.useRef<HTMLDivElement>(null);
-    const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
-    const [categorySearch, setCategorySearch] = useState('');
-    const [expenseCategories, setExpenseCategories] = useState<string[]>([]);
-
-    useEffect(() => {
-        const unsub = onSnapshot(collection(db, 'expense_categories'), (snap) => {
-            setExpenseCategories(snap.docs.map(d => d.data().name as string).filter(Boolean));
-        });
-        return () => unsub();
-    }, []);
-
-    useEffect(() => {
-        if (!categoryDropdownOpen) return;
-        const handleClick = (e: MouseEvent) => {
-            const t = e.target as Node;
-            if (!categoryWrapperRef.current?.contains(t) && !document.getElementById('expense-cat-portal')?.contains(t)) {
-                setCategoryDropdownOpen(false);
-            }
-        };
-        document.addEventListener('mousedown', handleClick);
-        return () => document.removeEventListener('mousedown', handleClick);
-    }, [categoryDropdownOpen]);
-
-    // Позиция портала категорий
-    const [portalPos, setPortalPos] = useState<{top:number;left:number;width:number}>({top:0,left:0,width:0});
-    useEffect(() => {
-        if (!categoryDropdownOpen || !categoryWrapperRef.current) return;
-        const rect = categoryWrapperRef.current.getBoundingClientRect();
-        setPortalPos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX, width: rect.width });
-    }, [categoryDropdownOpen]);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
     if (needsCodeGate) {
         return (
@@ -84,7 +53,6 @@ function FinanceTab({
     const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
     const expenses = f.expenses || [];
     const totalExpenses = getTotalExpenses(f);
-    const profitability = getMarginPercent(f);
 
     // Расходы без бонуса менеджера
     const expensesWithoutBonus = expenses.filter(
@@ -124,32 +92,34 @@ function FinanceTab({
         }
     };
 
-    const handleAddExpense = async () => {
-        if (!newExpenseForm.category || newExpenseForm.amount <= 0) return;
+    const handleOpenAdd = () => {
+        setEditingExpenseId(null);
+        setIsModalOpen(true);
+    };
 
+    const handleOpenEdit = (expenseId: string) => {
+        setEditingExpenseId(expenseId);
+        setIsModalOpen(true);
+    };
+
+    const handleSaveExpense = async (expenseData: Expense) => {
         try {
-            const q = query(collection(db, 'expense_categories'), where('name', '==', newExpenseForm.category));
+            // Категория — сохраняем в справочник, если такой ещё нет (как и раньше).
+            const q = query(collection(db, 'expense_categories'), where('name', '==', expenseData.category));
             const snapshot = await getDocs(q);
-
             if (snapshot.empty) {
-                await addDoc(collection(db, 'expense_categories'), {
-                    name: newExpenseForm.category,
-                    createdAt: serverTimestamp()
-                });
+                await addDoc(collection(db, 'expense_categories'), { name: expenseData.category, createdAt: serverTimestamp() });
             }
 
-            const newExpense = {
-                id: crypto.randomUUID(),
-                date: newExpenseForm.date,
-                category: newExpenseForm.category,
-                amount: newExpenseForm.amount
-            };
-
-            const updatedExpenses = [...expenses, newExpense];
+            let updatedExpenses;
+            if (editingExpenseId) {
+                updatedExpenses = expenses.map(e => e.id === editingExpenseId ? expenseData : e);
+            } else {
+                updatedExpenses = [...expenses, expenseData];
+            }
             await updateFinance({ expenses: updatedExpenses });
-
-            setNewExpenseForm({ date: '', category: '', amount: 0, managerPercent: 0 });
-            setIsAdding(false);
+            setIsModalOpen(false);
+            setEditingExpenseId(null);
         } catch (error) {
             console.error(error);
         }
@@ -168,6 +138,8 @@ function FinanceTab({
     const sortedExpenses = [...expenses].sort(
         (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
     );
+
+    const editingExpense = editingExpenseId ? expenses.find(e => e.id === editingExpenseId) || null : null;
 
     return (
         <motion.div
@@ -223,185 +195,14 @@ function FinanceTab({
                         {canEdit && (
                             <button
                                 type="button"
-                                onClick={() => setIsAdding(!isAdding)}
-                                className={cn(
-                                    "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[11px] font-medium transition-colors",
-                                    isAdding
-                                        ? "border-[#C9B99B] bg-white/70 text-[#7C5A25] hover:bg-white"
-                                        : "border-[#D8B978] bg-[#B48444] text-white shadow-[0_1px_2px_rgba(132,91,37,0.18)] hover:bg-[#A6783D]"
-                                )}
+                                onClick={handleOpenAdd}
+                                className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[11px] font-medium transition-colors border-[#D8B978] bg-[#B48444] text-white shadow-[0_1px_2px_rgba(132,91,37,0.18)] hover:bg-[#A6783D]"
                             >
-                                {isAdding ? (
-                                    <X size={12} strokeWidth={2.25} />
-                                ) : (
-                                    <Plus size={12} strokeWidth={2.5} />
-                                )}
-                                {isAdding ? 'Отмена' : 'Добавить расход'}
+                                <Plus size={12} strokeWidth={2.5} />
+                                Добавить расход
                             </button>
                         )}
                     </div>
-
-                    <AnimatePresence>
-                        {isAdding && (
-                            <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: 'auto' }}
-                                exit={{ opacity: 0, height: 0 }}
-                                className="overflow-hidden border-b border-[#DED8CC]"
-                            >
-                                {(() => {
-                                    const isManagerBonus = newExpenseForm.category.toLowerCase() === 'бонус менеджера';
-                                    const otherExpensesTotal = expenses.reduce((sum: number, e: any) => sum + (e.amount || 0), 0);
-                                    const profitBase = (f.contractSum || 0) - otherExpensesTotal;
-                                    const bonusAmount = isManagerBonus && newExpenseForm.managerPercent > 0
-                                        ? Math.round(profitBase * newExpenseForm.managerPercent / 100)
-                                        : 0;
-                                    const effectiveAmount = isManagerBonus ? bonusAmount : newExpenseForm.amount;
-                                    const filteredCats = expenseCategories.filter(c => c.toLowerCase().includes(categorySearch.toLowerCase()));
-
-                                    return (
-                                        <div className="bg-[#F0E8D8] px-4 py-4">
-                                            <div className={cn(
-                                                "grid grid-cols-1 gap-3 md:items-end",
-                                                isManagerBonus
-                                                    ? "md:grid-cols-[180px_1fr_100px_140px_auto]"
-                                                    : "md:grid-cols-[180px_1fr_120px_auto]"
-                                            )}>
-                                                <div>
-                                                    <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                                        Дата
-                                                    </label>
-                                                    <DatePicker
-                                                        value={newExpenseForm.date || ''}
-                                                        onChange={(v) => setNewExpenseForm({ ...newExpenseForm, date: v })}
-                                                        variant="compact"
-                                                    />
-                                                </div>
-
-                                                <div className="relative" ref={categoryWrapperRef}>
-                                                    <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                                        Вид расхода
-                                                    </label>
-                                                    <div className="relative">
-                                                        <input
-                                                            ref={categoryInputRef}
-                                                            type="text"
-                                                            value={categoryDropdownOpen ? categorySearch : newExpenseForm.category}
-                                                            onChange={(e) => {
-                                                                setCategorySearch(e.target.value);
-                                                                if (!categoryDropdownOpen) setCategoryDropdownOpen(true);
-                                                            }}
-                                                            onFocus={() => {
-                                                                setCategorySearch('');
-                                                                setCategoryDropdownOpen(true);
-                                                            }}
-                                                            placeholder="Выберите категорию..."
-                                                            className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 font-normal"
-                                                        />
-                                                        <ChevronDown size={13} className={cn("absolute right-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none transition-transform", categoryDropdownOpen && "rotate-180")} />
-                                                    </div>
-                                                    {categoryDropdownOpen && createPortal(
-                                                        <div id="expense-cat-portal" style={{ position:'absolute', top: portalPos.top, left: portalPos.left, width: portalPos.width, zIndex: 999999 }}>
-                                                            <div className="rounded-md bg-surface border border-line shadow-[0_8px_24px_rgba(48,42,28,0.14)] overflow-hidden">
-                                                                <div className="max-h-[200px] overflow-y-auto">
-                                                                    {filteredCats.length > 0 ? filteredCats.map(cat => (
-                                                                        <button key={cat} type="button"
-                                                                                onMouseDown={(e) => { e.preventDefault(); setNewExpenseForm({...newExpenseForm, category: cat}); setCategoryDropdownOpen(false); setCategorySearch(''); }}
-                                                                                className={cn("w-full text-left px-3 py-2 text-[13px] transition-colors hover:bg-surface-2", newExpenseForm.category === cat ? "bg-ochre-bg text-ochre font-semibold" : "text-ink")}
-                                                                        >{cat}</button>
-                                                                    )) : (
-                                                                        <p className="px-3 py-2 text-[12px] italic text-ink-4">Ничего не найдено</p>
-                                                                    )}
-                                                                    {categorySearch.trim() && !expenseCategories.some(c => c.toLowerCase() === categorySearch.toLowerCase().trim()) && (
-                                                                        <button type="button"
-                                                                                onMouseDown={(e) => { e.preventDefault(); setNewExpenseForm({...newExpenseForm, category: categorySearch.trim()}); setCategoryDropdownOpen(false); setCategorySearch(''); }}
-                                                                                className="w-full text-left px-3 py-2 text-[12.5px] font-semibold text-ochre border-t border-line bg-surface hover:bg-surface-2 transition-colors flex items-center gap-2"
-                                                                        ><Plus size={12} /> Создать «{categorySearch.trim()}»</button>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </div>,
-                                                        document.body
-                                                    )}
-                                                </div>
-
-                                                <div>
-                                                    <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                                        Сумма, ₽
-                                                    </label>
-                                                    <input
-                                                        type="text"
-                                                        inputMode="numeric"
-                                                        value={isManagerBonus ? (bonusAmount > 0 ? bonusAmount.toLocaleString('ru-RU') : '') : (newExpenseForm.amount ? newExpenseForm.amount.toLocaleString('ru-RU') : '')}
-                                                        onChange={(e) => !isManagerBonus && setNewExpenseForm({
-                                                            ...newExpenseForm,
-                                                            amount: Number(e.target.value.replace(/\D/g, '')) || 0,
-                                                        })}
-                                                        readOnly={isManagerBonus}
-                                                        placeholder={isManagerBonus ? 'авто' : '0'}
-                                                        className={cn(
-                                                            "w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none focus:ring-0 transition-colors placeholder:text-ink-4 font-normal",
-                                                            isManagerBonus && "cursor-default bg-surface-2 text-ink-3"
-                                                        )}
-                                                    />
-                                                </div>
-
-                                                {isManagerBonus && (
-                                                    <div>
-                                                        <label className="mb-1.5 block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                                            % менеджера
-                                                        </label>
-                                                        <input
-                                                            type="text"
-                                                            inputMode="numeric"
-                                                            maxLength={3}
-                                                            value={newExpenseForm.managerPercent || ''}
-                                                            onChange={(e) => {
-                                                                const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
-                                                                setNewExpenseForm({ ...newExpenseForm, managerPercent: digits ? Number(digits) : 0 });
-                                                            }}
-                                                            placeholder="0"
-                                                            className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[14px] text-ink focus:border-ochre focus:outline-none focus:ring-0 transition-colors placeholder:text-ink-4 font-normal"
-                                                        />
-                                                    </div>
-                                                )}
-
-                                                <button
-                                                    type="button"
-                                                    onClick={async () => {
-                                                        if (!newExpenseForm.category || effectiveAmount <= 0) return;
-                                                        try {
-                                                            const q = query(collection(db, 'expense_categories'), where('name', '==', newExpenseForm.category));
-                                                            const snapshot = await getDocs(q);
-                                                            if (snapshot.empty) {
-                                                                await addDoc(collection(db, 'expense_categories'), { name: newExpenseForm.category, createdAt: serverTimestamp() });
-                                                            }
-                                                            const newExpense: any = {
-                                                                id: crypto.randomUUID(),
-                                                                date: newExpenseForm.date,
-                                                                category: newExpenseForm.category,
-                                                                amount: effectiveAmount,
-                                                            };
-                                                            if (isManagerBonus && newExpenseForm.managerPercent > 0) {
-                                                                newExpense.managerPercent = newExpenseForm.managerPercent;
-                                                            }
-                                                            await updateFinance({ expenses: [...expenses, newExpense] });
-                                                            setNewExpenseForm({ date: '', category: '', amount: 0, managerPercent: 0 });
-                                                            setIsAdding(false);
-                                                        } catch (e) { console.error(e); }
-                                                    }}
-                                                    disabled={!newExpenseForm.category || effectiveAmount <= 0}
-                                                    className="rounded-md bg-[#B48444] px-4 py-2 text-[14px] font-semibold text-white shadow-[0_1px_2px_rgba(132,91,37,0.2)] transition-colors hover:bg-[#A6783D] disabled:cursor-not-allowed disabled:opacity-40 whitespace-nowrap"
-                                                >
-                                                    Зафиксировать
-                                                </button>
-                                            </div>
-                                        </div>
-                                    );
-                                })()}
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
 
                     <div className="overflow-x-auto">
                         <table className="w-full min-w-[520px] border-collapse text-left">
@@ -413,6 +214,9 @@ function FinanceTab({
                                 <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
                                     Вид расхода
                                 </th>
+                                <th className="px-4 py-2.5 text-center text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                                    Документы
+                                </th>
                                 <th className="px-4 py-2.5 text-right text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
                                     Сумма
                                 </th>
@@ -421,10 +225,11 @@ function FinanceTab({
                             </thead>
 
                             <tbody className="divide-y divide-[#DED8CC] bg-[#FBF8F2]/50">
-                            {sortedExpenses.map((expense, index) => (
+                            {sortedExpenses.map((expense) => (
                                 <tr
                                     key={expense.id}
-                                    className="group transition-colors hover:bg-white/60"
+                                    onClick={() => canEdit && handleOpenEdit(expense.id)}
+                                    className={cn("group transition-colors hover:bg-white/60", canEdit && "cursor-pointer")}
                                 >
                                     <td className="px-4 py-3 text-[11.5px] font-medium tabular-nums text-[#8A8574]">
                                         {new Date(expense.date).toLocaleDateString('ru-RU', {
@@ -439,10 +244,23 @@ function FinanceTab({
                           <span className="truncate text-[12.5px] font-medium text-[#302A1C]">
                             {expense.category || 'Без категории'}
                           </span>
-                                            {(expense as any).managerPercent > 0 && (
-                                                <span className="text-[10px] text-[#B48444] font-semibold shrink-0">{(expense as any).managerPercent}%</span>
+                                            {(expense.managerPercent || 0) > 0 && (
+                                                <span className="text-[10px] text-[#B48444] font-semibold shrink-0">{expense.managerPercent}%</span>
                                             )}
                                         </div>
+                                        {expense.description && (
+                                            <p className="text-[11px] text-[#8A8574] truncate mt-0.5 max-w-[220px]">{expense.description}</p>
+                                        )}
+                                    </td>
+
+                                    <td className="px-4 py-3 text-center">
+                                        {expense.receipts && expense.receipts.length > 0 ? (
+                                            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8A8574]">
+                                                <Paperclip size={12} /> {expense.receipts.length}
+                                            </span>
+                                        ) : (
+                                            <span className="text-[11px] text-[#C9C2AE]">—</span>
+                                        )}
                                     </td>
 
                                     <td className="px-4 py-3 text-right">
@@ -455,7 +273,7 @@ function FinanceTab({
                                         <td className="px-2 py-3 text-right">
                                             <button
                                                 type="button"
-                                                onClick={() => removeExpense(expense.id)}
+                                                onClick={(e) => { e.stopPropagation(); removeExpense(expense.id); }}
                                                 className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
                                                 aria-label="Удалить расход"
                                             >
@@ -469,7 +287,7 @@ function FinanceTab({
                             {expenses.length === 0 && (
                                 <tr>
                                     <td
-                                        colSpan={canEdit ? 4 : 3}
+                                        colSpan={canEdit ? 5 : 4}
                                         className="px-4 py-10 text-center"
                                     >
                                         <p className="text-[12px] font-medium text-[#8A8574]">
@@ -542,6 +360,21 @@ function FinanceTab({
                     )}
                 </div>
             </div>
+
+            <AnimatePresence>
+                {isModalOpen && (
+                    <ExpenseModal
+                        project={project}
+                        expenses={expenses}
+                        editingExpense={editingExpense}
+                        contractSum={f.contractSum || 0}
+                        accessToken={accessToken}
+                        onConnectCalendar={onConnectCalendar}
+                        onClose={() => { setIsModalOpen(false); setEditingExpenseId(null); }}
+                        onSave={handleSaveExpense}
+                    />
+                )}
+            </AnimatePresence>
         </motion.div>
     );
 }
@@ -689,5 +522,351 @@ function ContractSumInput({
     );
 }
 
+// ───────────────────────── модалка добавления/редактирования расхода ─────────────────────────
+
+function ExpenseModal({ project, expenses, editingExpense, contractSum, accessToken, onConnectCalendar, onClose, onSave }: {
+    project: Project;
+    expenses: Expense[];
+    editingExpense: Expense | null;
+    contractSum: number;
+    accessToken?: string | null;
+    onConnectCalendar?: () => Promise<boolean>;
+    onClose: () => void;
+    onSave: (expense: Expense) => void | Promise<void>;
+}) {
+    const isEditing = !!editingExpense;
+    const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
+    const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
+
+    const [date, setDate] = useState(editingExpense?.date || '');
+    const [category, setCategory] = useState(editingExpense?.category || '');
+    const [description, setDescription] = useState(editingExpense?.description || '');
+    const [amount, setAmount] = useState(editingExpense?.amount || 0);
+    const [managerPercent, setManagerPercent] = useState(editingExpense?.managerPercent || 0);
+    const [receipts, setReceipts] = useState<ExpenseReceiptFile[]>(editingExpense?.receipts || []);
+    const [isUploading, setIsUploading] = useState(false);
+    const [isConnecting, setIsConnecting] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+    // Портал-дропдаун категорий (как было)
+    const categoryInputRef = React.useRef<HTMLInputElement>(null);
+    const categoryWrapperRef = React.useRef<HTMLDivElement>(null);
+    const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
+    const [categorySearch, setCategorySearch] = useState('');
+    const [expenseCategories, setExpenseCategories] = useState<string[]>([]);
+    const [portalPos, setPortalPos] = useState<{top:number;left:number;width:number}>({top:0,left:0,width:0});
+
+    useEffect(() => {
+        const unsub = onSnapshot(collection(db, 'expense_categories'), (snap) => {
+            setExpenseCategories(snap.docs.map(d => d.data().name as string).filter(Boolean));
+        });
+        return () => unsub();
+    }, []);
+
+    useEffect(() => {
+        if (!categoryDropdownOpen) return;
+        const handleClick = (e: MouseEvent) => {
+            const t = e.target as Node;
+            if (!categoryWrapperRef.current?.contains(t) && !document.getElementById('expense-cat-portal')?.contains(t)) {
+                setCategoryDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, [categoryDropdownOpen]);
+
+    useEffect(() => {
+        if (!categoryDropdownOpen || !categoryWrapperRef.current) return;
+        const rect = categoryWrapperRef.current.getBoundingClientRect();
+        setPortalPos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX, width: rect.width });
+    }, [categoryDropdownOpen]);
+
+    const isManagerBonus = category.toLowerCase() === 'бонус менеджера';
+    // База для бонуса менеджера — контракт минус прочие расходы, БЕЗ учёта самого
+    // редактируемого расхода (иначе при редактировании его прежняя сумма вычлась бы дважды).
+    const otherExpensesTotal = expenses
+        .filter(e => e.id !== editingExpense?.id)
+        .reduce((sum, e) => sum + (e.amount || 0), 0);
+    const profitBase = contractSum - otherExpensesTotal;
+    const bonusAmount = isManagerBonus && managerPercent > 0 ? Math.round(profitBase * managerPercent / 100) : 0;
+    const effectiveAmount = isManagerBonus ? bonusAmount : amount;
+
+    const filteredCats = expenseCategories.filter(c => c.toLowerCase().includes(categorySearch.toLowerCase()));
+
+    const handleAttachFiles = async (fileList: FileList | null) => {
+        if (!fileList || fileList.length === 0) return;
+        if (!accessToken) return;
+        if (!category) {
+            alert('Сначала выберите вид расхода — он используется в имени файла.');
+            return;
+        }
+        setIsUploading(true);
+        try {
+            const docsFolder = await ensureProjectDocsFolder(project, accessToken);
+            // Если папка документов проекта только что создалась — сохраняем ссылку в сам проект,
+            // чтобы она сразу появилась и во вкладке «Информация».
+            if (docsFolder.id !== project.driveDocsFolderId) {
+                await updateDoc(doc(db, 'projects', project.id), {
+                    driveDocsFolderId: docsFolder.id,
+                    driveDocsFolderLink: docsFolder.link,
+                    updatedAt: serverTimestamp(),
+                }).catch(console.error);
+            }
+            const expensesFolder = await findOrCreateSubfolder(docsFolder.id, EXPENSES_SUBFOLDER_NAME, accessToken);
+
+            const dateYMD = formatDateYMD(date);
+            const files = Array.from(fileList);
+            const newReceipts: ExpenseReceiptFile[] = [];
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const filename = buildReceiptFileName(dateYMD, category, effectiveAmount, file.name, receipts.length + i + 1);
+                const uploaded = await uploadFileToDrive(file, filename, expensesFolder.id, accessToken);
+                newReceipts.push({ id: crypto.randomUUID(), driveFileId: uploaded.id, driveFileLink: uploaded.link, fileName: filename });
+            }
+            setReceipts(prev => [...prev, ...newReceipts]);
+        } catch (error) {
+            console.error('Не удалось прикрепить документ:', error);
+            alert('Не удалось загрузить документ на Google Drive. Попробуйте ещё раз.');
+        } finally {
+            setIsUploading(false);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
+    const handleRemoveReceipt = async (receipt: ExpenseReceiptFile) => {
+        if (!window.confirm(`Удалить документ «${receipt.fileName}»? Файл будет удалён и с Google Диска — это действие нельзя отменить.`)) return;
+        if (accessToken) {
+            try {
+                await deleteDriveFile(receipt.driveFileId, accessToken);
+            } catch (error) {
+                console.error('Не удалось удалить файл на Google Drive:', error);
+                alert('Не удалось удалить файл на Google Диске. Попробуйте ещё раз.');
+                return;
+            }
+        }
+        setReceipts(prev => prev.filter(r => r.id !== receipt.id));
+    };
+
+    const handleConnectGoogle = async () => {
+        if (!onConnectCalendar || isConnecting) return;
+        setIsConnecting(true);
+        try {
+            await onConnectCalendar();
+        } finally {
+            setIsConnecting(false);
+        }
+    };
+
+    const handleSubmit = async () => {
+        if (!category || effectiveAmount <= 0 || !date) return;
+        setIsSaving(true);
+        try {
+            const expenseData: Expense = {
+                id: editingExpense?.id || crypto.randomUUID(),
+                date,
+                category,
+                amount: effectiveAmount,
+                description: description || undefined,
+                managerPercent: isManagerBonus && managerPercent > 0 ? managerPercent : undefined,
+                receipts: receipts.length > 0 ? receipts : undefined,
+            };
+            await onSave(expenseData);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-ink/40 backdrop-blur-sm" />
+            <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12 }}
+                className="relative w-full max-w-2xl bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
+            >
+                <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
+                    <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
+                        {isEditing ? 'Редактировать расход' : 'Добавить расход'}
+                    </h2>
+                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
+                        <X size={16} />
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className={labelClass}>Дата</label>
+                            <DatePicker value={date} onChange={setDate} variant="compact" className="[&_input]:h-9" />
+                        </div>
+                        <div className="relative" ref={categoryWrapperRef}>
+                            <label className={labelClass}>Вид расхода</label>
+                            <div className="relative">
+                                <input
+                                    ref={categoryInputRef}
+                                    type="text"
+                                    value={categoryDropdownOpen ? categorySearch : category}
+                                    onChange={(e) => {
+                                        setCategorySearch(e.target.value);
+                                        if (!categoryDropdownOpen) setCategoryDropdownOpen(true);
+                                    }}
+                                    onFocus={() => { setCategorySearch(''); setCategoryDropdownOpen(true); }}
+                                    placeholder="Выберите категорию..."
+                                    className={inputClass}
+                                />
+                                <ChevronDown size={13} className={cn("absolute right-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none transition-transform", categoryDropdownOpen && "rotate-180")} />
+                            </div>
+                            {categoryDropdownOpen && createPortal(
+                                <div id="expense-cat-portal" style={{ position:'absolute', top: portalPos.top, left: portalPos.left, width: portalPos.width, zIndex: 999999 }}>
+                                    <div className="rounded-md bg-surface border border-line shadow-[0_8px_24px_rgba(48,42,28,0.14)] overflow-hidden">
+                                        <div className="max-h-[200px] overflow-y-auto">
+                                            {filteredCats.length > 0 ? filteredCats.map(cat => (
+                                                <button key={cat} type="button"
+                                                        onMouseDown={(e) => { e.preventDefault(); setCategory(cat); setCategoryDropdownOpen(false); setCategorySearch(''); }}
+                                                        className={cn("w-full text-left px-3 py-2 text-[13px] transition-colors hover:bg-surface-2", category === cat ? "bg-ochre-bg text-ochre font-semibold" : "text-ink")}
+                                                >{cat}</button>
+                                            )) : (
+                                                <p className="px-3 py-2 text-[12px] italic text-ink-4">Ничего не найдено</p>
+                                            )}
+                                            {categorySearch.trim() && !expenseCategories.some(c => c.toLowerCase() === categorySearch.toLowerCase().trim()) && (
+                                                <button type="button"
+                                                        onMouseDown={(e) => { e.preventDefault(); setCategory(categorySearch.trim()); setCategoryDropdownOpen(false); setCategorySearch(''); }}
+                                                        className="w-full text-left px-3 py-2 text-[12.5px] font-semibold text-ochre border-t border-line bg-surface hover:bg-surface-2 transition-colors flex items-center gap-2"
+                                                ><Plus size={12} /> Создать «{categorySearch.trim()}»</button>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>,
+                                document.body
+                            )}
+                        </div>
+                    </div>
+
+                    <div>
+                        <label className={labelClass}>Описание</label>
+                        <textarea
+                            value={description}
+                            onChange={e => setDescription(e.target.value)}
+                            rows={2}
+                            placeholder="Куда и зачем произведён расход..."
+                            className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 resize-none"
+                        />
+                    </div>
+
+                    <div className={cn("grid gap-3", isManagerBonus ? "grid-cols-[1fr_120px]" : "grid-cols-1")}>
+                        <div>
+                            <label className={labelClass}>Сумма, ₽</label>
+                            <input
+                                type="text"
+                                inputMode="numeric"
+                                value={isManagerBonus ? (bonusAmount > 0 ? bonusAmount.toLocaleString('ru-RU') : '') : (amount ? amount.toLocaleString('ru-RU') : '')}
+                                onChange={(e) => !isManagerBonus && setAmount(Number(e.target.value.replace(/\D/g, '')) || 0)}
+                                readOnly={isManagerBonus}
+                                placeholder={isManagerBonus ? 'авто' : '0'}
+                                className={cn(inputClass, isManagerBonus && "bg-surface-2 text-ink-3 cursor-default")}
+                            />
+                        </div>
+                        {isManagerBonus && (
+                            <div>
+                                <label className={labelClass}>% менеджера</label>
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    maxLength={3}
+                                    value={managerPercent || ''}
+                                    onChange={(e) => {
+                                        const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
+                                        setManagerPercent(digits ? Number(digits) : 0);
+                                    }}
+                                    placeholder="0"
+                                    className={inputClass}
+                                />
+                            </div>
+                        )}
+                    </div>
+
+                    <div>
+                        <label className={labelClass}>Документы, подтверждающие расход</label>
+
+                        {!accessToken && onConnectCalendar && (
+                            <div className="rounded-xl border border-ochre/35 bg-[#FBF5E8] px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
+                                <p className="text-[12px] text-ink-3 leading-snug">
+                                    Чтобы прикреплять документы, подключите Google.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={handleConnectGoogle}
+                                    disabled={isConnecting}
+                                    className="shrink-0 h-8 px-3 rounded-lg text-[12px] font-semibold bg-[#A67C3C] text-white hover:bg-[#956f35] disabled:opacity-50 transition-colors whitespace-nowrap"
+                                >
+                                    {isConnecting ? 'Подключение…' : 'Подключить Google'}
+                                </button>
+                            </div>
+                        )}
+
+                        {receipts.length > 0 && (
+                            <div className="flex flex-col gap-1.5 mb-3">
+                                {receipts.map(receipt => (
+                                    <div key={receipt.id} className="flex items-center gap-2.5 px-3 py-2 rounded-md bg-surface-2 border border-line">
+                                        <FileText size={14} className="text-ink-3 shrink-0" />
+                                        <span className="flex-1 min-w-0 text-[12.5px] text-ink truncate">{receipt.fileName}</span>
+                                        <a
+                                            href={receipt.driveFileLink}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="shrink-0 inline-flex items-center gap-1 text-[11.5px] font-medium text-ochre hover:underline"
+                                        >
+                                            <ExternalLink size={11} /> Открыть
+                                        </a>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleRemoveReceipt(receipt)}
+                                            className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-ink-3 hover:text-terracotta hover:bg-terracotta/5 transition-colors"
+                                            title="Удалить документ"
+                                        >
+                                            <Trash2 size={12} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            multiple
+                            className="hidden"
+                            onChange={e => handleAttachFiles(e.target.files)}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={!accessToken || isUploading}
+                            className="w-full inline-flex items-center justify-center gap-2 h-9 rounded-md text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                            {isUploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+                            {isUploading ? 'Загружаем…' : 'Добавить документ'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="px-6 py-4 border-t border-line flex items-center justify-end gap-2 shrink-0 bg-surface-2/30">
+                    <button onClick={onClose} className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
+                        Отмена
+                    </button>
+                    <button
+                        onClick={handleSubmit}
+                        disabled={!category || effectiveAmount <= 0 || !date || isSaving}
+                        className="px-4 py-2 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        {isSaving ? 'Сохранение…' : (isEditing ? 'Сохранить изменения' : 'Зафиксировать расход')}
+                    </button>
+                </div>
+            </motion.div>
+        </div>
+    );
+}
 
 export default FinanceTab;
