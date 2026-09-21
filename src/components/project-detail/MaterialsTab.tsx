@@ -165,13 +165,13 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                                 <p className="text-[11px] text-ink-3 truncate max-w-[220px]">{m.supplierName || '—'}</p>
                                             </td>
                                             <td className="px-4 py-3.5">
-                                                <span className="text-[12px] font-mono font-semibold text-ink whitespace-nowrap">{formatMoney(m.quantity)} {m.unitName}</span>
+                                                <span className="text-[12px] font-mono text-ink whitespace-nowrap">{formatMoney(m.quantity)} {m.unitName}</span>
                                             </td>
                                             <td className="px-4 py-3.5">
-                                                <span className="text-[12px] font-mono font-semibold text-ink">{formatMoney(m.salePrice)}</span>
+                                                <span className="text-[12px] font-mono text-ink">{formatMoney(m.salePrice)}</span>
                                             </td>
                                             <td className="px-4 py-3.5">
-                                                <span className="text-[12px] font-mono font-semibold text-ink">{formatMoney(calc.saleSum)}</span>
+                                                <span className="text-[12px] font-mono font-bold text-ink">{formatMoney(calc.saleSum)}</span>
                                             </td>
                                             <td className="px-4 py-3.5 text-right">
                                                 <div className="text-[13px] font-mono font-bold" style={{ color: marginColor }}>{formatMoney(calc.marginIncVat)}</div>
@@ -182,7 +182,7 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                 })}
                                 </tbody>
                                 <tfoot>
-                                <tr className="border-t-2 border-[#DAD3C1]">
+                                <tr className="border-t-2 border-[#DAD3C1] bg-surface-2">
                                     <td className="px-4 py-3.5">
                                         <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-ink-3">Итого по проекту</span>
                                     </td>
@@ -192,11 +192,12 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                         <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.purchaseSum)}</p>
                                     </td>
                                     <td className="px-4 py-3.5">
-                                        <span className="text-[13px] font-mono font-bold text-ink">{formatMoney(totals.saleSum)}</span>
+                                        <p className="text-[10px] uppercase tracking-wide text-ink-4">продажа</p>
+                                        <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.saleSum)}</p>
                                     </td>
                                     <td className="px-4 py-3.5 text-right">
-                                        <div className="text-[13px] font-mono font-bold text-ink">{formatMoney(totals.marginIncVat)}</div>
                                         <div className="text-[11px] font-mono text-ink-3">{totals.marginIncVatPercent !== null ? `${formatPercent(totals.marginIncVatPercent)}%` : '—'}</div>
+                                        <div className="text-[13px] font-mono font-bold text-ink">{formatMoney(totals.marginIncVat)}</div>
                                     </td>
                                 </tr>
                                 </tfoot>
@@ -501,7 +502,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                     {/* ТОВАР */}
                     <div>
                         <h3 className={sectionLabel}>Товар</h3>
-                        <div className="grid grid-cols-4 gap-3">
+                        <div className="space-y-3">
                             <div>
                                 <label className={labelClass}>Наименование</label>
                                 <MaterialSelect
@@ -510,34 +511,36 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                     placeholder="Из справочника..."
                                 />
                             </div>
-                            <div>
-                                <label className={labelClass}>Кол-во</label>
-                                <AmountInput value={m.quantity} onCommit={n => set({ quantity: n })} className={inputClass} />
-                            </div>
-                            <div>
-                                <label className={labelClass}>Ед. изм.</label>
-                                <DirectorySelect
-                                    value={m.unitName || ''}
-                                    options={directories.units || []}
-                                    onChange={v => set({ unitName: v })}
-                                    onAdd={async name => {
-                                        await addDoc(collection(db, 'units'), { name, createdAt: serverTimestamp() });
-                                        set({ unitName: name });
-                                    }}
-                                    placeholder="—"
-                                    className={inputClass}
-                                    iconType="unit"
-                                    inputHeight="h-9"
-                                />
-                            </div>
-                            <div>
-                                <label className={labelClass}>Поставщик</label>
-                                <CompanySelect
-                                    value={m.supplierName || ''}
-                                    onChange={(name, id) => set({ supplierName: name, supplierId: id })}
-                                    placeholder="Компания-поставщик..."
-                                    companyType="Поставщик"
-                                />
+                            <div className="grid grid-cols-[100px_120px_1fr] gap-3">
+                                <div>
+                                    <label className={labelClass}>Кол-во</label>
+                                    <AmountInput value={m.quantity} onCommit={n => set({ quantity: n })} className={inputClass} />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Ед. изм.</label>
+                                    <DirectorySelect
+                                        value={m.unitName || ''}
+                                        options={directories.units || []}
+                                        onChange={v => set({ unitName: v })}
+                                        onAdd={async name => {
+                                            await addDoc(collection(db, 'units'), { name, createdAt: serverTimestamp() });
+                                            set({ unitName: name });
+                                        }}
+                                        placeholder="—"
+                                        className={inputClass}
+                                        iconType="unit"
+                                        inputHeight="h-9"
+                                    />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Поставщик</label>
+                                    <CompanySelect
+                                        value={m.supplierName || ''}
+                                        onChange={(name, id) => set({ supplierName: name, supplierId: id })}
+                                        placeholder="Компания-поставщик..."
+                                        companyType="Поставщик"
+                                    />
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -548,11 +551,11 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                             <h3 className={sectionLabel}>Закуп</h3>
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label className={labelClass}>Цена закупа с НДС, ₽</label>
+                                    <label className={labelClass}>Цена с НДС, ₽</label>
                                     <AmountInput value={m.purchasePrice} onCommit={handlePurchasePriceCommit} className={inputClass} />
                                 </div>
                                 <div>
-                                    <label className={labelClass}>Сумма закупа с НДС, ₽</label>
+                                    <label className={labelClass}>Сумма с НДС, ₽</label>
                                     <div className={readonlyClass}>{formatMoney(calc.purchaseSum)}</div>
                                 </div>
                             </div>
@@ -580,7 +583,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                     />
                                 </div>
                                 <div>
-                                    <label className={labelClass}>Цена продажи с НДС, ₽</label>
+                                    <label className={labelClass}>Цена с НДС, ₽</label>
                                     <input
                                         type="text"
                                         inputMode="decimal"
@@ -593,7 +596,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                     />
                                 </div>
                                 <div>
-                                    <label className={labelClass}>Сумма продажи с НДС, ₽</label>
+                                    <label className={labelClass}>Сумма с НДС, ₽</label>
                                     <div className={readonlyClass}>{formatMoney(calc.saleSum)}</div>
                                 </div>
                             </div>

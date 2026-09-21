@@ -26,9 +26,14 @@ export function extractVat(sumWithVat: number, vatPercent: number): number {
     return (sumWithVat * vatPercent) / (100 + vatPercent);
 }
 
-/** % накрутки = (цена продажи − цена закупа) × 100 / цена закупа. null, если цена закупа не задана (нечего делить). */
+/**
+ * % накрутки = (цена продажи − цена закупа) × 100 / цена закупа.
+ * null, если цена закупа ИЛИ цена продажи ещё не заданы — поле должно
+ * оставаться пустым, пока пользователь не введёт обе цены (иначе при пустой
+ * цене продажи формула считала бы её нулём и показывала бы ложные "-100%").
+ */
 export function getMarkupPercent(purchasePrice: number, salePrice: number): number | null {
-    if (!purchasePrice) return null;
+    if (!purchasePrice || !salePrice) return null;
     return ((salePrice - purchasePrice) * 100) / purchasePrice;
 }
 
