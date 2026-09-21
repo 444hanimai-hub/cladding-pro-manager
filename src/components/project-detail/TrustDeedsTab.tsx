@@ -2,222 +2,449 @@ import React, { useState, useEffect } from 'react';
 import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, X, Trash2, Layers, Pencil, ChevronRight } from 'lucide-react';
-import { cn } from '../../lib/utils';
-import { getMarginColor } from '../../lib/financeCalculations';
+import { Plus, X, ChevronRight, FileText, Printer, Pencil, Trash2, Download } from 'lucide-react';
+import { cn, formatCurrency, formatDateToDisplay } from '../../lib/utils';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
-import { Project, ProjectMaterial } from '../../types';
-import CompanySelect from '../CompanySelect';
-import MaterialSelect from '../MaterialSelect';
-import { Button } from '../ui/Button';
-import DirectorySelect from './shared/DirectorySelect';
+import { generateTrustDeedDocx, downloadBlob, uploadTrustDeedToDrive, TrustDeedDocxData } from '../../lib/generateTrustDeedDocx';
 import {
-    calcMaterial,
-    calcProjectMaterialsTotals,
-    createEmptyProjectMaterial,
-    getMarkupPercent,
-    priceFromMarkup,
-    DEFAULT_VAT_PERCENT,
-} from '../../lib/materialFinance';
+    getSuggestedTrustDeedNumber,
+    createTrustDeedWithNumber,
+    updateTrustDeedWithNumber,
+    deleteTrustDeedWithNumber,
+    NumberTakenError,
+} from '../../lib/trustDeedNumbering';
+import { Project, TrustDeed } from '../../types';
+import { DatePicker } from '../ui/DatePicker';
+import DirectorySelect from './shared/DirectorySelect';
+import { ShipmentDetailField } from './shared/ShipmentDetailField';
 
-// ───────────────────────── форматирование чисел ─────────────────────────
-
-function formatMoney(n: number | null | undefined): string {
-    if (n === null || n === undefined || !isFinite(n)) return '';
-    return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
-}
-
-function formatPercent(n: number | null | undefined): string {
-    if (n === null || n === undefined || !isFinite(n)) return '';
-    return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
-}
-
-function parseDecimal(raw: string): number {
-    const cleaned = raw.replace(/\s/g, '').replace(',', '.').replace(/[^\d.\-]/g, '');
-    const n = parseFloat(cleaned);
-    return isFinite(n) ? n : 0;
-}
-
-// ───────────────────────── вкладка «Материалы» ─────────────────────────
-
-function MaterialsTab({ project, canEdit, directories }: { project: Project, canEdit: boolean, directories: any }) {
+function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken, onConnectCalendar, onClearCalendarToken }: { project: Project, canEdit: boolean, directories: any, trustDeeds: TrustDeed[], accessToken?: string | null, onConnectCalendar?: () => Promise<boolean>, onClearCalendarToken?: () => void }) {
+    const [selectedDeedId, setSelectedDeedId] = useState<string | null>(null);
     const [isAdding, setIsAdding] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
-    const [formData, setFormData] = useState<Partial<ProjectMaterial>>({});
-    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [formData, setFormData] = useState<Partial<TrustDeed>>({});
+    const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
+    // Номер доверенности на момент начала редактирования — нужен, чтобы понять,
+    // изменился ли номер при сохранении (тогда нужно переносить "замок" номера).
+    const [originalNumber, setOriginalNumber] = useState<string | null>(null);
 
-    const materials = project.materials || [];
-    const selected = materials.find(m => m.id === selectedId) || null;
-    const totals = calcProjectMaterialsTotals(materials);
+    const selectedDeed = trustDeeds.find(d => d.id === selectedDeedId);
 
-    useEffect(() => {
-        setSelectedId(prev => {
-            if (materials.length === 0) return null;
-            if (prev && materials.some(m => m.id === prev)) return prev;
-            return materials[0].id;
-        });
-    }, [materials.length]);
+    const handleGenerateDeed = async (deed: TrustDeed) => {
+        const mat = project.materials?.find(m => m.id === deed.materialId || m.materialName === deed.materialName);
+        // Поставщик берётся ТОЛЬКО из материала проекта — доверенность больше не хранит
+        // supplierName отдельно (раньше это приводило к рассинхронизации данных).
+        const materialSupplier = (mat as any)?.supplierName || '';
 
-    const handleAdd = () => {
-        if (!canEdit) return;
-        setFormData(createEmptyProjectMaterial());
-        setIsEditing(false);
-        setIsAdding(true);
-    };
+        const data: TrustDeedDocxData = {
+            number: deed.number,
+            issueDate: formatDateToDisplay(deed.issueDate),
+            expiryDate: formatDateToDisplay(deed.expiryDate),
+            organization: 'ООО "АРХИХАБ", ИНН 1655466404, КПП 165501001, 420021, Республика Татарстан, г. Казань, ул. Николая Столбова, д. 1/3, пом. 1014',
+            driverName: deed.driverName || '',
+            driverPosition: '',
+            driverPassportSeries: deed.driverPassportSeries || '',
+            driverPassportNumber: deed.driverPassportNumber || '',
+            driverPassportIssuedBy: (deed as any).driverPassportIssuedBy || '',
+            driverPassportIssuedDate: formatDateToDisplay((deed as any).driverPassportIssuedDate),
+            supplierName: materialSupplier,
+            accountNumber: deed.accountNumber || '',
+            accountDate: formatDateToDisplay((deed as any).accountDate),
+            bankAccount: '',
+            bankName: '',
+            materialName: deed.materialName || '',
+            materialUnit: 'Шт.',
+            quantity: String(deed.quantity || ''),
+            quantityText: '',
+            headName: 'Аухадуллина Д.Н.',
+            chiefAccountantName: 'Аухадуллина Д.Н.',
+        };
 
-    const handleEdit = (m: ProjectMaterial) => {
-        setFormData(m);
-        setIsEditing(true);
-        setIsAdding(true);
-    };
+        // Формируем имя файла: номер_Поставщик_ставка_Фамилия_Перевозчик
+        const stripAbbr = (name: string) =>
+            name.replace(/^(ООО|ОАО|ЗАО|АО|ИП|НКО|ПАО)\s+["«»"']?/i, '').replace(/["«»"']/g, '').trim();
+        const supplier = stripAbbr(materialSupplier);
+        const rateK = deed.rate ? Math.floor(deed.rate / 1000) : 0;
+        const driverLastName = (deed.driverName || '').split(' ')[0] || '';
+        const carrier = stripAbbr(deed.carrierName || '');
+        const filename = `${deed.number}_${supplier}_${rateK}_${driverLastName}_${carrier}.docx`
+            .replace(/\s+/g, '_').replace(/[/\\:*?"<>|]/g, '');
 
-    const handleSave = async () => {
-        if (!canEdit) return;
         try {
-            const newMaterial = {
-                ...createEmptyProjectMaterial(),
-                ...formData,
-                id: (isEditing && formData.id) ? formData.id : crypto.randomUUID(),
-            } as ProjectMaterial;
-
-            let updated;
-            if (isEditing && formData.id) {
-                updated = materials.map(m => m.id === formData.id ? newMaterial : m);
+            const blob = await generateTrustDeedDocx(data);
+            if (accessToken) {
+                // Передаём driveFileId уже существующего файла (если он есть) — тогда
+                // содержимое ПЕРЕЗАПИШЕТСЯ на Drive, а не создастся дублирующий файл.
+                const { fileId } = await uploadTrustDeedToDrive(blob, filename, accessToken, deed.driveFileId);
+                // Сохраняем/обновляем driveFileId в самой доверенности, чтобы при
+                // следующей печати снова перезаписать этот же файл, а не плодить новые.
+                if (fileId && fileId !== deed.driveFileId) {
+                    try {
+                        await updateDoc(doc(db, 'trust_deeds', deed.id), { driveFileId: fileId });
+                    } catch (saveIdErr) {
+                        console.error('Не удалось сохранить driveFileId доверенности:', saveIdErr);
+                    }
+                }
             } else {
-                updated = [...materials, newMaterial];
+                downloadBlob(blob, filename);
             }
-
-            await updateDoc(doc(db, 'projects', project.id), {
-                materials: updated,
-                updatedAt: serverTimestamp(),
-            });
-            setIsAdding(false);
-            setFormData({});
-        } catch (error) {
-            handleFirestoreError(error, OperationType.WRITE, `projects/${project.id}`);
+        } catch (e) {
+            console.error('Ошибка генерации документа:', e);
+            alert('Не удалось загрузить доверенность в Google Drive. Файл будет скачан на компьютер.');
+            try {
+                const blob2 = await generateTrustDeedDocx(data);
+                downloadBlob(blob2, filename);
+            } catch (e2) {
+                console.error('Fallback download failed:', e2);
+            }
         }
     };
 
-    const handleDelete = async (id: string) => {
-        if (!canEdit || !window.confirm('Удалить этот материал из проекта?')) return;
+    const addExpiryWeek = (issueDate: string) => {
+        if (!issueDate) return '';
+        const d = new Date(issueDate);
+        d.setDate(d.getDate() + 7);
+        return d.toISOString().split('T')[0];
+    };
+
+    const handleAdd = async () => {
+        if (!canEdit) return;
+        const issueDate = new Date().toISOString().split('T')[0];
+        // Подсказка "следующий свободный номер" по сквозному счётчику (по всей системе,
+        // не только в рамках проекта). Поле в форме остаётся редактируемым — можно
+        // стереть и вписать любой номер вручную (например, чтобы продолжить нумерацию,
+        // которая уже велась у заказчика до перехода на эту систему).
+        const suggested = await getSuggestedTrustDeedNumber(db);
+        setFormData({
+            number: suggested,
+            issueDate,
+            expiryDate: addExpiryWeek(issueDate),
+            supplierId: '',
+            carrierId: '', carrierName: '',
+            accountNumber: '', accountDate: '',
+            rate: 0,
+            driverId: '', driverName: '',
+            driverPassportSeries: '', driverPassportNumber: '',
+            driverPassportIssuedBy: '', driverPassportIssuedDate: '',
+            materialId: '', materialName: '',
+            quantity: 0,
+        });
+        setOriginalNumber(null);
+        setIsAdding(true);
+        setIsEditing(false);
+    };
+
+    const handleEdit = (deed: TrustDeed) => {
+        setFormData(deed);
+        setOriginalNumber(deed.number);
+        setIsAdding(true);
+        setIsEditing(true);
+    };
+
+    /** Возвращает true при успешном сохранении, false — если сохранение прервалось (валидация, занятый номер, ошибка записи). */
+    const handleSave = async (): Promise<boolean> => {
+        if (!canEdit) return false;
+        const number = String(formData.number || '').trim();
+        if (!number) {
+            alert('Укажите номер доверенности — это обязательное поле.');
+            return false;
+        }
+
+        const path = isEditing && formData.id
+            ? `trust_deeds/${formData.id}`
+            : `trust_deeds`;
         try {
-            const updated = materials.filter(m => m.id !== id);
-            await updateDoc(doc(db, 'projects', project.id), {
-                materials: updated,
-                updatedAt: serverTimestamp(),
-            });
-            if (selectedId === id) setSelectedId(null);
+            // ── Синхронизация водителя со справочником ────────────────────────────
+            let driverId = formData.driverId || '';
+            const driverPayload: any = {};
+            if (formData.driverPassportSeries)     driverPayload.passportSeries     = formData.driverPassportSeries;
+            if (formData.driverPassportNumber)     driverPayload.passportNumber     = formData.driverPassportNumber;
+            if (formData.driverPassportIssuedBy)   driverPayload.passportIssuedBy   = formData.driverPassportIssuedBy;
+            if (formData.driverPassportIssuedDate) driverPayload.passportIssuedDate = formData.driverPassportIssuedDate;
+            if ((formData as any).driverPhone)     driverPayload.phone              = (formData as any).driverPhone;
+
+            if (formData.driverName) {
+                if (driverId) {
+                    // Водитель выбран из справочника — обновляем его данные
+                    if (Object.keys(driverPayload).length > 0) {
+                        await updateDoc(doc(db, 'drivers', driverId), driverPayload).catch(console.error);
+                    }
+                } else {
+                    // Новый водитель — создаём запись в справочнике
+                    const newDriverRef = await addDoc(collection(db, 'drivers'), {
+                        name: formData.driverName,
+                        ...driverPayload,
+                        createdAt: serverTimestamp(),
+                    });
+                    driverId = newDriverRef.id;
+                }
+            }
+
+            // Собираем данные доверенности для сохранения — без id/number (id не хранится
+            // внутри документа, number передаётся отдельным аргументом в функции ниже).
+            const { id: _omitId, number: _omitNumber, ...rest } = formData as any;
+            const dataToSave = { ...rest, driverId, projectId: project.id };
+
+            let deedId: string;
+            if (isEditing && formData.id) {
+                await updateTrustDeedWithNumber(db, formData.id, originalNumber || number, number, dataToSave);
+                deedId = formData.id;
+            } else {
+                deedId = await createTrustDeedWithNumber(db, number, dataToSave);
+            }
+
+            if (!isEditing) {
+                // Автоматически создаём строку в таблице отгрузок
+                const existingShipments = project.shipments || [];
+                const mat = project.materials?.find(
+                    m => m.id === dataToSave.materialId || m.materialName === dataToSave.materialName
+                );
+                const matLabel = mat
+                    ? `${mat.materialName}${(mat as any).supplierName ? ' ' + (mat as any).supplierName : ''}`
+                    : dataToSave.materialName || '';
+
+                const newShipment: any = {
+                    id: crypto.randomUUID(),
+                    autoNumber: String(existingShipments.length + 1),
+                    trustDeedId: deedId,
+                    trustDeedNumber: number,
+                    poaNumber: number,
+                    materialName: matLabel,
+                    materialId: dataToSave.materialId || '',
+                    quantity: dataToSave.quantity || 0,
+                    carryingCost: dataToSave.rate || 0,
+                    totalCarryingCost: 0,
+                    carrierName: dataToSave.carrierName || '',
+                    docType: 'upd',
+                    incomingUPD: '',
+                    outgoingUPD: '',
+                    scanSentToAccounting: false,
+                    loadingDate: '',
+                    unloadingDate: '',
+                    carrierUPD: '',
+                    createdAt: new Date().toISOString(),
+                };
+
+                await updateDoc(doc(db, 'projects', project.id), {
+                    shipments: [...existingShipments, newShipment],
+                    updatedAt: serverTimestamp(),
+                });
+            }
+            setIsAdding(false);
+            setFormData({});
+            setOriginalNumber(null);
+            return true;
         } catch (error) {
-            handleFirestoreError(error, OperationType.DELETE, `projects/${project.id}/materials/${id}`);
+            if (error instanceof NumberTakenError) {
+                const suggested = await getSuggestedTrustDeedNumber(db);
+                setFormData(prev => ({ ...prev, number: suggested }));
+                alert(`Доверенность с номером «${number}» уже существует. Номер в форме обновлён на следующий свободный: ${suggested}.`);
+                return false;
+            }
+            handleFirestoreError(error, OperationType.WRITE, path);
+            return false;
+        }
+    };
+
+    const handleSaveAndGenerate = async () => {
+        const snapshot = { ...formData } as TrustDeed;
+        const saved = await handleSave();
+        // Если сохранение не удалось (занятый номер / ошибка записи) — не генерируем
+        // документ со старыми (несохранёнными) данными.
+        if (!saved) return;
+        await handleGenerateDeed(snapshot);
+    };
+
+    const handleDelete = async (id: string, number: string) => {
+        if (!canEdit || !window.confirm('Вы уверены, что хотите удалить эту доверенность?')) return;
+        try {
+            await deleteTrustDeedWithNumber(db, id, number);
+            if (selectedDeedId === id) setSelectedDeedId(null);
+        } catch (error) {
+            handleFirestoreError(error, OperationType.DELETE, `trust_deeds/${id}`);
+        }
+    };
+
+    const sortedTrustDeeds = [...trustDeeds].sort((a, b) => (Number(b.number) || 0) - (Number(a.number) || 0));
+
+    useEffect(() => {
+        setSelectedDeedId(prev => {
+            if (sortedTrustDeeds.length === 0) return null;
+            if (prev && sortedTrustDeeds.some(d => d.id === prev)) return prev;
+            return sortedTrustDeeds[0].id;
+        });
+    }, [trustDeeds.length]);
+
+    const handleConnectGoogle = async () => {
+        if (!onConnectCalendar || isConnectingGoogle) return;
+        setIsConnectingGoogle(true);
+        try {
+            await onConnectCalendar();
+        } finally {
+            setIsConnectingGoogle(false);
         }
     };
 
     return (
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-            {materials.length > 0 ? (
+        <div className="space-y-4">
+            {!accessToken && onConnectCalendar && (
+                <div className="rounded-xl border border-ochre/35 bg-[#FBF5E8] px-4 py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div className="min-w-0">
+                        <p className="text-[13px] font-semibold text-ink">Google не подключён</p>
+                        <p className="text-[12px] text-ink-3 mt-1 leading-snug">
+                            Печать доверенности сохранит файл только на ваш компьютер. Подключите Google, чтобы документы сразу сохранялись на Google Диске.
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={handleConnectGoogle}
+                        disabled={isConnectingGoogle}
+                        className="shrink-0 h-9 px-4 rounded-lg text-[12px] font-semibold bg-[#A67C3C] text-white hover:bg-[#956f35] disabled:opacity-50 transition-colors whitespace-nowrap"
+                    >
+                        {isConnectingGoogle ? 'Подключение…' : 'Подключить Google'}
+                    </button>
+                </div>
+            )}
+            {sortedTrustDeeds.length > 0 ? (
                 <div className="flex flex-col lg:grid lg:grid-cols-5 gap-4 items-start">
-                    {/* Таблица — 3/5 */}
+                    {/* Table card — 3/5 width */}
                     <div className="lg:col-span-3 min-w-0 self-start rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3 shrink-0">
                             <h3 className="text-[14px] font-serif font-medium flex items-center gap-2 text-ink">
-                                Материалы по проекту
-                                <span className="text-[11px] font-serif opacity-40">· {materials.length}</span>
+                                Реестр доверенностей
+                                <span className="text-[11px] font-serif opacity-40">· {trustDeeds.length}</span>
                             </h3>
-                            {canEdit && (
-                                <Button
-                                    variant="ochre"
-                                    size="sm"
-                                    className="h-8 px-2.5 text-[11.5px] font-semibold"
-                                    icon={<Plus size={12} />}
-                                    onClick={handleAdd}
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => selectedDeed && handleGenerateDeed(selectedDeed)}
+                                    disabled={!selectedDeed}
+                                    className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-[11.5px] font-semibold border border-line text-ink-2 bg-surface hover:bg-surface-2 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                 >
-                                    Добавить материал
-                                </Button>
-                            )}
+                                    <Printer size={12} /> Печать
+                                </button>
+                                {canEdit && (
+                                    <button onClick={handleAdd} className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-[11.5px] font-semibold bg-[#B48444] text-white hover:bg-[#A6783D] transition-colors">
+                                        <Plus size={12} /> Новая доверенность
+                                    </button>
+                                )}
+                            </div>
                         </div>
                         <div className="overflow-x-auto custom-scrollbar p-4 pt-2">
                             <table className="w-full text-left">
                                 <thead>
                                 <tr className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] border-b border-[#E1D8C5]">
-                                    <th className="px-4 py-3 font-bold">Материал / поставщик</th>
-                                    <th className="px-4 py-3 font-bold">Кол-во</th>
-                                    <th className="px-4 py-3 font-bold">Цена прод.</th>
-                                    <th className="px-4 py-3 font-bold">Сумма прод.</th>
-                                    <th className="px-4 py-3 font-bold text-right">Маржа с учётом НДС</th>
+                                    <th className="px-4 py-3 font-bold w-10">№</th>
+                                    <th className="px-2 py-3 font-bold w-24">Выдана</th>
+                                    <th className="px-2 py-3 font-bold w-24">До</th>
+                                    <th className="px-4 py-3 font-bold">Водитель</th>
+                                    <th className="px-4 py-3 font-bold">Перевозчик</th>
+                                    <th className="px-4 py-3 font-bold text-right w-36">Кол-во</th>
+                                    <th className="w-8 px-2 py-3" />
                                 </tr>
                                 </thead>
                                 <tbody>
-                                {materials.map((m) => {
-                                    const calc = calcMaterial(m);
-                                    const isSelected = m.id === selectedId;
-                                    const marginColor = calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined;
+                                {sortedTrustDeeds.map((deed) => {
+                                    const isSelected = deed.id === selectedDeedId;
                                     return (
                                         <tr
-                                            key={m.id}
-                                            onClick={() => setSelectedId(m.id === selectedId ? null : m.id)}
+                                            key={deed.id}
+                                            onClick={() => setSelectedDeedId(deed.id === selectedDeedId ? null : deed.id)}
                                             className={cn(
                                                 "cursor-pointer transition-colors border-b border-[#E1D8C5]/60 last:border-b-0",
                                                 isSelected ? "bg-[#F5E9CC] shadow-[inset_3px_0_0_0_#B07A2C]" : "hover:bg-[#F5F2E9]/80"
                                             )}
                                         >
                                             <td className="px-4 py-3.5">
-                                                <p className="text-[13px] font-bold text-ink truncate max-w-[220px]">{m.materialName || '—'}</p>
-                                                <p className="text-[11px] text-ink-3 truncate max-w-[220px]">{m.supplierName || '—'}</p>
+                                                <span className="text-[11px] text-ink-4 font-mono mr-0.5">№</span>
+                                                <span className="text-[13px] font-bold text-ink">{deed.number}</span>
                                             </td>
-                                            <td className="px-4 py-3.5">
-                                                <span className="text-[12px] font-mono text-ink whitespace-nowrap">{formatMoney(m.quantity)} {m.unitName}</span>
-                                            </td>
-                                            <td className="px-4 py-3.5">
-                                                <span className="text-[12px] font-mono text-ink">{formatMoney(m.salePrice)}</span>
-                                            </td>
-                                            <td className="px-4 py-3.5">
-                                                <span className="text-[12px] font-mono text-ink">{formatMoney(calc.saleSum)}</span>
-                                            </td>
-                                            <td className="px-4 py-3.5 text-right">
-                                                <div className="text-[13px] font-mono font-bold" style={{ color: marginColor }}>{formatMoney(calc.marginIncVat)}</div>
-                                                <div className="text-[11px] font-mono" style={{ color: marginColor }}>{calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'}</div>
+                                            <td className="px-2 py-3.5"><span className="text-[11px] font-mono text-ink-3 whitespace-nowrap">{deed.issueDate ? formatDateToDisplay(deed.issueDate) : '—'}</span></td>
+                                            <td className="px-2 py-3.5"><span className="text-[11px] font-mono text-ink-3 whitespace-nowrap">{deed.expiryDate ? formatDateToDisplay(deed.expiryDate) : '—'}</span></td>
+                                            <td className="px-4 py-3.5"><span className="text-[12px] font-medium text-ink">{deed.driverName || '—'}</span></td>
+                                            <td className="px-4 py-3.5"><span className="text-[12px] text-ink-3">{deed.carrierName || '—'}</span></td>
+                                            <td className="px-4 py-3.5 text-right"><span className="text-[12px] font-mono font-semibold text-ink">{deed.quantity ? (() => {
+                                                const mat = project.materials?.find(m => m.id === deed.materialId || m.materialName === deed.materialName);
+                                                const unit = (mat as any)?.unitName || '';
+                                                return `${deed.quantity.toLocaleString('ru-RU')}${unit ? ' ' + unit : ''}`;
+                                            })() : '—'}</span></td>
+                                            <td className="px-2 py-3.5 align-middle text-ink-4">
+                                                <ChevronRight size={14} className={cn("transition-opacity", isSelected ? "opacity-80" : "opacity-30")} />
                                             </td>
                                         </tr>
                                     );
                                 })}
                                 </tbody>
-                                <tfoot>
-                                <tr className="border-t-2 border-[#DAD3C1] bg-surface-2">
-                                    <td className="px-4 py-3.5">
-                                        <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-ink-3">Итого по проекту</span>
-                                    </td>
-                                    <td className="px-4 py-3.5" />
-                                    <td className="px-4 py-3.5">
-                                        <p className="text-[10px] uppercase tracking-wide text-ink-4">закуп</p>
-                                        <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.purchaseSum)}</p>
-                                    </td>
-                                    <td className="px-4 py-3.5">
-                                        <p className="text-[10px] uppercase tracking-wide text-ink-4">продажа</p>
-                                        <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.saleSum)}</p>
-                                    </td>
-                                    <td className="px-4 py-3.5 text-right">
-                                        <div className="text-[11px] font-mono text-ink-3">{totals.marginIncVatPercent !== null ? `${formatPercent(totals.marginIncVatPercent)}%` : '—'}</div>
-                                        <div className="text-[13px] font-mono font-bold text-ink">{formatMoney(totals.marginIncVat)}</div>
-                                    </td>
-                                </tr>
-                                </tfoot>
                             </table>
                         </div>
                     </div>
 
-                    {/* Деталка — 2/5 */}
-                    {selected ? (
-                        <MaterialDetailPanel
-                            material={selected}
-                            canEdit={canEdit}
-                            onEdit={() => handleEdit(selected)}
-                            onDelete={() => handleDelete(selected.id)}
-                            onClose={() => setSelectedId(null)}
-                        />
+                    {/* Detail card — 2/5 width */}
+                    {selectedDeed ? (
+                        <div className="lg:col-span-2 w-full self-start rounded-2xl border border-line bg-surface shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden flex flex-col max-h-[75vh]">
+                            <div className="shrink-0 px-4 pt-3.5 pb-3 border-b border-[#E8E4DC] bg-[#FCF9F2]">
+                                <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                        <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] mb-0.5">Доверенность</p>
+                                        <h4 className="font-serif text-[20px] font-normal text-[#2C2922] leading-[1.15]">№ {selectedDeed.number}</h4>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        {canEdit && (
+                                            <>
+                                                <button onClick={() => handleEdit(selectedDeed)} title="Редактировать" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><Pencil size={13} /></button>
+                                                <button onClick={() => handleDelete(selectedDeed.id, selectedDeed.number)} title="Удалить" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#A04930] hover:bg-[#F5E6E2] transition-colors"><Trash2 size={13} /></button>
+                                            </>
+                                        )}
+                                        <button onClick={() => setSelectedDeedId(null)} title="Свернуть" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><X size={13} /></button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 space-y-4 bg-[#FCF9F2]">
+                                <div>
+                                    <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">Сроки</h5>
+                                    <div>
+                                        <ShipmentDetailField label="Дата выдачи" value={selectedDeed.issueDate ? formatDateToDisplay(selectedDeed.issueDate) : undefined} />
+                                        <ShipmentDetailField label="Действует до" value={selectedDeed.expiryDate ? formatDateToDisplay(selectedDeed.expiryDate) : undefined} showDivider={false} />
+                                    </div>
+                                </div>
+                                <div>
+                                    <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">Груз</h5>
+                                    <div>
+                                        <ShipmentDetailField label="Материал" value={(() => {
+                                            const mat = project.materials?.find(m => m.id === selectedDeed.materialId || m.materialName === selectedDeed.materialName);
+                                            const supplier = (mat as any)?.supplierName;
+                                            return selectedDeed.materialName
+                                                ? (supplier ? `${selectedDeed.materialName} · ${supplier}` : selectedDeed.materialName)
+                                                : undefined;
+                                        })()} />
+                                        <ShipmentDetailField label="Количество" value={selectedDeed.quantity ? `${selectedDeed.quantity.toLocaleString('ru-RU')} шт` : undefined} showDivider={false} />
+                                    </div>
+                                </div>
+                                <div>
+                                    <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">Логистика</h5>
+                                    <div>
+                                        <ShipmentDetailField label="Перевозчик" value={selectedDeed.carrierName} />
+                                        <ShipmentDetailField label="Счёт №" value={selectedDeed.accountNumber} />
+                                        <ShipmentDetailField label="Дата счёта" value={(selectedDeed as any).accountDate ? formatDateToDisplay((selectedDeed as any).accountDate) : undefined} />
+                                        <ShipmentDetailField label="Ставка" value={selectedDeed.rate ? formatCurrency(selectedDeed.rate) : undefined} showDivider={false} />
+                                    </div>
+                                </div>
+                                <div>
+                                    <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">Кому</h5>
+                                    <div>
+                                        <ShipmentDetailField label="ФИО водителя" value={selectedDeed.driverName} />
+                                        <ShipmentDetailField label="Паспорт — серия" value={selectedDeed.driverPassportSeries} />
+                                        <ShipmentDetailField label="Паспорт — номер" value={selectedDeed.driverPassportNumber} />
+                                        <ShipmentDetailField label="Кем выдан" value={(selectedDeed as any).driverPassportIssuedBy} />
+                                        <ShipmentDetailField label="Когда выдан" value={(selectedDeed as any).driverPassportIssuedDate ? formatDateToDisplay((selectedDeed as any).driverPassportIssuedDate) : undefined} showDivider={false} />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     ) : (
                         <div className="lg:col-span-2 w-full self-start rounded-2xl border border-dashed border-line bg-transparent p-8 flex flex-col items-center justify-center gap-2 text-center">
                             <ChevronRight size={18} className="text-ink-4 opacity-40" />
-                            <p className="text-[12px] font-medium text-ink-3">Выберите материал</p>
+                            <p className="text-[12px] font-medium text-ink-3">Выберите доверенность</p>
                             <p className="text-[10px] text-ink-4">для просмотра подробностей</p>
                         </div>
                     )}
@@ -226,21 +453,21 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                 <div className="rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3">
                         <h3 className="text-[14px] font-serif font-medium flex items-center gap-2 text-ink">
-                            Материалы по проекту <span className="text-[11px] font-serif opacity-40">· 0</span>
+                            Реестр доверенностей <span className="text-[11px] font-serif opacity-40">· 0</span>
                         </h3>
                     </div>
                     <div className="py-7 px-5 m-4 border border-dashed rounded-2xl flex flex-col items-center justify-center gap-3.5 border-line bg-transparent">
                         <div className="w-9 h-9 rounded-full flex items-center justify-center bg-white border border-line text-ink-3 shadow-sm">
-                            <Layers size={16} />
+                            <FileText size={16} />
                         </div>
                         <div className="text-center space-y-0.5">
-                            <p className="text-[13px] font-serif font-medium text-ink">Материалы ещё не добавлены</p>
-                            <p className="text-[9.5px] uppercase font-semibold tracking-[0.08em] opacity-60 text-ink-4">Здесь формируется смета проекта</p>
+                            <p className="text-[13px] font-serif font-medium text-ink">Доверенностей пока нет</p>
+                            <p className="text-[9.5px] uppercase font-semibold tracking-[0.08em] opacity-60 text-ink-4">Создавайте и формируйте документ прямо отсюда</p>
                         </div>
                         {canEdit && (
-                            <Button variant="ochre" size="sm" className="mt-2 px-3 h-8 text-[11.5px] font-semibold" icon={<Plus size={12} />} onClick={handleAdd}>
-                                Добавить материал
-                            </Button>
+                            <button onClick={handleAdd} className="mt-2 inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-[11.5px] font-semibold bg-[#B48444] text-white hover:bg-[#A6783D] transition-colors">
+                                <Plus size={12} /> Новая доверенность
+                            </button>
                         )}
                     </div>
                 </div>
@@ -248,234 +475,42 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
 
             <AnimatePresence>
                 {isAdding && (
-                    <MaterialModal
+                    <TrustDeedModal
                         formData={formData}
-                        setFormData={setFormData}
-                        onClose={() => { setIsAdding(false); setFormData({}); }}
+                        setFormData={(data: Partial<TrustDeed>) => {
+                            if (data.issueDate !== formData.issueDate && data.issueDate) {
+                                setFormData({ ...data, expiryDate: addExpiryWeek(data.issueDate) });
+                            } else {
+                                setFormData(data);
+                            }
+                        }}
+                        onClose={() => { setIsAdding(false); setFormData({}); setOriginalNumber(null); }}
                         onSave={handleSave}
+                        onSaveAndGenerate={handleSaveAndGenerate}
                         directories={directories}
+                        project={project}
                         isEditing={isEditing}
                     />
                 )}
             </AnimatePresence>
-        </motion.div>
-    );
-}
-
-// ───────────────────────── правая панель с деталями ─────────────────────────
-
-function DetailRow({ label, value, sub, valueColor }: { label: string; value: React.ReactNode; sub?: React.ReactNode; valueColor?: string }) {
-    return (
-        <div className="flex items-start justify-between gap-3 py-2 border-b border-dashed border-[#E5E0D6] last:border-b-0">
-            <span className="text-[12px] text-ink-3 shrink-0">{label}</span>
-            <div className="text-right min-w-0">
-                <div className="text-[13px] font-semibold tabular-nums" style={{ color: valueColor }}>{value}</div>
-                {sub && <div className="text-[10.5px] text-ink-3 mt-0.5 tabular-nums">{sub}</div>}
-            </div>
         </div>
     );
 }
 
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
-    return (
-        <div>
-            <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-1.5">{title}</h5>
-            <div>{children}</div>
-        </div>
-    );
-}
 
-function MaterialDetailPanel({ material, canEdit, onEdit, onDelete, onClose }: {
-    material: ProjectMaterial;
-    canEdit: boolean;
-    onEdit: () => void;
-    onDelete: () => void;
-    onClose: () => void;
-}) {
-    const calc = calcMaterial(material);
-    const marginColor = calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined;
 
-    return (
-        <div className="lg:col-span-2 w-full self-start rounded-2xl border border-line bg-surface shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden flex flex-col max-h-[75vh]">
-            <div className="shrink-0 px-4 pt-3.5 pb-3 border-b border-[#E8E4DC] bg-[#FCF9F2]">
-                <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                        <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] mb-0.5">Материал</p>
-                        <h4 className="font-serif text-[18px] font-normal text-[#2C2922] leading-[1.15] truncate">{material.materialName || '—'}</h4>
-                        <p className="text-[11.5px] text-ink-3 mt-0.5 truncate">{formatMoney(material.quantity)} {material.unitName} · {material.supplierName || '—'}</p>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                        {canEdit && (
-                            <>
-                                <button onClick={onEdit} title="Редактировать" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><Pencil size={13} /></button>
-                                <button onClick={onDelete} title="Удалить" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#A04930] hover:bg-[#F5E6E2] transition-colors"><Trash2 size={13} /></button>
-                            </>
-                        )}
-                        <button onClick={onClose} title="Свернуть" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><X size={13} /></button>
-                    </div>
-                </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 space-y-4 bg-[#FCF9F2]">
-                <DetailSection title="Закуп">
-                    <DetailRow label="Цена закупа с НДС" value={`${formatMoney(material.purchasePrice)} ₽`} />
-                    <DetailRow
-                        label="Сумма закупа с НДС"
-                        value={`${formatMoney(calc.purchaseSum)} ₽`}
-                        sub={`НДС ${material.purchaseVatPercent}% ${formatMoney(calc.purchaseVatAmount)}`}
-                    />
-                </DetailSection>
-
-                <DetailSection title="Продажа">
-                    <DetailRow label="% накрутки" value={calc.markupPercent !== null ? `${formatPercent(calc.markupPercent)}%` : '—'} />
-                    <DetailRow label="Цена продажи с НДС" value={`${formatMoney(material.salePrice)} ₽`} />
-                    <DetailRow
-                        label="Сумма продажи с НДС"
-                        value={`${formatMoney(calc.saleSum)} ₽`}
-                        sub={`НДС ${material.saleVatPercent}% ${formatMoney(calc.saleVatAmount)}`}
-                        valueColor="var(--ochre)"
-                    />
-                </DetailSection>
-
-                <DetailSection title="Услуги">
-                    <DetailRow
-                        label={`Дизайнеру · ${material.designerPercent}%`}
-                        value={`${formatMoney(calc.designerSum)} ₽`}
-                        sub={`НДС ${material.designerVatPercent}% ${formatMoney(calc.designerVatAmount)}`}
-                    />
-                    <DetailRow
-                        label={`ГП · ${material.gcPercent}%`}
-                        value={`${formatMoney(calc.gcSum)} ₽`}
-                        sub={`НДС ${material.gcVatPercent}% ${formatMoney(calc.gcVatAmount)}`}
-                    />
-                    <DetailRow
-                        label="Транспорт до ТК с НДС"
-                        value={`${formatMoney(material.transportAmount)} ₽`}
-                        sub={`НДС ${material.transportVatPercent}% ${formatMoney(calc.transportVatAmount)}`}
-                    />
-                </DetailSection>
-
-                <div className="rounded-xl border border-[var(--ochre-soft)] bg-[var(--ochre-bg)] p-3.5 space-y-1">
-                    <DetailRow label="Маржа без учёта НДС" value={`${formatMoney(calc.marginExVat)} ₽`} />
-                    <DetailRow label="Маржа без учёта НДС, %" value={calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'} />
-                    <DetailRow label="НДС к уплате" value={`${formatMoney(calc.vatPayable)} ₽`} />
-                    <DetailRow label="Маржа с учётом НДС" value={`${formatMoney(calc.marginIncVat)} ₽`} valueColor={marginColor} />
-                    <DetailRow label="Маржа с учётом НДС, %" value={calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'} valueColor={marginColor} />
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ───────────────────────── поля ввода (для модалки) ─────────────────────────
-
-/** Простое денежное/числовое поле: локальный буфер строки, коммит по blur. */
-function AmountInput({ value, onCommit, placeholder = '0', className }: {
-    value: number;
-    onCommit: (n: number) => void;
-    placeholder?: string;
-    className?: string;
-}) {
-    const [text, setText] = useState(value ? formatMoney(value) : '');
-
-    useEffect(() => {
-        setText(value ? formatMoney(value) : '');
-    }, [value]);
-
-    const commit = () => {
-        const n = parseDecimal(text);
-        onCommit(n);
-        setText(n ? formatMoney(n) : '');
-    };
-
-    return (
-        <input
-            type="text"
-            inputMode="decimal"
-            value={text}
-            placeholder={placeholder}
-            onChange={e => setText(e.target.value)}
-            onBlur={commit}
-            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commit(); }}
-            className={className}
-        />
-    );
-}
-
-/** Поле ставки НДС (просто число, без сложной логики, по умолчанию 22). */
-function VatPercentInput({ value, onCommit, className }: { value: number; onCommit: (n: number) => void; className?: string }) {
-    const [text, setText] = useState(String(value ?? DEFAULT_VAT_PERCENT));
-    useEffect(() => { setText(String(value ?? DEFAULT_VAT_PERCENT)); }, [value]);
-    const commit = () => {
-        const n = parseDecimal(text);
-        onCommit(n);
-        setText(String(n));
-    };
-    return (
-        <input
-            type="text"
-            inputMode="decimal"
-            value={text}
-            onChange={e => setText(e.target.value)}
-            onBlur={commit}
-            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commit(); }}
-            className={className}
-        />
-    );
-}
-
-// ───────────────────────── модалка добавления/редактирования ─────────────────────────
-
-function MaterialModal({ formData, setFormData, onClose, onSave, directories, isEditing }: {
-    formData: Partial<ProjectMaterial>;
-    setFormData: (data: Partial<ProjectMaterial>) => void;
-    onClose: () => void;
-    onSave: () => void;
-    directories: any;
-    isEditing: boolean;
-}) {
+function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGenerate, directories, project, isEditing }: { formData: Partial<TrustDeed> & { accountDate?: string; driverPassportIssuedBy?: string; driverPassportIssuedDate?: string; driverPhone?: string }, setFormData: any, onClose: () => void, onSave: () => void, onSaveAndGenerate: () => void, directories: any, project: Project, isEditing: boolean }) {
     const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
-    const readonlyClass = "w-full bg-surface-2 border border-line rounded-md px-3 h-9 text-[13px] text-ink-3 flex items-center tabular-nums";
     const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
-    const sectionLabel = "text-[10px] font-bold uppercase tracking-[0.16em] text-[#A67C3C] border-b border-[#A67C3C]/10 pb-1.5 mb-3";
+    const sectionLabel = "text-[10px] font-bold uppercase tracking-[0.16em] text-[#A67C3C] border-b border-[#A67C3C]/10 pb-1.5";
 
-    const m = { ...createEmptyProjectMaterial(), ...formData } as ProjectMaterial;
-    const calc = calcMaterial(m);
+    const materialOptions = (project.materials || []).map(m => ({
+        id: m.id,
+        name: m.materialName,
+        sub: (m as any).supplierName || '',
+    }));
 
-    const set = (patch: Partial<ProjectMaterial>) => setFormData({ ...formData, ...patch });
-
-    // ── Связка "% накрутки ↔ цена продажи с НДС" — локальные буферы, пересчёт только по blur/Enter/Tab ──
-    const [markupText, setMarkupText] = useState(calc.markupPercent !== null ? formatPercent(calc.markupPercent) : '');
-    const [salePriceText, setSalePriceText] = useState(m.salePrice ? formatMoney(m.salePrice) : '');
-
-    useEffect(() => {
-        setMarkupText(calc.markupPercent !== null ? formatPercent(calc.markupPercent) : '');
-        setSalePriceText(m.salePrice ? formatMoney(m.salePrice) : '');
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [m.purchasePrice, m.salePrice]);
-
-    const commitMarkup = () => {
-        const pct = parseDecimal(markupText);
-        const newSalePrice = priceFromMarkup(m.purchasePrice || 0, pct);
-        set({ salePrice: newSalePrice });
-        setSalePriceText(formatMoney(newSalePrice));
-        setMarkupText(formatPercent(pct));
-    };
-
-    const commitSalePrice = () => {
-        const price = parseDecimal(salePriceText);
-        set({ salePrice: price });
-        const pct = getMarkupPercent(m.purchasePrice || 0, price);
-        setMarkupText(pct !== null ? formatPercent(pct) : '');
-        setSalePriceText(price ? formatMoney(price) : '');
-    };
-
-    const handlePurchasePriceCommit = (newPrice: number) => {
-        set({ purchasePrice: newPrice });
-        // % накрутки — производное значение, просто пересчитаем отображение
-        const pct = getMarkupPercent(newPrice, m.salePrice || 0);
-        setMarkupText(pct !== null ? formatPercent(pct) : '');
-    };
+    const driverOptions = (directories.drivers || []).map((d: any) => ({ id: d.id, name: d.name }));
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
@@ -484,14 +519,14 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
-                className="relative w-full max-w-3xl bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
+                className="relative w-full max-w-2xl bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
             >
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
                     <div>
                         <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
-                            {isEditing ? 'Редактировать материал' : 'Добавить материал'}
+                            {isEditing ? 'Редактировать доверенность' : 'Новая доверенность'}
                         </h2>
-                        <p className="text-[11px] text-ink-3 mt-0.5">Серые поля рассчитываются автоматически. НДС по умолчанию 22%.</p>
+                        <p className="text-[11px] text-ink-3 mt-0.5">Номер сквозной по всей системе (не по проекту) — при желании введите свой</p>
                     </div>
                     <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
                         <X size={16} />
@@ -499,190 +534,175 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
-                    {/* ТОВАР */}
+                    <div className="grid grid-cols-3 gap-4">
+                        <div>
+                            <label className={labelClass}>Номер</label>
+                            <input type="text" value={formData.number || ''} onChange={e => setFormData({...formData, number: e.target.value})} className={inputClass} placeholder="Авто" />
+                        </div>
+                        <div>
+                            <label className={labelClass}>Дата выдачи</label>
+                            <DatePicker value={formData.issueDate || ''} onChange={v => setFormData({...formData, issueDate: v})} variant="compact" className="[&_input]:h-9" />
+                        </div>
+                        <div>
+                            <label className={labelClass}>Действует до</label>
+                            <DatePicker value={formData.expiryDate || ''} onChange={v => setFormData({...formData, expiryDate: v})} variant="compact" className="[&_input]:h-9" />
+                        </div>
+                    </div>
+
                     <div>
-                        <h3 className={sectionLabel}>Товар</h3>
-                        <div className="space-y-3">
+                        <h3 className={sectionLabel}>Груз</h3>
+                        <div className="mt-3 grid grid-cols-[1fr_100px] gap-4">
                             <div>
-                                <label className={labelClass}>Наименование</label>
-                                <MaterialSelect
-                                    value={m.materialName || ''}
-                                    onChange={(name, id) => set({ materialName: name, materialId: id })}
-                                    placeholder="Из справочника..."
+                                <label className={labelClass}>Материал</label>
+                                <DirectorySelect
+                                    value={formData.materialName || ''}
+                                    options={materialOptions.map(m => ({ id: m.id, name: m.sub ? `${m.name} · ${m.sub}` : m.name }))}
+                                    onChange={v => {
+                                        const mat = materialOptions.find(m => `${m.name} · ${m.sub}` === v || m.name === v);
+                                        setFormData({...formData, materialName: mat?.name || v, materialId: mat?.id || ''});
+                                    }}
+                                    onAdd={async () => {}}
+                                    placeholder="Выбрать материал..."
+                                    iconType="material"
+                                    inputHeight="h-9"
                                 />
                             </div>
-                            <div className="grid grid-cols-[100px_120px_1fr] gap-3">
-                                <div>
-                                    <label className={labelClass}>Кол-во</label>
-                                    <AmountInput value={m.quantity} onCommit={n => set({ quantity: n })} className={inputClass} />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Ед. изм.</label>
-                                    <DirectorySelect
-                                        value={m.unitName || ''}
-                                        options={directories.units || []}
-                                        onChange={v => set({ unitName: v })}
-                                        onAdd={async name => {
-                                            await addDoc(collection(db, 'units'), { name, createdAt: serverTimestamp() });
-                                            set({ unitName: name });
-                                        }}
-                                        placeholder="—"
-                                        className={inputClass}
-                                        iconType="unit"
-                                        inputHeight="h-9"
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Поставщик</label>
-                                    <CompanySelect
-                                        value={m.supplierName || ''}
-                                        onChange={(name, id) => set({ supplierName: name, supplierId: id })}
-                                        placeholder="Компания-поставщик..."
-                                        companyType="Поставщик"
-                                    />
-                                </div>
+                            <div>
+                                <label className={labelClass}>Количество</label>
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={formData.quantity ? formData.quantity.toLocaleString('ru-RU') : ''}
+                                    onChange={e => {
+                                        const raw = e.target.value.replace(/\s/g, '').replace(/[^\d]/g, '');
+                                        setFormData({...formData, quantity: raw ? Number(raw) : 0});
+                                    }}
+                                    className={inputClass}
+                                    placeholder="0"
+                                />
                             </div>
                         </div>
                     </div>
 
-                    {/* ЗАКУП / ПРОДАЖА */}
-                    <div className="grid grid-cols-2 gap-4">
-                        <div className="p-4 rounded-xl border border-line bg-surface-2/30">
-                            <h3 className={sectionLabel}>Закуп</h3>
-                            <div className="grid grid-cols-2 gap-3">
+                    <div>
+                        <h3 className={sectionLabel}>Логистика</h3>
+                        <div className="mt-3 space-y-4">
+                            <div>
+                                <label className={labelClass}>Логистическая компания</label>
+                                <DirectorySelect
+                                    value={formData.carrierName || ''}
+                                    options={(directories.carriers || []).map((c: any) => ({ id: c.id, name: c.name }))}
+                                    onChange={v => {
+                                        const carrier = (directories.carriers || []).find((c: any) => c.name === v);
+                                        setFormData({...formData, carrierName: v, carrierId: carrier?.id || ''});
+                                    }}
+                                    onAdd={async (name) => {
+                                        const ref = await addDoc(collection(db, 'carriers'), { name, createdAt: serverTimestamp() });
+                                        await addDoc(collection(db, 'companies'), { name, companyType: 'Перевозчик', createdAt: serverTimestamp() });
+                                        setFormData({...formData, carrierName: name, carrierId: ref.id});
+                                    }}
+                                    placeholder="Выбрать перевозчика..."
+                                    iconType="carrier"
+                                    inputHeight="h-9"
+                                />
+                            </div>
+                            <div className="grid grid-cols-[140px_130px_1fr] gap-3">
                                 <div>
-                                    <label className={labelClass}>Цена с НДС, ₽</label>
-                                    <AmountInput value={m.purchasePrice} onCommit={handlePurchasePriceCommit} className={inputClass} />
+                                    <label className={labelClass}>Счёт №</label>
+                                    <input type="text" value={formData.accountNumber || ''} onChange={e => setFormData({...formData, accountNumber: e.target.value})} className={inputClass} placeholder="Номер" />
                                 </div>
                                 <div>
-                                    <label className={labelClass}>Сумма с НДС, ₽</label>
-                                    <div className={readonlyClass}>{formatMoney(calc.purchaseSum)}</div>
+                                    <label className={labelClass}>от</label>
+                                    <DatePicker value={formData.accountDate || ''} onChange={v => setFormData({...formData, accountDate: v})} variant="compact" className="[&_input]:h-9" />
                                 </div>
-                            </div>
-                            <div className="grid grid-cols-[1fr_70px_110px] gap-2 items-end mt-3">
-                                <label className={cn(labelClass, "mb-0 self-center")}>НДС от закупа</label>
-                                <VatPercentInput value={m.purchaseVatPercent} onCommit={n => set({ purchaseVatPercent: n })} className={inputClass} />
-                                <div className={readonlyClass}>{formatMoney(calc.purchaseVatAmount)}</div>
-                            </div>
-                        </div>
-
-                        <div className="p-4 rounded-xl border border-line bg-surface-2/30">
-                            <h3 className={sectionLabel}>Продажа</h3>
-                            <div className="grid grid-cols-[70px_1fr_1fr] gap-3">
                                 <div>
-                                    <label className={labelClass}>% накр.</label>
+                                    <label className={labelClass}>Ставка, ₽</label>
                                     <input
                                         type="text"
-                                        inputMode="decimal"
-                                        value={markupText}
-                                        onChange={e => setMarkupText(e.target.value)}
-                                        onBlur={commitMarkup}
-                                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commitMarkup(); }}
-                                        className={inputClass}
-                                        placeholder="—"
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Цена с НДС, ₽</label>
-                                    <input
-                                        type="text"
-                                        inputMode="decimal"
-                                        value={salePriceText}
-                                        onChange={e => setSalePriceText(e.target.value)}
-                                        onBlur={commitSalePrice}
-                                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commitSalePrice(); }}
+                                        inputMode="numeric"
+                                        value={formData.rate ? formData.rate.toLocaleString('ru-RU') : ''}
+                                        onChange={e => {
+                                            const raw = e.target.value.replace(/\s/g, '').replace(/[^\d]/g, '');
+                                            setFormData({...formData, rate: raw ? Number(raw) : 0});
+                                        }}
                                         className={inputClass}
                                         placeholder="0"
                                     />
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h3 className={sectionLabel}>Кому</h3>
+                        <div className="mt-3 space-y-4">
+                            <div className="grid grid-cols-[1fr_80px_100px] gap-3">
                                 <div>
-                                    <label className={labelClass}>Сумма с НДС, ₽</label>
-                                    <div className={readonlyClass}>{formatMoney(calc.saleSum)}</div>
+                                    <label className={labelClass}>ФИО водителя</label>
+                                    <DirectorySelect
+                                        value={formData.driverName || ''}
+                                        options={driverOptions}
+                                        onChange={v => {
+                                            const driver = (directories.drivers || []).find((d: any) => d.name === v);
+                                            setFormData({
+                                                ...formData,
+                                                driverName: v,
+                                                driverId: driver?.id || '',
+                                                driverPassportSeries: driver?.passportSeries || formData.driverPassportSeries || '',
+                                                driverPassportNumber: driver?.passportNumber || formData.driverPassportNumber || '',
+                                                driverPassportIssuedBy: driver?.passportIssuedBy || formData.driverPassportIssuedBy || '',
+                                                driverPassportIssuedDate: driver?.passportIssuedDate || formData.driverPassportIssuedDate || '',
+                                                driverPhone: driver?.phone || formData.driverPhone || '',
+                                            });
+                                        }}
+                                        onAdd={async () => {}}
+                                        placeholder="Выбрать водителя..."
+                                        iconType="driver"
+                                        inputHeight="h-9"
+                                    />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Серия</label>
+                                    <input type="text" maxLength={6} value={formData.driverPassportSeries || ''} onChange={e => setFormData({...formData, driverPassportSeries: e.target.value})} className={inputClass} placeholder="0000" />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Номер</label>
+                                    <input type="text" maxLength={6} value={formData.driverPassportNumber || ''} onChange={e => setFormData({...formData, driverPassportNumber: e.target.value})} className={inputClass} placeholder="000000" />
                                 </div>
                             </div>
-                            <div className="grid grid-cols-[1fr_70px_110px] gap-2 items-end mt-3">
-                                <label className={cn(labelClass, "mb-0 self-center")}>НДС от продажи</label>
-                                <VatPercentInput value={m.saleVatPercent} onCommit={n => set({ saleVatPercent: n })} className={inputClass} />
-                                <div className={readonlyClass}>{formatMoney(calc.saleVatAmount)}</div>
+                            <div className="grid grid-cols-[1fr_130px_130px] gap-3">
+                                <div>
+                                    <label className={labelClass}>Кем выдан</label>
+                                    <input type="text" value={formData.driverPassportIssuedBy || ''} onChange={e => setFormData({...formData, driverPassportIssuedBy: e.target.value})} className={inputClass} placeholder="Наименование органа" />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Когда выдан</label>
+                                    <DatePicker value={formData.driverPassportIssuedDate || ''} onChange={v => setFormData({...formData, driverPassportIssuedDate: v})} variant="compact" className="[&_input]:h-9" />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Телефон</label>
+                                    <input type="text" value={formData.driverPhone || ''} onChange={e => setFormData({...formData, driverPhone: e.target.value})} className={inputClass} placeholder="+7..." />
+                                </div>
                             </div>
-                        </div>
-                    </div>
-
-                    {/* УСЛУГИ */}
-                    <div>
-                        <h3 className={sectionLabel}>Услуги</h3>
-                        <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1.5">
-                            <span />
-                            <span className="text-right">%</span>
-                            <span className="text-right">Сумма, ₽</span>
-                            <span className="text-right">НДС, %</span>
-                            <span className="text-right">НДС, ₽</span>
-                        </div>
-
-                        <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center py-1.5">
-                            <span className="text-[12.5px] text-ink">% дизайнеру с НДС</span>
-                            <AmountInput value={m.designerPercent} onCommit={n => set({ designerPercent: n })} className={inputClass} />
-                            <div className={readonlyClass}>{formatMoney(calc.designerSum)}</div>
-                            <VatPercentInput value={m.designerVatPercent} onCommit={n => set({ designerVatPercent: n })} className={inputClass} />
-                            <div className={readonlyClass}>{formatMoney(calc.designerVatAmount)}</div>
-                        </div>
-
-                        <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center py-1.5">
-                            <span className="text-[12.5px] text-ink">% ГП с НДС</span>
-                            <AmountInput value={m.gcPercent} onCommit={n => set({ gcPercent: n })} className={inputClass} />
-                            <div className={readonlyClass}>{formatMoney(calc.gcSum)}</div>
-                            <VatPercentInput value={m.gcVatPercent} onCommit={n => set({ gcVatPercent: n })} className={inputClass} />
-                            <div className={readonlyClass}>{formatMoney(calc.gcVatAmount)}</div>
-                        </div>
-
-                        <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center py-1.5">
-                            <span className="text-[12.5px] text-ink">Транспорт до ТК с НДС</span>
-                            <span />
-                            <AmountInput value={m.transportAmount} onCommit={n => set({ transportAmount: n })} className={inputClass} />
-                            <VatPercentInput value={m.transportVatPercent} onCommit={n => set({ transportVatPercent: n })} className={inputClass} />
-                            <div className={readonlyClass}>{formatMoney(calc.transportVatAmount)}</div>
-                        </div>
-                    </div>
-
-                    {/* ИТОГИ */}
-                    <div className="rounded-xl border border-[var(--ochre-soft)] bg-[var(--ochre-bg)] p-4 grid grid-cols-2 md:grid-cols-5 gap-4">
-                        <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа без НДС, ₽</p>
-                            <p className="text-[14px] font-bold text-ink tabular-nums">{formatMoney(calc.marginExVat)}</p>
-                        </div>
-                        <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа без НДС, %</p>
-                            <p className="text-[14px] font-bold text-ink tabular-nums">{calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'}</p>
-                        </div>
-                        <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">НДС к уплате, ₽</p>
-                            <p className="text-[14px] font-bold text-ink tabular-nums">{formatMoney(calc.vatPayable)}</p>
-                        </div>
-                        <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, ₽</p>
-                            <p className="text-[14px] font-bold tabular-nums" style={{ color: calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined }}>{formatMoney(calc.marginIncVat)}</p>
-                        </div>
-                        <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, %</p>
-                            <p className="text-[14px] font-bold tabular-nums" style={{ color: calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined }}>{calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'}</p>
                         </div>
                     </div>
                 </div>
 
-                <div className="px-6 py-4 border-t border-line flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0 bg-surface-2/30">
-                    <div />
-                    <div className="flex gap-2 w-full sm:w-auto">
-                        <button onClick={onClose} className="flex-1 sm:flex-none inline-flex items-center justify-center h-9 px-4 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
-                            Отмена
-                        </button>
-                        <button onClick={onSave} className="flex-1 sm:flex-none inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors">
-                            {isEditing ? 'Сохранить изменения' : 'Добавить материал'}
-                        </button>
-                    </div>
+                <div className="px-6 py-4 border-t border-line flex flex-col sm:flex-row items-center justify-end gap-3 shrink-0 bg-surface-2/30">
+                    <button onClick={onClose} className="w-full sm:w-auto inline-flex items-center justify-center h-9 px-4 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
+                        Отмена
+                    </button>
+                    <button onClick={onSaveAndGenerate} className="w-full sm:w-auto inline-flex items-center justify-center gap-2 h-9 px-4 rounded-md text-[13px] font-semibold border border-line text-ink-3 hover:bg-surface-2 transition-colors">
+                        <Download size={14} /> Сохранить и сформировать
+                    </button>
+                    <button onClick={onSave} className="w-full sm:w-auto inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors">
+                        {isEditing ? 'Сохранить изменения' : 'Создать доверенность'}
+                    </button>
                 </div>
             </motion.div>
         </div>
     );
 }
 
-export default MaterialsTab;
+
+export default TrustDeedsTab;
