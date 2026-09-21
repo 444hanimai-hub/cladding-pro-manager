@@ -1,181 +1,259 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, X, Trash2, User as UserIcon, CheckCircle2, Layers, Pencil } from 'lucide-react';
+import { Plus, X, Trash2, Layers, Pencil, ChevronRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { getMarginColor } from '../../lib/financeCalculations';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
-import { Project, Contact, ProjectMaterial } from '../../types';
+import { Project, ProjectMaterial } from '../../types';
 import CompanySelect from '../CompanySelect';
 import MaterialSelect from '../MaterialSelect';
 import { Button } from '../ui/Button';
 import DirectorySelect from './shared/DirectorySelect';
+import {
+    calcMaterial,
+    calcProjectMaterialsTotals,
+    createEmptyProjectMaterial,
+    getMarkupPercent,
+    priceFromMarkup,
+    DEFAULT_VAT_PERCENT,
+} from '../../lib/materialFinance';
 
-/**
- * Вкладка «Материалы» — таблица материалов проекта с добавлением/редактированием.
- * Отгрузки вынесены в отдельную вкладку ShipmentsTab (раньше были здесь же,
- * на одном экране с материалами — просто разрезано без изменения логики).
- */
+// ───────────────────────── форматирование чисел ─────────────────────────
+
+function formatMoney(n: number | null | undefined): string {
+    if (n === null || n === undefined || !isFinite(n)) return '';
+    return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+}
+
+function formatPercent(n: number | null | undefined): string {
+    if (n === null || n === undefined || !isFinite(n)) return '';
+    return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+}
+
+function parseDecimal(raw: string): number {
+    const cleaned = raw.replace(/\s/g, '').replace(',', '.').replace(/[^\d.\-]/g, '');
+    const n = parseFloat(cleaned);
+    return isFinite(n) ? n : 0;
+}
+
+// ───────────────────────── вкладка «Материалы» ─────────────────────────
+
 function MaterialsTab({ project, canEdit, directories }: { project: Project, canEdit: boolean, directories: any }) {
-    const [isAddingMaterial, setIsAddingMaterial] = useState(false);
-    const [editingMaterialId, setEditingMaterialId] = useState<string | null>(null);
+    const [isAdding, setIsAdding] = useState(false);
+    const [isEditing, setIsEditing] = useState(false);
+    const [formData, setFormData] = useState<Partial<ProjectMaterial>>({});
+    const [selectedId, setSelectedId] = useState<string | null>(null);
 
     const materials = project.materials || [];
+    const selected = materials.find(m => m.id === selectedId) || null;
+    const totals = calcProjectMaterialsTotals(materials);
+
+    useEffect(() => {
+        setSelectedId(prev => {
+            if (materials.length === 0) return null;
+            if (prev && materials.some(m => m.id === prev)) return prev;
+            return materials[0].id;
+        });
+    }, [materials.length]);
+
+    const handleAdd = () => {
+        if (!canEdit) return;
+        setFormData(createEmptyProjectMaterial());
+        setIsEditing(false);
+        setIsAdding(true);
+    };
+
+    const handleEdit = (m: ProjectMaterial) => {
+        setFormData(m);
+        setIsEditing(true);
+        setIsAdding(true);
+    };
+
+    const handleSave = async () => {
+        if (!canEdit) return;
+        try {
+            const newMaterial = {
+                ...createEmptyProjectMaterial(),
+                ...formData,
+                id: (isEditing && formData.id) ? formData.id : crypto.randomUUID(),
+            } as ProjectMaterial;
+
+            let updated;
+            if (isEditing && formData.id) {
+                updated = materials.map(m => m.id === formData.id ? newMaterial : m);
+            } else {
+                updated = [...materials, newMaterial];
+            }
+
+            await updateDoc(doc(db, 'projects', project.id), {
+                materials: updated,
+                updatedAt: serverTimestamp(),
+            });
+            setIsAdding(false);
+            setFormData({});
+        } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, `projects/${project.id}`);
+        }
+    };
+
+    const handleDelete = async (id: string) => {
+        if (!canEdit || !window.confirm('Удалить этот материал из проекта?')) return;
+        try {
+            const updated = materials.filter(m => m.id !== id);
+            await updateDoc(doc(db, 'projects', project.id), {
+                materials: updated,
+                updatedAt: serverTimestamp(),
+            });
+            if (selectedId === id) setSelectedId(null);
+        } catch (error) {
+            handleFirestoreError(error, OperationType.DELETE, `projects/${project.id}/materials/${id}`);
+        }
+    };
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-8"
-        >
-            {/* Materials Section */}
-            <div className={cn(
-                "rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]"
-            )}>
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3">
-                    <div className="flex items-center gap-4">
-                        <h3 className={cn("text-[14px] font-serif font-medium flex items-center gap-2", "text-ink")}>
-                            Материалы по проекту
-                            <span className="text-[11px] font-serif opacity-40">· {materials.length}</span>
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+            {materials.length > 0 ? (
+                <div className="flex flex-col lg:grid lg:grid-cols-5 gap-4 items-start">
+                    {/* Таблица — 3/5 */}
+                    <div className="lg:col-span-3 min-w-0 self-start rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3 shrink-0">
+                            <h3 className="text-[14px] font-serif font-medium flex items-center gap-2 text-ink">
+                                Материалы по проекту
+                                <span className="text-[11px] font-serif opacity-40">· {materials.length}</span>
+                            </h3>
+                            {canEdit && (
+                                <Button
+                                    variant="ochre"
+                                    size="sm"
+                                    className="h-8 px-2.5 text-[11.5px] font-semibold"
+                                    icon={<Plus size={12} />}
+                                    onClick={handleAdd}
+                                >
+                                    Добавить материал
+                                </Button>
+                            )}
+                        </div>
+                        <div className="overflow-x-auto custom-scrollbar p-4 pt-2">
+                            <table className="w-full text-left">
+                                <thead>
+                                <tr className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] border-b border-[#E1D8C5]">
+                                    <th className="px-4 py-3 font-bold">Материал / поставщик</th>
+                                    <th className="px-4 py-3 font-bold">Кол-во</th>
+                                    <th className="px-4 py-3 font-bold">Цена прод.</th>
+                                    <th className="px-4 py-3 font-bold">Сумма прод.</th>
+                                    <th className="px-4 py-3 font-bold text-right">Маржа с учётом НДС</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                {materials.map((m) => {
+                                    const calc = calcMaterial(m);
+                                    const isSelected = m.id === selectedId;
+                                    const marginColor = calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined;
+                                    return (
+                                        <tr
+                                            key={m.id}
+                                            onClick={() => setSelectedId(m.id === selectedId ? null : m.id)}
+                                            className={cn(
+                                                "cursor-pointer transition-colors border-b border-[#E1D8C5]/60 last:border-b-0",
+                                                isSelected ? "bg-[#F5E9CC] shadow-[inset_3px_0_0_0_#B07A2C]" : "hover:bg-[#F5F2E9]/80"
+                                            )}
+                                        >
+                                            <td className="px-4 py-3.5">
+                                                <p className="text-[13px] font-bold text-ink truncate max-w-[220px]">{m.materialName || '—'}</p>
+                                                <p className="text-[11px] text-ink-3 truncate max-w-[220px]">{m.supplierName || '—'}</p>
+                                            </td>
+                                            <td className="px-4 py-3.5">
+                                                <span className="text-[12px] font-mono font-semibold text-ink whitespace-nowrap">{formatMoney(m.quantity)} {m.unitName}</span>
+                                            </td>
+                                            <td className="px-4 py-3.5">
+                                                <span className="text-[12px] font-mono font-semibold text-ink">{formatMoney(m.salePrice)}</span>
+                                            </td>
+                                            <td className="px-4 py-3.5">
+                                                <span className="text-[12px] font-mono font-semibold text-ink">{formatMoney(calc.saleSum)}</span>
+                                            </td>
+                                            <td className="px-4 py-3.5 text-right">
+                                                <div className="text-[13px] font-mono font-bold" style={{ color: marginColor }}>{formatMoney(calc.marginIncVat)}</div>
+                                                <div className="text-[11px] font-mono" style={{ color: marginColor }}>{calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'}</div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                                </tbody>
+                                <tfoot>
+                                <tr className="border-t-2 border-[#DAD3C1]">
+                                    <td className="px-4 py-3.5">
+                                        <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-ink-3">Итого по проекту</span>
+                                    </td>
+                                    <td className="px-4 py-3.5" />
+                                    <td className="px-4 py-3.5">
+                                        <p className="text-[10px] uppercase tracking-wide text-ink-4">закуп</p>
+                                        <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.purchaseSum)}</p>
+                                    </td>
+                                    <td className="px-4 py-3.5">
+                                        <span className="text-[13px] font-mono font-bold text-ink">{formatMoney(totals.saleSum)}</span>
+                                    </td>
+                                    <td className="px-4 py-3.5 text-right">
+                                        <div className="text-[13px] font-mono font-bold text-ink">{formatMoney(totals.marginIncVat)}</div>
+                                        <div className="text-[11px] font-mono text-ink-3">{totals.marginIncVatPercent !== null ? `${formatPercent(totals.marginIncVatPercent)}%` : '—'}</div>
+                                    </td>
+                                </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+
+                    {/* Деталка — 2/5 */}
+                    {selected ? (
+                        <MaterialDetailPanel
+                            material={selected}
+                            canEdit={canEdit}
+                            onEdit={() => handleEdit(selected)}
+                            onDelete={() => handleDelete(selected.id)}
+                            onClose={() => setSelectedId(null)}
+                        />
+                    ) : (
+                        <div className="lg:col-span-2 w-full self-start rounded-2xl border border-dashed border-line bg-transparent p-8 flex flex-col items-center justify-center gap-2 text-center">
+                            <ChevronRight size={18} className="text-ink-4 opacity-40" />
+                            <p className="text-[12px] font-medium text-ink-3">Выберите материал</p>
+                            <p className="text-[10px] text-ink-4">для просмотра подробностей</p>
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className="rounded-2xl border transition-colors bg-surface border-line shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-line/50 px-4 py-3">
+                        <h3 className="text-[14px] font-serif font-medium flex items-center gap-2 text-ink">
+                            Материалы по проекту <span className="text-[11px] font-serif opacity-40">· 0</span>
                         </h3>
                     </div>
-                    {materials.length > 0 && canEdit && (
-                        <Button
-                            variant="ochre"
-                            size="sm"
-                            className="h-8 px-2.5 text-[11.5px] font-semibold"
-                            icon={<Plus size={12} />}
-                            onClick={() => {
-                                setEditingMaterialId(null);
-                                setIsAddingMaterial(true);
-                            }}
-                        >
-                            Добавить материал
-                        </Button>
-                    )}
-                </div>
-
-                <div className="p-4">
-                    {materials.length > 0 ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {materials.map((m) => {
-                                const contact = directories.contacts?.find((c: any) => c.id === m.supplierContactId) ||
-                                    (m.supplierId ? directories.contacts?.find((c: any) => c.companyId === m.supplierId) : null);
-
-                                return (
-                                    <div
-                                        key={m.id}
-                                        className={cn(
-                                            "p-4 rounded-xl transition-all group relative border bg-[#F5F2E9] border-transparent hover:bg-[#EBE5D6]"
-                                        )}
-                                    >
-                                        <div className="flex justify-between items-start gap-2.5">
-                                            <div className="flex items-center gap-3 min-w-0 flex-1">
-                                                <div className={cn(
-                                                    "w-8.5 h-8.5 rounded-lg flex items-center justify-center shrink-0",
-                                                    "bg-[#F3EAD4] text-[#A67C3C]"
-                                                )}>
-                                                    <Layers size={14.5} />
-                                                </div>
-                                                <div className="min-w-0 flex-1">
-                                                    <h4 className={cn(
-                                                        "font-bold text-[13.5px] leading-tight truncate",
-                                                        "text-ink"
-                                                    )}>
-                                                        {m.materialName}
-                                                    </h4>
-                                                    <p className={cn(
-                                                        "text-[11.5px] mt-0.5 tracking-wide font-medium truncate",
-                                                        "text-[#8A8574]"
-                                                    )}>
-                                                        {m.quantity} {m.unitName}{m.deliveryMonth ? ` · поставка ${m.deliveryMonth.toLowerCase()}` : ''}
-                                                    </p>
-                                                </div>
-                                            </div>
-
-                                            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center shrink-0">
-                                                {canEdit && <button
-                                                    onClick={() => {
-                                                        setEditingMaterialId(m.id);
-                                                        setIsAddingMaterial(true);
-                                                    }}
-                                                    className={cn(
-                                                        "p-1.5 rounded-full transition-colors",
-                                                        "hover:bg-white/50 text-[#7A7564]"
-                                                    )}
-                                                    title="Редактировать"
-                                                >
-                                                    <Pencil size={12.5} />
-                                                </button>}
-                                            </div>
-                                        </div>
-
-                                        <div className={cn(
-                                            "border-t border-dashed my-2.5",
-                                            "border-[#DAD3C1]"
-                                        )} />
-
-                                        <div className="space-y-0.5">
-                      <span className={cn(
-                          "text-[9px] font-bold uppercase tracking-widest block",
-                          "text-[#8A8574]"
-                      )}>
-                        ПОСТАВЩИК
-                      </span>
-                                            <p className={cn(
-                                                "text-[12.5px] font-bold leading-tight",
-                                                "text-ink"
-                                            )}>
-                                                {m.supplierName || 'Не указан'}
-                                            </p>
-                                            {contact && (
-                                                <p className={cn(
-                                                    "text-[11px] leading-normal font-medium truncate",
-                                                    "text-[#7A7564]"
-                                                )}>
-                                                    {contact.name}{contact.phone ? `, ${contact.phone}` : ''}
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-                                );
-                            })}
+                    <div className="py-7 px-5 m-4 border border-dashed rounded-2xl flex flex-col items-center justify-center gap-3.5 border-line bg-transparent">
+                        <div className="w-9 h-9 rounded-full flex items-center justify-center bg-white border border-line text-ink-3 shadow-sm">
+                            <Layers size={16} />
                         </div>
-                    ) : (
-                        <div className={cn("py-7 px-5 border border-dashed rounded-2xl flex flex-col items-center justify-center gap-3.5", "border-line bg-transparent")}>
-                            <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", "bg-white border border-line text-ink-3 shadow-sm")}>
-                                <Layers size={16} />
-                            </div>
-                            <div className="text-center space-y-0.5">
-                                <p className={cn("text-[13px] font-serif font-medium", "text-ink")}>Материалы ещё не добавлены</p>
-                                <p className={cn("text-[9.5px] uppercase font-semibold tracking-[0.08em] opacity-60", "text-ink-4")}>Сначала добавьте материалы — потом по ним пойдут отгрузки</p>
-                            </div>
-                            <Button
-                                variant="ochre"
-                                size="sm"
-                                className="mt-2 px-3 h-8 text-[11.5px] font-semibold"
-                                icon={<Plus size={12} />}
-                                onClick={() => {
-                                    setEditingMaterialId(null);
-                                    setIsAddingMaterial(true);
-                                }}
-                                style={{ display: canEdit ? undefined : 'none' }}
-                            >
+                        <div className="text-center space-y-0.5">
+                            <p className="text-[13px] font-serif font-medium text-ink">Материалы ещё не добавлены</p>
+                            <p className="text-[9.5px] uppercase font-semibold tracking-[0.08em] opacity-60 text-ink-4">Здесь формируется смета проекта</p>
+                        </div>
+                        {canEdit && (
+                            <Button variant="ochre" size="sm" className="mt-2 px-3 h-8 text-[11.5px] font-semibold" icon={<Plus size={12} />} onClick={handleAdd}>
                                 Добавить материал
                             </Button>
-                        </div>
-                    )}
+                        )}
+                    </div>
                 </div>
-            </div>
-
+            )}
 
             <AnimatePresence>
-                {isAddingMaterial && (
+                {isAdding && (
                     <MaterialModal
-                        project={project}
-                        editingId={editingMaterialId}
-                        onClose={() => setIsAddingMaterial(false)}
+                        formData={formData}
+                        setFormData={setFormData}
+                        onClose={() => { setIsAdding(false); setFormData({}); }}
+                        onSave={handleSave}
                         directories={directories}
+                        isEditing={isEditing}
                     />
                 )}
             </AnimatePresence>
@@ -183,347 +261,419 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
     );
 }
 
-function MaterialModal({ project, editingId, onClose, directories }: { project: Project, editingId: string | null, onClose: () => void, directories: any }) {
-    const editingMaterial = project.materials?.find(m => m.id === editingId);
-    const [form, setForm] = useState<Partial<ProjectMaterial>>(editingMaterial || {
-        materialName: '',
-        quantity: undefined,
-        unitName: 'шт.',
-        deliveryMonth: '',
-        supplierName: '',
-        supplierContactId: ''
-    });
+// ───────────────────────── правая панель с деталями ─────────────────────────
 
-    const [showAddSupplierContact, setShowAddSupplierContact] = useState(false);
-    const [supplierContact, setSupplierContact] = useState({ name: '', position: '', phone: '' });
-    const [availableContacts, setAvailableContacts] = useState<Contact[]>([]);
-
-    const selectedSupplierCompany = directories.companies?.find((c: any) => c.name === form.supplierName);
-    const supplierId = selectedSupplierCompany?.id;
-
-    // Track contacts for the selected supplier
-    useEffect(() => {
-        if (supplierId) {
-            const q = query(collection(db, 'contacts'), where('companyId', '==', supplierId));
-            const unsubscribe = onSnapshot(q, (snapshot) => {
-                setAvailableContacts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Contact)));
-            });
-            return () => unsubscribe();
-        } else {
-            setAvailableContacts([]);
-        }
-    }, [supplierId]);
-
-    const handleCreateSupplierContact = async () => {
-        if (!supplierId || !supplierContact.name) return;
-        try {
-            const docRef = await addDoc(collection(db, 'contacts'), {
-                companyId: supplierId,
-                ...supplierContact,
-                createdAt: serverTimestamp()
-            });
-            setForm(prev => ({ ...prev, supplierContactId: docRef.id }));
-            setSupplierContact({ name: '', position: '', phone: '' });
-            setShowAddSupplierContact(false);
-        } catch (error) {
-            console.error(error);
-        }
-    };
-
-    const handleSave = async () => {
-        try {
-            const materials = project.materials || [];
-            const newMaterial = {
-                ...form,
-                quantity: form.quantity || 0,
-                id: editingId || crypto.randomUUID(),
-            } as ProjectMaterial;
-
-            let updated;
-            if (editingId) {
-                updated = materials.map(m => m.id === editingId ? newMaterial : m);
-            } else {
-                updated = [...materials, newMaterial];
-            }
-
-            await updateDoc(doc(db, 'projects', project.id), {
-                materials: updated,
-                updatedAt: serverTimestamp()
-            });
-            onClose();
-        } catch (error) {
-            handleFirestoreError(error, OperationType.WRITE, `projects/${project.id}`);
-        }
-    };
-
-    const handleDelete = async () => {
-        if (!editingId || !confirm('Удалить этот материал из проекта?')) return;
-        try {
-            const updated = (project.materials || []).filter(m => m.id !== editingId);
-            await updateDoc(doc(db, 'projects', project.id), {
-                materials: updated,
-                updatedAt: serverTimestamp()
-            });
-            onClose();
-        } catch (error) {
-            handleFirestoreError(error, OperationType.DELETE, `projects/${project.id}/materials/${editingId}`);
-        }
-    };
-
-    const inputClass = cn(
-        "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4"
+function DetailRow({ label, value, sub, valueColor }: { label: string; value: React.ReactNode; sub?: React.ReactNode; valueColor?: string }) {
+    return (
+        <div className="flex items-start justify-between gap-3 py-2 border-b border-dashed border-[#E5E0D6] last:border-b-0">
+            <span className="text-[12px] text-ink-3 shrink-0">{label}</span>
+            <div className="text-right min-w-0">
+                <div className="text-[13px] font-semibold tabular-nums" style={{ color: valueColor }}>{value}</div>
+                {sub && <div className="text-[10.5px] text-ink-3 mt-0.5 tabular-nums">{sub}</div>}
+            </div>
+        </div>
     );
+}
 
-    const isContactFormOpen = supplierId && (availableContacts.length === 0 || showAddSupplierContact);
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+    return (
+        <div>
+            <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-1.5">{title}</h5>
+            <div>{children}</div>
+        </div>
+    );
+}
+
+function MaterialDetailPanel({ material, canEdit, onEdit, onDelete, onClose }: {
+    material: ProjectMaterial;
+    canEdit: boolean;
+    onEdit: () => void;
+    onDelete: () => void;
+    onClose: () => void;
+}) {
+    const calc = calcMaterial(material);
+    const marginColor = calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined;
+
+    return (
+        <div className="lg:col-span-2 w-full self-start rounded-2xl border border-line bg-surface shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)] overflow-hidden flex flex-col max-h-[75vh]">
+            <div className="shrink-0 px-4 pt-3.5 pb-3 border-b border-[#E8E4DC] bg-[#FCF9F2]">
+                <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                        <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] mb-0.5">Материал</p>
+                        <h4 className="font-serif text-[18px] font-normal text-[#2C2922] leading-[1.15] truncate">{material.materialName || '—'}</h4>
+                        <p className="text-[11.5px] text-ink-3 mt-0.5 truncate">{formatMoney(material.quantity)} {material.unitName} · {material.supplierName || '—'}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        {canEdit && (
+                            <>
+                                <button onClick={onEdit} title="Редактировать" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><Pencil size={13} /></button>
+                                <button onClick={onDelete} title="Удалить" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#A04930] hover:bg-[#F5E6E2] transition-colors"><Trash2 size={13} /></button>
+                            </>
+                        )}
+                        <button onClick={onClose} title="Свернуть" className="w-8 h-8 rounded-full border border-[#E5E0D6] bg-white flex items-center justify-center text-[#8A8574] hover:text-[#2C2922] transition-colors"><X size={13} /></button>
+                    </div>
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 space-y-4 bg-[#FCF9F2]">
+                <DetailSection title="Закуп">
+                    <DetailRow label="Цена закупа с НДС" value={`${formatMoney(material.purchasePrice)} ₽`} />
+                    <DetailRow
+                        label="Сумма закупа с НДС"
+                        value={`${formatMoney(calc.purchaseSum)} ₽`}
+                        sub={`НДС ${material.purchaseVatPercent}% ${formatMoney(calc.purchaseVatAmount)}`}
+                    />
+                </DetailSection>
+
+                <DetailSection title="Продажа">
+                    <DetailRow label="% накрутки" value={calc.markupPercent !== null ? `${formatPercent(calc.markupPercent)}%` : '—'} />
+                    <DetailRow label="Цена продажи с НДС" value={`${formatMoney(material.salePrice)} ₽`} />
+                    <DetailRow
+                        label="Сумма продажи с НДС"
+                        value={`${formatMoney(calc.saleSum)} ₽`}
+                        sub={`НДС ${material.saleVatPercent}% ${formatMoney(calc.saleVatAmount)}`}
+                        valueColor="var(--ochre)"
+                    />
+                </DetailSection>
+
+                <DetailSection title="Услуги">
+                    <DetailRow
+                        label={`Дизайнеру · ${material.designerPercent}%`}
+                        value={`${formatMoney(calc.designerSum)} ₽`}
+                        sub={`НДС ${material.designerVatPercent}% ${formatMoney(calc.designerVatAmount)}`}
+                    />
+                    <DetailRow
+                        label={`ГП · ${material.gcPercent}%`}
+                        value={`${formatMoney(calc.gcSum)} ₽`}
+                        sub={`НДС ${material.gcVatPercent}% ${formatMoney(calc.gcVatAmount)}`}
+                    />
+                    <DetailRow
+                        label="Транспорт до ТК с НДС"
+                        value={`${formatMoney(material.transportAmount)} ₽`}
+                        sub={`НДС ${material.transportVatPercent}% ${formatMoney(calc.transportVatAmount)}`}
+                    />
+                </DetailSection>
+
+                <div className="rounded-xl border border-[var(--ochre-soft)] bg-[var(--ochre-bg)] p-3.5 space-y-1">
+                    <DetailRow label="Маржа без учёта НДС" value={`${formatMoney(calc.marginExVat)} ₽`} />
+                    <DetailRow label="Маржа без учёта НДС, %" value={calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'} />
+                    <DetailRow label="НДС к уплате" value={`${formatMoney(calc.vatPayable)} ₽`} />
+                    <DetailRow label="Маржа с учётом НДС" value={`${formatMoney(calc.marginIncVat)} ₽`} valueColor={marginColor} />
+                    <DetailRow label="Маржа с учётом НДС, %" value={calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'} valueColor={marginColor} />
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ───────────────────────── поля ввода (для модалки) ─────────────────────────
+
+/** Простое денежное/числовое поле: локальный буфер строки, коммит по blur. */
+function AmountInput({ value, onCommit, placeholder = '0', className }: {
+    value: number;
+    onCommit: (n: number) => void;
+    placeholder?: string;
+    className?: string;
+}) {
+    const [text, setText] = useState(value ? formatMoney(value) : '');
+
+    useEffect(() => {
+        setText(value ? formatMoney(value) : '');
+    }, [value]);
+
+    const commit = () => {
+        const n = parseDecimal(text);
+        onCommit(n);
+        setText(n ? formatMoney(n) : '');
+    };
+
+    return (
+        <input
+            type="text"
+            inputMode="decimal"
+            value={text}
+            placeholder={placeholder}
+            onChange={e => setText(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commit(); }}
+            className={className}
+        />
+    );
+}
+
+/** Поле ставки НДС (просто число, без сложной логики, по умолчанию 22). */
+function VatPercentInput({ value, onCommit, className }: { value: number; onCommit: (n: number) => void; className?: string }) {
+    const [text, setText] = useState(String(value ?? DEFAULT_VAT_PERCENT));
+    useEffect(() => { setText(String(value ?? DEFAULT_VAT_PERCENT)); }, [value]);
+    const commit = () => {
+        const n = parseDecimal(text);
+        onCommit(n);
+        setText(String(n));
+    };
+    return (
+        <input
+            type="text"
+            inputMode="decimal"
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commit(); }}
+            className={className}
+        />
+    );
+}
+
+// ───────────────────────── модалка добавления/редактирования ─────────────────────────
+
+function MaterialModal({ formData, setFormData, onClose, onSave, directories, isEditing }: {
+    formData: Partial<ProjectMaterial>;
+    setFormData: (data: Partial<ProjectMaterial>) => void;
+    onClose: () => void;
+    onSave: () => void;
+    directories: any;
+    isEditing: boolean;
+}) {
+    const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
+    const readonlyClass = "w-full bg-surface-2 border border-line rounded-md px-3 h-9 text-[13px] text-ink-3 flex items-center tabular-nums";
+    const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
+    const sectionLabel = "text-[10px] font-bold uppercase tracking-[0.16em] text-[#A67C3C] border-b border-[#A67C3C]/10 pb-1.5 mb-3";
+
+    const m = { ...createEmptyProjectMaterial(), ...formData } as ProjectMaterial;
+    const calc = calcMaterial(m);
+
+    const set = (patch: Partial<ProjectMaterial>) => setFormData({ ...formData, ...patch });
+
+    // ── Связка "% накрутки ↔ цена продажи с НДС" — локальные буферы, пересчёт только по blur/Enter/Tab ──
+    const [markupText, setMarkupText] = useState(calc.markupPercent !== null ? formatPercent(calc.markupPercent) : '');
+    const [salePriceText, setSalePriceText] = useState(m.salePrice ? formatMoney(m.salePrice) : '');
+
+    useEffect(() => {
+        setMarkupText(calc.markupPercent !== null ? formatPercent(calc.markupPercent) : '');
+        setSalePriceText(m.salePrice ? formatMoney(m.salePrice) : '');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [m.purchasePrice, m.salePrice]);
+
+    const commitMarkup = () => {
+        const pct = parseDecimal(markupText);
+        const newSalePrice = priceFromMarkup(m.purchasePrice || 0, pct);
+        set({ salePrice: newSalePrice });
+        setSalePriceText(formatMoney(newSalePrice));
+        setMarkupText(formatPercent(pct));
+    };
+
+    const commitSalePrice = () => {
+        const price = parseDecimal(salePriceText);
+        set({ salePrice: price });
+        const pct = getMarkupPercent(m.purchasePrice || 0, price);
+        setMarkupText(pct !== null ? formatPercent(pct) : '');
+        setSalePriceText(price ? formatMoney(price) : '');
+    };
+
+    const handlePurchasePriceCommit = (newPrice: number) => {
+        set({ purchasePrice: newPrice });
+        // % накрутки — производное значение, просто пересчитаем отображение
+        const pct = getMarkupPercent(newPrice, m.salePrice || 0);
+        setMarkupText(pct !== null ? formatPercent(pct) : '');
+    };
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
-            <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={onClose}
-                className="fixed inset-0 bg-ink/40 backdrop-blur-sm"
-            />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-ink/40 backdrop-blur-sm" />
             <motion.div
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
-                className="relative w-full max-w-[560px] bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto overflow-visible"
+                className="relative w-full max-w-3xl bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
             >
-                {/* Header */}
-                <div className="px-6 py-4 border-b border-line flex items-center justify-between gap-3">
-                    <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
-                        {editingId ? 'Редактировать материал' : 'Добавить материал'}
-                    </h2>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors"
-                    >
+                <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
+                    <div>
+                        <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
+                            {isEditing ? 'Редактировать материал' : 'Добавить материал'}
+                        </h2>
+                        <p className="text-[11px] text-ink-3 mt-0.5">Серые поля рассчитываются автоматически. НДС по умолчанию 22%.</p>
+                    </div>
+                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
                         <X size={16} />
                     </button>
                 </div>
 
-                {/* Body */}
-                <div className="px-6 py-5 flex-1 overflow-visible flex flex-col gap-5">
-                    {/* Материал */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+                    {/* ТОВАР */}
                     <div>
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-2">
-                            МАТЕРИАЛ
-                        </label>
-                        <MaterialSelect
-                            value={form.materialName || ''}
-                            onChange={(name, id) => setForm({...form, materialName: name, materialId: id})}
-                            placeholder="Выбрать из справочника..."
-                        />
-                    </div>
-
-                    {/* Количество, Ед. изм., Месяц поставки */}
-                    <div className="grid grid-cols-3 gap-3">
-                        <div>
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-2">
-                                КОЛИЧЕСТВО
-                            </label>
-                            <input
-                                type="number"
-                                value={form.quantity !== undefined ? form.quantity : ''}
-                                onChange={e => setForm({...form, quantity: e.target.value ? Number(e.target.value) : undefined})}
-                                className={inputClass}
-                                placeholder="0"
-                            />
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-2">
-                                ЕД. ИЗМ.
-                            </label>
-                            <DirectorySelect
-                                value={form.unitName || ''}
-                                options={directories.units}
-                                onChange={v => setForm({...form, unitName: v})}
-                                onAdd={async name => {
-                                    await addDoc(collection(db, 'units'), { name, createdAt: serverTimestamp() });
-                                    setForm({...form, unitName: name});
-                                }}
-                                placeholder="шт., м2..."
-                                className={inputClass}
-                                iconType="unit"
-                            />
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-2">
-                                МЕСЯЦ ПОСТАВКИ
-                            </label>
-                            <input
-                                value={form.deliveryMonth || ''}
-                                onChange={e => setForm({...form, deliveryMonth: e.target.value})}
-                                placeholder="напр. июнь"
-                                className={inputClass}
-                            />
-                        </div>
-                    </div>
-
-                    {/* Поставщик */}
-                    <div>
-                        <div className="flex justify-between items-center mb-2">
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574]">
-                                ПОСТАВЩИК
-                            </label>
-                            {supplierId && !isContactFormOpen && (
-                                <button
-                                    type="button"
-                                    onClick={() => setShowAddSupplierContact(true)}
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11.5px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors"
-                                >
-                                    <Plus size={11} className="text-ochre" /> Добавить контактное лицо
-                                </button>
-                            )}
-                        </div>
-                        <CompanySelect
-                            value={form.supplierName || ''}
-                            onChange={(name, id) => {
-                                setForm({...form, supplierName: name, supplierId: id, supplierContactId: ''});
-                                setShowAddSupplierContact(false);
-                            }}
-                            placeholder="Выбрать компанию-поставщика..."
-                            companyType="Поставщик"
-                            onCreateCompany={{ companyType: 'Поставщик' }}
-                        />
-
-                        {/* Контактные лица */}
-                        {supplierId && (
-                            <div className="mt-3.5">
-                                <p className="text-[10px] font-bold uppercase tracking-widest text-[#8a8574] mb-2">
-                                    КОНТАКТНЫЕ ЛИЦА
-                                </p>
-
-                                {availableContacts.length > 0 && (
-                                    <div className="flex flex-col gap-1.5 max-h-[220px] overflow-y-auto mb-3">
-                                        {availableContacts.map(contact => {
-                                            const selected = form.supplierContactId === contact.id;
-                                            return (
-                                                <div
-                                                    key={contact.id}
-                                                    className={cn(
-                                                        "flex items-center gap-2.5 px-3 py-2.5 rounded-lg border transition-colors group",
-                                                        selected
-                                                            ? "bg-ochre-bg border-[var(--ochre-soft)]"
-                                                            : "bg-surface-2 border-transparent hover:bg-surface hover:border-line"
-                                                    )}
-                                                >
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            setForm(prev => ({
-                                                                ...prev,
-                                                                supplierContactId: selected ? undefined : contact.id
-                                                            }));
-                                                        }}
-                                                        className="flex items-center gap-2.5 flex-1 min-w-0 text-left"
-                                                    >
-                            <span className="w-7 h-7 rounded-full bg-surface border border-line flex items-center justify-center text-ink-3 shrink-0">
-                              <UserIcon size={13} />
-                            </span>
-                                                        <div className="flex-1 min-w-0">
-                                                            <p className="text-[13px] font-semibold text-ink truncate leading-tight">{contact.name}</p>
-                                                            {(contact.position || contact.phone) && (
-                                                                <p className="text-[11px] text-ink-3 truncate mt-0.5">
-                                                                    {contact.position}
-                                                                    {contact.position && contact.phone && ' · '}
-                                                                    {contact.phone && <span className="tabular-nums">{contact.phone}</span>}
-                                                                </p>
-                                                            )}
-                                                        </div>
-                                                    </button>
-                                                    {selected && (
-                                                        <CheckCircle2 size={14} className="text-ochre shrink-0" />
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-
-                                {isContactFormOpen && (
-                                    <div className={cn(
-                                        "p-4 rounded-xl bg-[var(--ochre-bg)] border border-[var(--ochre-soft)] flex flex-col gap-2.5",
-                                        availableContacts.length > 0 && "mt-3"
-                                    )}>
-                                        <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-[var(--ochre)]">
-                                            {availableContacts.length === 0
-                                                ? `Первое контактное лицо для ${form.supplierName || 'компании'}`
-                                                : `Новое контактное лицо для ${form.supplierName}`}
-                                        </p>
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <input
-                                                placeholder="ФИО"
-                                                value={supplierContact.name}
-                                                onChange={e => setSupplierContact({...supplierContact, name: e.target.value})}
-                                                className="bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none placeholder:text-ink-4 h-10"
-                                            />
-                                            <input
-                                                placeholder="Должность"
-                                                value={supplierContact.position}
-                                                onChange={e => setSupplierContact({...supplierContact, position: e.target.value})}
-                                                className="bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none placeholder:text-ink-4 h-10"
-                                            />
-                                            <input
-                                                placeholder="Телефон"
-                                                value={supplierContact.phone}
-                                                onChange={e => setSupplierContact({...supplierContact, phone: e.target.value})}
-                                                className="bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none placeholder:text-ink-4 col-span-2 h-10"
-                                            />
-                                        </div>
-                                        <div className="flex gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={handleCreateSupplierContact}
-                                                disabled={!supplierContact.name}
-                                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold bg-[var(--ochre)] text-[var(--bg-elev)] hover:brightness-95 disabled:opacity-40 disabled:cursor-not-allowed"
-                                            >
-                                                Сохранить контакт
-                                            </button>
-                                            {availableContacts.length > 0 && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => { setShowAddSupplierContact(false); setSupplierContact({ name: '', position: '', phone: '' }); }}
-                                                    className="px-3 py-1.5 rounded-md text-[12px] font-medium text-[#c4a484] hover:bg-surface transition-colors"
-                                                >
-                                                    Отмена
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
+                        <h3 className={sectionLabel}>Товар</h3>
+                        <div className="grid grid-cols-4 gap-3">
+                            <div>
+                                <label className={labelClass}>Наименование</label>
+                                <MaterialSelect
+                                    value={m.materialName || ''}
+                                    onChange={(name, id) => set({ materialName: name, materialId: id })}
+                                    placeholder="Из справочника..."
+                                />
                             </div>
-                        )}
+                            <div>
+                                <label className={labelClass}>Кол-во</label>
+                                <AmountInput value={m.quantity} onCommit={n => set({ quantity: n })} className={inputClass} />
+                            </div>
+                            <div>
+                                <label className={labelClass}>Ед. изм.</label>
+                                <DirectorySelect
+                                    value={m.unitName || ''}
+                                    options={directories.units || []}
+                                    onChange={v => set({ unitName: v })}
+                                    onAdd={async name => {
+                                        await addDoc(collection(db, 'units'), { name, createdAt: serverTimestamp() });
+                                        set({ unitName: name });
+                                    }}
+                                    placeholder="—"
+                                    className={inputClass}
+                                    iconType="unit"
+                                    inputHeight="h-9"
+                                />
+                            </div>
+                            <div>
+                                <label className={labelClass}>Поставщик</label>
+                                <CompanySelect
+                                    value={m.supplierName || ''}
+                                    onChange={(name, id) => set({ supplierName: name, supplierId: id })}
+                                    placeholder="Компания-поставщик..."
+                                    companyType="Поставщик"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ЗАКУП / ПРОДАЖА */}
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="p-4 rounded-xl border border-line bg-surface-2/30">
+                            <h3 className={sectionLabel}>Закуп</h3>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className={labelClass}>Цена закупа с НДС, ₽</label>
+                                    <AmountInput value={m.purchasePrice} onCommit={handlePurchasePriceCommit} className={inputClass} />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Сумма закупа с НДС, ₽</label>
+                                    <div className={readonlyClass}>{formatMoney(calc.purchaseSum)}</div>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-[1fr_70px_110px] gap-2 items-end mt-3">
+                                <label className={cn(labelClass, "mb-0 self-center")}>НДС от закупа</label>
+                                <VatPercentInput value={m.purchaseVatPercent} onCommit={n => set({ purchaseVatPercent: n })} className={inputClass} />
+                                <div className={readonlyClass}>{formatMoney(calc.purchaseVatAmount)}</div>
+                            </div>
+                        </div>
+
+                        <div className="p-4 rounded-xl border border-line bg-surface-2/30">
+                            <h3 className={sectionLabel}>Продажа</h3>
+                            <div className="grid grid-cols-[70px_1fr_1fr] gap-3">
+                                <div>
+                                    <label className={labelClass}>% накр.</label>
+                                    <input
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={markupText}
+                                        onChange={e => setMarkupText(e.target.value)}
+                                        onBlur={commitMarkup}
+                                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commitMarkup(); }}
+                                        className={inputClass}
+                                        placeholder="—"
+                                    />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Цена продажи с НДС, ₽</label>
+                                    <input
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={salePriceText}
+                                        onChange={e => setSalePriceText(e.target.value)}
+                                        onBlur={commitSalePrice}
+                                        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commitSalePrice(); }}
+                                        className={inputClass}
+                                        placeholder="0"
+                                    />
+                                </div>
+                                <div>
+                                    <label className={labelClass}>Сумма продажи с НДС, ₽</label>
+                                    <div className={readonlyClass}>{formatMoney(calc.saleSum)}</div>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-[1fr_70px_110px] gap-2 items-end mt-3">
+                                <label className={cn(labelClass, "mb-0 self-center")}>НДС от продажи</label>
+                                <VatPercentInput value={m.saleVatPercent} onCommit={n => set({ saleVatPercent: n })} className={inputClass} />
+                                <div className={readonlyClass}>{formatMoney(calc.saleVatAmount)}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* УСЛУГИ */}
+                    <div>
+                        <h3 className={sectionLabel}>Услуги</h3>
+                        <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1.5">
+                            <span />
+                            <span className="text-right">%</span>
+                            <span className="text-right">Сумма, ₽</span>
+                            <span className="text-right">НДС, %</span>
+                            <span className="text-right">НДС, ₽</span>
+                        </div>
+
+                        <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center py-1.5">
+                            <span className="text-[12.5px] text-ink">% дизайнеру с НДС</span>
+                            <AmountInput value={m.designerPercent} onCommit={n => set({ designerPercent: n })} className={inputClass} />
+                            <div className={readonlyClass}>{formatMoney(calc.designerSum)}</div>
+                            <VatPercentInput value={m.designerVatPercent} onCommit={n => set({ designerVatPercent: n })} className={inputClass} />
+                            <div className={readonlyClass}>{formatMoney(calc.designerVatAmount)}</div>
+                        </div>
+
+                        <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center py-1.5">
+                            <span className="text-[12.5px] text-ink">% ГП с НДС</span>
+                            <AmountInput value={m.gcPercent} onCommit={n => set({ gcPercent: n })} className={inputClass} />
+                            <div className={readonlyClass}>{formatMoney(calc.gcSum)}</div>
+                            <VatPercentInput value={m.gcVatPercent} onCommit={n => set({ gcVatPercent: n })} className={inputClass} />
+                            <div className={readonlyClass}>{formatMoney(calc.gcVatAmount)}</div>
+                        </div>
+
+                        <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center py-1.5">
+                            <span className="text-[12.5px] text-ink">Транспорт до ТК с НДС</span>
+                            <span />
+                            <AmountInput value={m.transportAmount} onCommit={n => set({ transportAmount: n })} className={inputClass} />
+                            <VatPercentInput value={m.transportVatPercent} onCommit={n => set({ transportVatPercent: n })} className={inputClass} />
+                            <div className={readonlyClass}>{formatMoney(calc.transportVatAmount)}</div>
+                        </div>
+                    </div>
+
+                    {/* ИТОГИ */}
+                    <div className="rounded-xl border border-[var(--ochre-soft)] bg-[var(--ochre-bg)] p-4 grid grid-cols-2 md:grid-cols-5 gap-4">
+                        <div>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа без НДС, ₽</p>
+                            <p className="text-[14px] font-bold text-ink tabular-nums">{formatMoney(calc.marginExVat)}</p>
+                        </div>
+                        <div>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа без НДС, %</p>
+                            <p className="text-[14px] font-bold text-ink tabular-nums">{calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'}</p>
+                        </div>
+                        <div>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">НДС к уплате, ₽</p>
+                            <p className="text-[14px] font-bold text-ink tabular-nums">{formatMoney(calc.vatPayable)}</p>
+                        </div>
+                        <div>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, ₽</p>
+                            <p className="text-[14px] font-bold tabular-nums" style={{ color: calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined }}>{formatMoney(calc.marginIncVat)}</p>
+                        </div>
+                        <div>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, %</p>
+                            <p className="text-[14px] font-bold tabular-nums" style={{ color: calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined }}>{calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'}</p>
+                        </div>
                     </div>
                 </div>
 
-                {/* Footer */}
-                <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-between items-center shrink-0">
-                    <div>
-                        {editingId && (
-                            <button
-                                onClick={handleDelete}
-                                className="px-4 py-2 rounded-md text-[13px] font-semibold text-rose-500 border border-rose-500/20 bg-rose-500/5 hover:bg-rose-500 hover:text-white transition-colors flex items-center gap-1.5"
-                            >
-                                <Trash2 size={14} /> Удалить
-                            </button>
-                        )}
-                    </div>
-                    <div className="flex gap-2">
-                        <button
-                            onClick={onClose}
-                            className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors"
-                        >
+                <div className="px-6 py-4 border-t border-line flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0 bg-surface-2/30">
+                    <div />
+                    <div className="flex gap-2 w-full sm:w-auto">
+                        <button onClick={onClose} className="flex-1 sm:flex-none inline-flex items-center justify-center h-9 px-4 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
                             Отмена
                         </button>
-                        <button
-                            onClick={handleSave}
-                            className="px-4 py-2 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors"
-                        >
-                            {editingId ? 'Сохранить изменения' : 'Добавить материал'}
+                        <button onClick={onSave} className="flex-1 sm:flex-none inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors">
+                            {isEditing ? 'Сохранить изменения' : 'Добавить материал'}
                         </button>
                     </div>
                 </div>
@@ -531,6 +681,5 @@ function MaterialModal({ project, editingId, onClose, directories }: { project: 
         </div>
     );
 }
-
 
 export default MaterialsTab;

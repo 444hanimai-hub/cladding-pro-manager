@@ -85,6 +85,16 @@ export interface Shipment {
   createdAt?: any;
 }
 
+/**
+ * Позиция сметы (материал проекта). Помимо самого товара хранит полный набор
+ * данных для расчёта закупа, продажи, услуг (дизайнер/ГенПодрядчик/транспорт)
+ * и итоговой маржи по формулам ТЗ — см. lib/materialFinance.ts, где считаются
+ * все производные суммы (эти поля НЕ хранятся, а вычисляются на лету).
+ *
+ * Поле salePrice — источник истины для цены продажи; markupPercent (% накрутки)
+ * нигде не хранится, а всегда пересчитывается из purchasePrice/salePrice —
+ * это исключает рассинхронизацию между %-полем и ценой при повторном открытии формы.
+ */
 export interface ProjectMaterial {
   id: string;
   materialId?: string;
@@ -92,10 +102,24 @@ export interface ProjectMaterial {
   quantity: number;
   unitId?: string;
   unitName: string;
-  deliveryMonth?: string;
   supplierId?: string;
   supplierName: string;
-  supplierContactId?: string;
+
+  // Закуп
+  purchasePrice: number;        // цена закупа с НДС, за ед.
+  purchaseVatPercent: number;   // ставка НДС от закупа, % (по умолчанию 22)
+
+  // Продажа
+  salePrice: number;            // цена продажи с НДС, за ед.
+  saleVatPercent: number;       // ставка НДС от продажи, % (по умолчанию 22)
+
+  // Услуги
+  designerPercent: number;      // % дизайнеру с НДС (по умолчанию 0)
+  designerVatPercent: number;   // ставка НДС от вознаграждения дизайнеру, % (по умолчанию 22)
+  gcPercent: number;            // % ГенПодрядчику с НДС (по умолчанию 0)
+  gcVatPercent: number;         // ставка НДС от вознаграждения ГенПодрядчику, % (по умолчанию 22)
+  transportAmount: number;      // транспорт до ТК с НДС, сумма ₽ (по умолчанию 0)
+  transportVatPercent: number;  // ставка НДС от транспорта, % (по умолчанию 22)
 }
 
 /**
