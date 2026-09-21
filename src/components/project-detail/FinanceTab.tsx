@@ -589,10 +589,47 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
         .filter(e => e.id !== editingExpense?.id)
         .reduce((sum, e) => sum + (e.amount || 0), 0);
     const profitBase = contractSum - otherExpensesTotal;
-    const bonusAmount = isManagerBonus && managerPercent > 0 ? Math.round(profitBase * managerPercent / 100) : 0;
-    const effectiveAmount = isManagerBonus ? bonusAmount : amount;
+    const effectiveAmount = amount;
 
     const filteredCats = expenseCategories.filter(c => c.toLowerCase().includes(categorySearch.toLowerCase()));
+
+    // ── Связка "% менеджера ↔ сумма" для категории "Бонус менеджера" — тот же
+    // принцип, что и "% накрутки ↔ цена продажи" в материалах: локальные текстовые
+    // буферы, пересчёт только по потере фокуса/Enter/Tab, без риска зацикливания. ──
+    const parseDecimal = (raw: string): number => {
+        const cleaned = raw.replace(/\s/g, '').replace(',', '.').replace(/[^\d.\-]/g, '');
+        const n = parseFloat(cleaned);
+        return isFinite(n) ? n : 0;
+    };
+    const getPercentFromAmount = (base: number, amt: number): number | null => (base ? (amt * 100) / base : null);
+    const getAmountFromPercent = (base: number, pct: number): number => Math.round((base * pct) / 100);
+
+    const [percentText, setPercentText] = useState(managerPercent ? String(managerPercent) : '');
+    const [amountText, setAmountText] = useState(amount ? amount.toLocaleString('ru-RU') : '');
+
+    useEffect(() => {
+        setPercentText(managerPercent ? String(managerPercent) : '');
+        setAmountText(amount ? amount.toLocaleString('ru-RU') : '');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [category]);
+
+    const commitPercent = () => {
+        const pct = parseDecimal(percentText);
+        const newAmount = getAmountFromPercent(profitBase, pct);
+        setManagerPercent(pct);
+        setAmount(newAmount);
+        setAmountText(newAmount ? newAmount.toLocaleString('ru-RU') : '');
+        setPercentText(pct ? String(pct) : '');
+    };
+
+    const commitAmount = () => {
+        const amt = Math.round(parseDecimal(amountText));
+        setAmount(amt);
+        const pct = getPercentFromAmount(profitBase, amt);
+        setManagerPercent(pct !== null ? Math.round(pct * 100) / 100 : 0);
+        setPercentText(pct !== null ? String(Math.round(pct * 100) / 100) : '');
+        setAmountText(amt ? amt.toLocaleString('ru-RU') : '');
+    };
 
     const handleAttachFiles = async (fileList: FileList | null) => {
         if (!fileList || fileList.length === 0) return;
@@ -696,54 +733,97 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar">
-                    <div className="grid grid-cols-2 gap-4">
+                    {/* Дата / Сумма / % менеджера (последнее — только для категории "Бонус менеджера") */}
+                    <div className={cn("grid gap-3", isManagerBonus ? "grid-cols-[130px_1fr_100px]" : "grid-cols-[130px_1fr]")}>
                         <div>
                             <label className={labelClass}>Дата</label>
                             <DatePicker value={date} onChange={setDate} variant="compact" className="[&_input]:h-9" />
                         </div>
-                        <div className="relative" ref={categoryWrapperRef}>
-                            <label className={labelClass}>Вид расхода</label>
-                            <div className="relative">
+                        <div>
+                            <label className={labelClass}>Сумма, ₽</label>
+                            {isManagerBonus ? (
                                 <input
-                                    ref={categoryInputRef}
                                     type="text"
-                                    value={categoryDropdownOpen ? categorySearch : category}
-                                    onChange={(e) => {
-                                        setCategorySearch(e.target.value);
-                                        if (!categoryDropdownOpen) setCategoryDropdownOpen(true);
-                                    }}
-                                    onFocus={() => { setCategorySearch(''); setCategoryDropdownOpen(true); }}
-                                    placeholder="Выберите категорию..."
+                                    inputMode="decimal"
+                                    value={amountText}
+                                    onChange={(e) => setAmountText(e.target.value)}
+                                    onBlur={commitAmount}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Tab') commitAmount(); }}
+                                    placeholder="0"
                                     className={inputClass}
                                 />
-                                <ChevronDown size={13} className={cn("absolute right-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none transition-transform", categoryDropdownOpen && "rotate-180")} />
-                            </div>
-                            {categoryDropdownOpen && createPortal(
-                                <div id="expense-cat-portal" style={{ position:'absolute', top: portalPos.top, left: portalPos.left, width: portalPos.width, zIndex: 999999 }}>
-                                    <div className="rounded-md bg-surface border border-line shadow-[0_8px_24px_rgba(48,42,28,0.14)] overflow-hidden">
-                                        <div className="max-h-[200px] overflow-y-auto">
-                                            {filteredCats.length > 0 ? filteredCats.map(cat => (
-                                                <button key={cat} type="button"
-                                                        onMouseDown={(e) => { e.preventDefault(); setCategory(cat); setCategoryDropdownOpen(false); setCategorySearch(''); }}
-                                                        className={cn("w-full text-left px-3 py-2 text-[13px] transition-colors hover:bg-surface-2", category === cat ? "bg-ochre-bg text-ochre font-semibold" : "text-ink")}
-                                                >{cat}</button>
-                                            )) : (
-                                                <p className="px-3 py-2 text-[12px] italic text-ink-4">Ничего не найдено</p>
-                                            )}
-                                            {categorySearch.trim() && !expenseCategories.some(c => c.toLowerCase() === categorySearch.toLowerCase().trim()) && (
-                                                <button type="button"
-                                                        onMouseDown={(e) => { e.preventDefault(); setCategory(categorySearch.trim()); setCategoryDropdownOpen(false); setCategorySearch(''); }}
-                                                        className="w-full text-left px-3 py-2 text-[12.5px] font-semibold text-ochre border-t border-line bg-surface hover:bg-surface-2 transition-colors flex items-center gap-2"
-                                                ><Plus size={12} /> Создать «{categorySearch.trim()}»</button>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>,
-                                document.body
+                            ) : (
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={amount ? amount.toLocaleString('ru-RU') : ''}
+                                    onChange={(e) => setAmount(Number(e.target.value.replace(/\D/g, '')) || 0)}
+                                    placeholder="0"
+                                    className={inputClass}
+                                />
                             )}
                         </div>
+                        {isManagerBonus && (
+                            <div>
+                                <label className={labelClass}>% менеджера</label>
+                                <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    value={percentText}
+                                    onChange={(e) => setPercentText(e.target.value)}
+                                    onBlur={commitPercent}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Tab') commitPercent(); }}
+                                    placeholder="0"
+                                    className={inputClass}
+                                />
+                            </div>
+                        )}
                     </div>
 
+                    {/* Вид расхода — во всю ширину */}
+                    <div className="relative" ref={categoryWrapperRef}>
+                        <label className={labelClass}>Вид расхода</label>
+                        <div className="relative">
+                            <input
+                                ref={categoryInputRef}
+                                type="text"
+                                value={categoryDropdownOpen ? categorySearch : category}
+                                onChange={(e) => {
+                                    setCategorySearch(e.target.value);
+                                    if (!categoryDropdownOpen) setCategoryDropdownOpen(true);
+                                }}
+                                onFocus={() => { setCategorySearch(''); setCategoryDropdownOpen(true); }}
+                                placeholder="Выберите категорию..."
+                                className={inputClass}
+                            />
+                            <ChevronDown size={13} className={cn("absolute right-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none transition-transform", categoryDropdownOpen && "rotate-180")} />
+                        </div>
+                        {categoryDropdownOpen && createPortal(
+                            <div id="expense-cat-portal" style={{ position:'absolute', top: portalPos.top, left: portalPos.left, width: portalPos.width, zIndex: 999999 }}>
+                                <div className="rounded-md bg-surface border border-line shadow-[0_8px_24px_rgba(48,42,28,0.14)] overflow-hidden">
+                                    <div className="max-h-[200px] overflow-y-auto">
+                                        {filteredCats.length > 0 ? filteredCats.map(cat => (
+                                            <button key={cat} type="button"
+                                                    onMouseDown={(e) => { e.preventDefault(); setCategory(cat); setCategoryDropdownOpen(false); setCategorySearch(''); }}
+                                                    className={cn("w-full text-left px-3 py-2 text-[13px] transition-colors hover:bg-surface-2", category === cat ? "bg-ochre-bg text-ochre font-semibold" : "text-ink")}
+                                            >{cat}</button>
+                                        )) : (
+                                            <p className="px-3 py-2 text-[12px] italic text-ink-4">Ничего не найдено</p>
+                                        )}
+                                        {categorySearch.trim() && !expenseCategories.some(c => c.toLowerCase() === categorySearch.toLowerCase().trim()) && (
+                                            <button type="button"
+                                                    onMouseDown={(e) => { e.preventDefault(); setCategory(categorySearch.trim()); setCategoryDropdownOpen(false); setCategorySearch(''); }}
+                                                    className="w-full text-left px-3 py-2 text-[12.5px] font-semibold text-ochre border-t border-line bg-surface hover:bg-surface-2 transition-colors flex items-center gap-2"
+                                            ><Plus size={12} /> Создать «{categorySearch.trim()}»</button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>,
+                            document.body
+                        )}
+                    </div>
+
+                    {/* Описание */}
                     <div>
                         <label className={labelClass}>Описание</label>
                         <textarea
@@ -753,38 +833,6 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                             placeholder="Куда и зачем произведён расход..."
                             className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 resize-none"
                         />
-                    </div>
-
-                    <div className={cn("grid gap-3", isManagerBonus ? "grid-cols-[1fr_120px]" : "grid-cols-1")}>
-                        <div>
-                            <label className={labelClass}>Сумма, ₽</label>
-                            <input
-                                type="text"
-                                inputMode="numeric"
-                                value={isManagerBonus ? (bonusAmount > 0 ? bonusAmount.toLocaleString('ru-RU') : '') : (amount ? amount.toLocaleString('ru-RU') : '')}
-                                onChange={(e) => !isManagerBonus && setAmount(Number(e.target.value.replace(/\D/g, '')) || 0)}
-                                readOnly={isManagerBonus}
-                                placeholder={isManagerBonus ? 'авто' : '0'}
-                                className={cn(inputClass, isManagerBonus && "bg-surface-2 text-ink-3 cursor-default")}
-                            />
-                        </div>
-                        {isManagerBonus && (
-                            <div>
-                                <label className={labelClass}>% менеджера</label>
-                                <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    maxLength={3}
-                                    value={managerPercent || ''}
-                                    onChange={(e) => {
-                                        const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
-                                        setManagerPercent(digits ? Number(digits) : 0);
-                                    }}
-                                    placeholder="0"
-                                    className={inputClass}
-                                />
-                            </div>
-                        )}
                     </div>
 
                     <div>
