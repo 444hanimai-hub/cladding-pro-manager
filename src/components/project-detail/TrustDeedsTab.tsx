@@ -141,13 +141,20 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
         setIsEditing(true);
     };
 
-    /** Возвращает true при успешном сохранении, false — если сохранение прервалось (валидация, занятый номер, ошибка записи). */
-    const handleSave = async (): Promise<boolean> => {
-        if (!canEdit) return false;
+    /**
+     * Возвращает ID сохранённой доверенности (новый — при создании, тот же — при
+     * редактировании) при успехе, или null, если сохранение прервалось (валидация,
+     * занятый номер, ошибка записи). ID нужен вызывающему коду (см. handleSaveAndGenerate),
+     * чтобы после генерации документа сохранить driveFileId именно в ЭТОТ документ —
+     * у новой доверенности id появляется только в момент сохранения, поэтому простого
+     * true/false недостаточно.
+     */
+    const handleSave = async (): Promise<string | null> => {
+        if (!canEdit) return null;
         const number = String(formData.number || '').trim();
         if (!number) {
             alert('Укажите номер доверенности — это обязательное поле.');
-            return false;
+            return null;
         }
 
         const path = isEditing && formData.id
@@ -233,26 +240,28 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
             setIsAdding(false);
             setFormData({});
             setOriginalNumber(null);
-            return true;
+            return deedId;
         } catch (error) {
             if (error instanceof NumberTakenError) {
                 const suggested = await getSuggestedTrustDeedNumber(db);
                 setFormData(prev => ({ ...prev, number: suggested }));
                 alert(`Доверенность с номером «${number}» уже существует. Номер в форме обновлён на следующий свободный: ${suggested}.`);
-                return false;
+                return null;
             }
             handleFirestoreError(error, OperationType.WRITE, path);
-            return false;
+            return null;
         }
     };
 
     const handleSaveAndGenerate = async () => {
         const snapshot = { ...formData } as TrustDeed;
-        const saved = await handleSave();
+        const savedId = await handleSave();
         // Если сохранение не удалось (занятый номер / ошибка записи) — не генерируем
         // документ со старыми (несохранёнными) данными.
-        if (!saved) return;
-        await handleGenerateDeed(snapshot);
+        if (!savedId) return;
+        // У новой доверенности id появляется только сейчас, в снимке формы его не было —
+        // без этого driveFileId после генерации сохранился бы не в тот документ (или никуда).
+        await handleGenerateDeed({ ...snapshot, id: savedId });
     };
 
     const handleDelete = async (id: string, number: string) => {
