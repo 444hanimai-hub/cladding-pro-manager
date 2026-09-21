@@ -72,21 +72,34 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
 
         try {
             const blob = await generateTrustDeedDocx(data);
-            if (accessToken) {
-                // Передаём driveFileId уже существующего файла (если он есть) — тогда
-                // содержимое ПЕРЕЗАПИШЕТСЯ на Drive, а не создастся дублирующий файл.
-                const { fileId } = await uploadTrustDeedToDrive(blob, filename, accessToken, deed.driveFileId);
-                // Сохраняем/обновляем driveFileId в самой доверенности, чтобы при
-                // следующей печати снова перезаписать этот же файл, а не плодить новые.
-                if (fileId && fileId !== deed.driveFileId) {
-                    try {
-                        await updateDoc(doc(db, 'trust_deeds', deed.id), { driveFileId: fileId });
-                    } catch (saveIdErr) {
-                        console.error('Не удалось сохранить driveFileId доверенности:', saveIdErr);
-                    }
-                }
-            } else {
+
+            if (!accessToken) {
                 downloadBlob(blob, filename);
+                return;
+            }
+
+            // Если у доверенности уже есть файл на Google Диске — спрашиваем, заменять ли его.
+            // «Да» — перезаписываем существующий файл (без дублей).
+            // «Нет» — Диск не трогаем вообще, просто отдаём свежий файл на скачивание/открытие.
+            if (deed.driveFileId) {
+                const shouldReplace = window.confirm(
+                    `Доверенность №${deed.number} уже есть на Google Диске. Вы хотите её заменить?`
+                );
+                if (!shouldReplace) {
+                    downloadBlob(blob, filename);
+                    return;
+                }
+            }
+
+            const { fileId } = await uploadTrustDeedToDrive(blob, filename, accessToken, deed.driveFileId);
+            // Сохраняем/обновляем driveFileId в самой доверенности, чтобы при
+            // следующей печати снова перезаписать этот же файл, а не плодить новые.
+            if (fileId && fileId !== deed.driveFileId) {
+                try {
+                    await updateDoc(doc(db, 'trust_deeds', deed.id), { driveFileId: fileId });
+                } catch (saveIdErr) {
+                    console.error('Не удалось сохранить driveFileId доверенности:', saveIdErr);
+                }
             }
         } catch (e) {
             console.error('Ошибка генерации документа:', e);
