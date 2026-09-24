@@ -200,7 +200,8 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                         <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.saleSum)}</p>
                                     </td>
                                     <td className="px-4 py-3.5 text-right">
-                                        <span className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.vatPayable)}</span>
+                                        <p className="text-[10px] uppercase tracking-wide text-ink-4">налог</p>
+                                        <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.vatPayable)}</p>
                                     </td>
                                     <td className="px-4 py-3.5 text-right">
                                         <div className="text-[11px] font-mono text-ink-3">{totals.marginIncVatPercent !== null ? `${formatPercent(totals.marginIncVatPercent)}%` : '—'}</div>
