@@ -87,8 +87,14 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                 updated = [...materials, newMaterial];
             }
 
+            // Сумма контракта пересчитывается автоматически от состава/стоимости материалов
+            // при каждом изменении — перезаписывает то, что могло быть введено вручную
+            // во вкладке «Финансы» (возможность редактировать там сумму вручную остаётся,
+            // просто следующее изменение материалов снова её пересчитает).
+            const newTotals = calcProjectMaterialsTotals(updated);
             await updateDoc(doc(db, 'projects', project.id), {
                 materials: updated,
+                'finance.contractSum': newTotals.saleSum,
                 updatedAt: serverTimestamp(),
             });
             setIsAdding(false);
@@ -102,8 +108,10 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
         if (!canEdit || !window.confirm('Удалить этот материал из проекта?')) return;
         try {
             const updated = materials.filter(m => m.id !== id);
+            const newTotals = calcProjectMaterialsTotals(updated);
             await updateDoc(doc(db, 'projects', project.id), {
                 materials: updated,
+                'finance.contractSum': newTotals.saleSum,
                 updatedAt: serverTimestamp(),
             });
             if (selectedId === id) setSelectedId(null);
