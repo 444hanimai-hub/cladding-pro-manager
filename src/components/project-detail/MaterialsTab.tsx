@@ -144,7 +144,7 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                     <th className="px-4 py-3 font-bold">Цена прод.</th>
                                     <th className="px-4 py-3 font-bold">Сумма прод.</th>
                                     <th className="px-4 py-3 font-bold text-right">Налог к уплате</th>
-                                    <th className="px-4 py-3 font-bold text-right">Чистая прибыль</th>
+                                    <th className="px-4 py-3 font-bold text-right" title="Остаток от продажи после закупа, услуг и налогов">Чистая прибыль</th>
                                 </tr>
                                 </thead>
                                 <tbody>
@@ -272,10 +272,10 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
 
 // ───────────────────────── правая панель с деталями ─────────────────────────
 
-function DetailRow({ label, value, sub, valueColor }: { label: string; value: React.ReactNode; sub?: React.ReactNode; valueColor?: string }) {
+function DetailRow({ label, value, sub, valueColor, tooltip }: { label: string; value: React.ReactNode; sub?: React.ReactNode; valueColor?: string; tooltip?: string }) {
     return (
         <div className="flex items-start justify-between gap-3 py-2 border-b border-dashed border-[#E5E0D6] last:border-b-0">
-            <span className="text-[12px] text-ink-3 shrink-0">{label}</span>
+            <span className="text-[12px] text-ink-3 shrink-0" title={tooltip}>{label}</span>
             <div className="text-right min-w-0">
                 <div className="text-[13px] font-semibold tabular-nums" style={{ color: valueColor }}>{value}</div>
                 {sub && <div className="text-[10.5px] text-ink-3 mt-0.5 tabular-nums">{sub}</div>}
@@ -345,7 +345,7 @@ function MaterialDetailPanel({ material, canEdit, onEdit, onDelete, onClose }: {
                     />
                 </DetailSection>
 
-                <DetailSection title="Услуги">
+                <DetailSection title="Услуги в том числе">
                     <DetailRow
                         label={`Дизайнеру · ${material.designerPercent}%`}
                         value={`${formatMoney(calc.designerSum)} ₽`}
@@ -364,10 +364,10 @@ function MaterialDetailPanel({ material, canEdit, onEdit, onDelete, onClose }: {
                 </DetailSection>
 
                 <div className="rounded-xl border border-[var(--ochre-soft)] bg-[var(--ochre-bg)] p-3.5 space-y-1">
-                    <DetailRow label="Маржа с НДС" value={`${formatMoney(calc.marginExVat)} ₽`} />
-                    <DetailRow label="Маржа с НДС, %" value={calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'} />
+                    <DetailRow label="Маржа с НДС" value={`${formatMoney(calc.marginExVat)} ₽`} tooltip="Остаток от продажи после закупа и услуг" />
+                    <DetailRow label="Маржа с НДС, %" value={calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'} tooltip="Остаток от продажи после закупа и услуг" />
                     <DetailRow label="НДС к уплате" value={`${formatMoney(calc.vatPayable)} ₽`} />
-                    <DetailRow label="Чистая прибыль" value={`${formatMoney(calc.marginIncVat)} ₽`} valueColor={marginColor} />
+                    <DetailRow label="Чистая прибыль" value={`${formatMoney(calc.marginIncVat)} ₽`} valueColor={marginColor} tooltip="Остаток от продажи после закупа, услуг и налогов" />
                     <DetailRow label="Рентабельность, %" value={calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'} valueColor={marginColor} />
                 </div>
             </div>
@@ -618,7 +618,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
 
                     {/* УСЛУГИ */}
                     <div>
-                        <h3 className={sectionLabel}>Услуги</h3>
+                        <h3 className={sectionLabel}>Услуги в том числе</h3>
                         <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1.5">
                             <span />
                             <span className="text-right">%</span>
@@ -655,11 +655,11 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                     {/* ИТОГИ */}
                     <div className="rounded-xl border border-[var(--ochre-soft)] bg-[var(--ochre-bg)] p-4 grid grid-cols-2 md:grid-cols-5 gap-4">
                         <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, ₽</p>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1" title="Остаток от продажи после закупа и услуг">Маржа с НДС, ₽</p>
                             <p className="text-[14px] font-bold text-ink tabular-nums">{formatMoney(calc.marginExVat)}</p>
                         </div>
                         <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, %</p>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1" title="Остаток от продажи после закупа и услуг">Маржа с НДС, %</p>
                             <p className="text-[14px] font-bold text-ink tabular-nums">{calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'}</p>
                         </div>
                         <div>
@@ -667,7 +667,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                             <p className="text-[14px] font-bold text-ink tabular-nums">{formatMoney(calc.vatPayable)}</p>
                         </div>
                         <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Чистая прибыль, ₽</p>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1" title="Остаток от продажи после закупа, услуг и налогов">Чистая прибыль, ₽</p>
                             <p className="text-[14px] font-bold tabular-nums" style={{ color: calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined }}>{formatMoney(calc.marginIncVat)}</p>
                         </div>
                         <div>
