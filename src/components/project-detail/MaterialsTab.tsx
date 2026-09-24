@@ -143,7 +143,8 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                     <th className="px-4 py-3 font-bold">Кол-во</th>
                                     <th className="px-4 py-3 font-bold">Цена прод.</th>
                                     <th className="px-4 py-3 font-bold">Сумма прод.</th>
-                                    <th className="px-4 py-3 font-bold text-right">Маржа с учётом НДС</th>
+                                    <th className="px-4 py-3 font-bold text-right">Налог к уплате</th>
+                                    <th className="px-4 py-3 font-bold text-right">Чистая прибыль</th>
                                 </tr>
                                 </thead>
                                 <tbody>
@@ -174,6 +175,9 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                                 <span className="text-[12px] font-mono text-ink">{formatMoney(calc.saleSum)}</span>
                                             </td>
                                             <td className="px-4 py-3.5 text-right">
+                                                <span className="text-[12px] font-mono text-ink">{formatMoney(calc.vatPayable)}</span>
+                                            </td>
+                                            <td className="px-4 py-3.5 text-right">
                                                 <div className="text-[13px] font-mono font-bold" style={{ color: marginColor }}>{formatMoney(calc.marginIncVat)}</div>
                                                 <div className="text-[11px] font-mono" style={{ color: marginColor }}>{calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'}</div>
                                             </td>
@@ -194,6 +198,9 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                     <td className="px-4 py-3.5">
                                         <p className="text-[10px] uppercase tracking-wide text-ink-4">продажа</p>
                                         <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.saleSum)}</p>
+                                    </td>
+                                    <td className="px-4 py-3.5 text-right">
+                                        <span className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.vatPayable)}</span>
                                     </td>
                                     <td className="px-4 py-3.5 text-right">
                                         <div className="text-[11px] font-mono text-ink-3">{totals.marginIncVatPercent !== null ? `${formatPercent(totals.marginIncVatPercent)}%` : '—'}</div>
@@ -356,11 +363,11 @@ function MaterialDetailPanel({ material, canEdit, onEdit, onDelete, onClose }: {
                 </DetailSection>
 
                 <div className="rounded-xl border border-[var(--ochre-soft)] bg-[var(--ochre-bg)] p-3.5 space-y-1">
-                    <DetailRow label="Маржа без учёта НДС" value={`${formatMoney(calc.marginExVat)} ₽`} />
-                    <DetailRow label="Маржа без учёта НДС, %" value={calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'} />
+                    <DetailRow label="Маржа с НДС" value={`${formatMoney(calc.marginExVat)} ₽`} />
+                    <DetailRow label="Маржа с НДС, %" value={calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'} />
                     <DetailRow label="НДС к уплате" value={`${formatMoney(calc.vatPayable)} ₽`} />
-                    <DetailRow label="Маржа с учётом НДС" value={`${formatMoney(calc.marginIncVat)} ₽`} valueColor={marginColor} />
-                    <DetailRow label="Маржа с учётом НДС, %" value={calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'} valueColor={marginColor} />
+                    <DetailRow label="Чистая прибыль" value={`${formatMoney(calc.marginIncVat)} ₽`} valueColor={marginColor} />
+                    <DetailRow label="Рентабельность, %" value={calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'} valueColor={marginColor} />
                 </div>
             </div>
         </div>
@@ -647,11 +654,11 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                     {/* ИТОГИ */}
                     <div className="rounded-xl border border-[var(--ochre-soft)] bg-[var(--ochre-bg)] p-4 grid grid-cols-2 md:grid-cols-5 gap-4">
                         <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа без НДС, ₽</p>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, ₽</p>
                             <p className="text-[14px] font-bold text-ink tabular-nums">{formatMoney(calc.marginExVat)}</p>
                         </div>
                         <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа без НДС, %</p>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, %</p>
                             <p className="text-[14px] font-bold text-ink tabular-nums">{calc.marginExVatPercent !== null ? `${formatPercent(calc.marginExVatPercent)}%` : '—'}</p>
                         </div>
                         <div>
@@ -659,11 +666,11 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                             <p className="text-[14px] font-bold text-ink tabular-nums">{formatMoney(calc.vatPayable)}</p>
                         </div>
                         <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, ₽</p>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Чистая прибыль, ₽</p>
                             <p className="text-[14px] font-bold tabular-nums" style={{ color: calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined }}>{formatMoney(calc.marginIncVat)}</p>
                         </div>
                         <div>
-                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Маржа с НДС, %</p>
+                            <p className="text-[9px] font-semibold uppercase tracking-wide text-[#8A8574] mb-1">Рентабельность, %</p>
                             <p className="text-[14px] font-bold tabular-nums" style={{ color: calc.marginIncVatPercent !== null ? getMarginColor(calc.marginIncVatPercent) : undefined }}>{calc.marginIncVatPercent !== null ? `${formatPercent(calc.marginIncVatPercent)}%` : '—'}</p>
                         </div>
                     </div>

@@ -131,28 +131,32 @@ export interface ProjectMaterialsTotals {
     saleSum: number;
     marginIncVat: number;
     marginIncVatPercent: number | null;
+    vatPayable: number;
 }
 
 /**
  * Итоги по проекту (строка "Итого по проекту" в таблице материалов):
  * маржа — сумма маржи "с учётом НДС" по каждой позиции (подтверждено заказчиком),
- * процент маржи — средневзвешенный по сумме продаж (не среднее арифметическое по строкам).
+ * процент маржи — средневзвешенный по сумме продаж (не среднее арифметическое по строкам),
+ * налог к уплате — просто сумма НДС к уплате по каждой позиции.
  */
 export function calcProjectMaterialsTotals(materials: ProjectMaterial[]): ProjectMaterialsTotals {
     let purchaseSum = 0;
     let saleSum = 0;
     let marginIncVat = 0;
+    let vatPayable = 0;
 
     for (const m of materials) {
         const calc = calcMaterial(m);
         purchaseSum += calc.purchaseSum;
         saleSum += calc.saleSum;
         marginIncVat += calc.marginIncVat;
+        vatPayable += calc.vatPayable;
     }
 
     const marginIncVatPercent = saleSum ? (marginIncVat * 100) / saleSum : null;
 
-    return { purchaseSum, saleSum, marginIncVat, marginIncVatPercent };
+    return { purchaseSum, saleSum, marginIncVat, marginIncVatPercent, vatPayable };
 }
 
 /** Значения по умолчанию для новой позиции сметы. */
