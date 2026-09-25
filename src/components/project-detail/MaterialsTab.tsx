@@ -6,7 +6,7 @@ import { Plus, X, Trash2, Layers, Pencil, ChevronRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { getMarginColor } from '../../lib/financeCalculations';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
-import { Project, ProjectMaterial } from '../../types';
+import { Project, ProjectMaterial, TrustDeed } from '../../types';
 import CompanySelect from '../CompanySelect';
 import MaterialSelect from '../MaterialSelect';
 import { Button } from '../ui/Button';
@@ -40,7 +40,7 @@ function parseDecimal(raw: string): number {
 
 // ───────────────────────── вкладка «Материалы» ─────────────────────────
 
-function MaterialsTab({ project, canEdit, directories }: { project: Project, canEdit: boolean, directories: any }) {
+function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { project: Project, canEdit: boolean, directories: any, trustDeeds?: TrustDeed[] }) {
     const [isAdding, setIsAdding] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [formData, setFormData] = useState<Partial<ProjectMaterial>>({});
@@ -105,7 +105,36 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
     };
 
     const handleDelete = async (id: string) => {
-        if (!canEdit || !window.confirm('Удалить этот материал из проекта?')) return;
+        if (!canEdit) return;
+
+        const material = materials.find(m => m.id === id);
+        if (!material) return;
+
+        // Доверенности, ссылающиеся на этот материал (по ID справочника или по названию,
+        // на случай если materialId не заполнен, например у совсем старых записей).
+        const relatedDeeds = trustDeeds.filter(d =>
+            (material.materialId && d.materialId === material.materialId) ||
+            d.materialName === material.materialName
+        );
+        const hasTrustDeed = relatedDeeds.length > 0;
+
+        // Отгрузки, ссылающиеся на любую из найденных доверенностей.
+        const relatedDeedIds = new Set(relatedDeeds.map(d => d.id));
+        const relatedDeedNumbers = new Set(relatedDeeds.map(d => d.number));
+        const hasShipment = (project.shipments || []).some(s =>
+            relatedDeedIds.has((s as any).trustDeedId) || relatedDeedNumbers.has(s.poaNumber)
+        );
+
+        if (hasTrustDeed && hasShipment) {
+            alert('Материал нельзя удалить: по нему уже оформлена доверенность и зафиксирована отгрузка. Сначала удалите отгрузку и доверенность, если материал больше не нужен в проекте.');
+            return;
+        }
+        if (hasTrustDeed) {
+            alert('Материал нельзя удалить: по нему уже оформлена доверенность. Сначала удалите или измените доверенность, чтобы она не ссылалась на этот материал.');
+            return;
+        }
+        if (!window.confirm('Удалить этот материал из проекта?')) return;
+
         try {
             const updated = materials.filter(m => m.id !== id);
             const newTotals = calcProjectMaterialsTotals(updated);
@@ -212,8 +241,8 @@ function MaterialsTab({ project, canEdit, directories }: { project: Project, can
                                         <p className="text-[12px] font-mono font-bold text-ink">{formatMoney(totals.vatPayable)}</p>
                                     </td>
                                     <td className="px-4 py-3.5 text-right">
-                                        <div className="text-[11px] font-mono text-ink-3">{totals.marginIncVatPercent !== null ? `${formatPercent(totals.marginIncVatPercent)}%` : '—'}</div>
-                                        <div className="text-[13px] font-mono font-bold text-ink">{formatMoney(totals.marginIncVat)}</div>
+                                        <div className="text-[11px] font-mono" style={{ color: totals.marginIncVatPercent !== null ? getMarginColor(totals.marginIncVatPercent) : undefined }}>{totals.marginIncVatPercent !== null ? `${formatPercent(totals.marginIncVatPercent)}%` : '—'}</div>
+                                        <div className="text-[13px] font-mono font-bold" style={{ color: totals.marginIncVatPercent !== null ? getMarginColor(totals.marginIncVatPercent) : undefined }}>{formatMoney(totals.marginIncVat)}</div>
                                     </td>
                                 </tr>
                                 </tfoot>
