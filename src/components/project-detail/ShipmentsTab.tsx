@@ -10,7 +10,7 @@ import { Project, Shipment, TrustDeed } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import { Button } from '../ui/Button';
 import { STATUS_BG, STATUS_COLOR } from '../../lib/statuses';
-import { ShipmentDetailSection, ShipmentDetailField } from './shared/ShipmentDetailField.tsx';
+import { ShipmentDetailSection, ShipmentDetailField } from './shared/ShipmentDetailField';
 
 /**
  * Вкладка «Отгрузки» — таблица отгрузок с деталкой и формой создания/редактирования.
@@ -182,7 +182,7 @@ function ShipmentsTab({ project, canEdit, trustDeeds = [] }: { project: Project,
                                             </td>
                                             <td className="px-4 py-3.5 align-top">
                                                 <p className="text-[12px] font-bold text-ink">{carrierLabel}</p>
-                                                <p className="text-[12px] font-mono font-semibold text-[#5a6b3c]">{formatCurrency(s.totalCarryingCost)}</p>
+                                                <p className="text-[12px] font-mono font-semibold text-[#5a6b3c]">{deed?.rate ? formatCurrency(deed.rate) : '—'}</p>
                                             </td>
                                             <td className="px-2 py-3.5 align-middle text-ink-4">
                                                 <ChevronRight size={14} className={cn("transition-opacity", isSelected ? "opacity-80" : "opacity-30")} />
@@ -351,7 +351,6 @@ function ShipmentDetailPanel({
                     <ShipmentDetailField label="Перевозчик" value={deed?.carrierName} />
                     <ShipmentDetailField label="Водитель" value={deed?.driverName} />
                     <ShipmentDetailField label="Стоимость перевозки" value={deed?.rate ? formatCurrency(deed.rate) : undefined} />
-                    <ShipmentDetailField label="Стоимость перевозки (общая)" value={formatCurrency(shipment.totalCarryingCost || 0)} />
                     <ShipmentDetailField label="Счёт от перевозчика" value={carrierInvoiceLabel || undefined} />
                     <ShipmentDetailField label="УПД перевозчика" value={shipment.carrierUPD} showDivider={false} />
                 </ShipmentDetailSection>
@@ -389,7 +388,6 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 autoNumber: String((project.shipments || []).length + 1),
                 loadingDate: '',
                 unloadingDate: '',
-                totalCarryingCost: 0,
                 carrierUPD: '',
             };
 
@@ -443,7 +441,6 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 scanSentToAccounting: form.scanSentToAccounting || false,
                 loadingDate: form.loadingDate || '',
                 unloadingDate: form.unloadingDate || '',
-                totalCarryingCost: form.totalCarryingCost || 0,
                 carrierUPD: form.carrierUPD || '',
                 createdAt: editingShipment?.createdAt || new Date().toISOString(),
             };
@@ -704,32 +701,16 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                             </div>
                         </div>
 
-                        {/* Строка 2: Стоимость, Стоимость общая */}
-                        <div className="grid grid-cols-2 gap-3">
-                            <div>
-                                <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-1.5">Стоимость перевозки, ₽</label>
-                                <input
-                                    type="text"
-                                    value={selectedDeed ? deedCarryingCost.toLocaleString('ru-RU') : ''}
-                                    readOnly
-                                    className={cn(inputClass, "bg-surface-2 cursor-default text-ink-3")}
-                                    placeholder="— из доверенности"
-                                />
-                            </div>
-                            <div>
-                                <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-1.5">Стоимость перевозки (общая), ₽</label>
-                                <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={form.totalCarryingCost ? form.totalCarryingCost.toLocaleString('ru-RU') : ''}
-                                    onChange={e => {
-                                        const raw = e.target.value.replace(/\s/g, '').replace(/[^\d]/g, '');
-                                        setForm({...form, totalCarryingCost: raw ? Number(raw) : undefined});
-                                    }}
-                                    className={inputClass}
-                                    placeholder="0"
-                                />
-                            </div>
+                        {/* Стоимость перевозки — только из доверенности, отдельного ручного поля больше нет */}
+                        <div>
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-1.5">Стоимость перевозки, ₽</label>
+                            <input
+                                type="text"
+                                value={selectedDeed ? deedCarryingCost.toLocaleString('ru-RU') : ''}
+                                readOnly
+                                className={cn(inputClass, "bg-surface-2 cursor-default text-ink-3")}
+                                placeholder="— из доверенности"
+                            />
                         </div>
                     </div>
                 </div>

@@ -106,11 +106,21 @@ export type ShippingProgressInfo = {
   isComplete: boolean;
 };
 
-/** Процент отгрузки: считаем quantity из доверенностей привязанных к отгрузкам */
+/**
+ * Процент отгрузки: считаем quantity из доверенностей, привязанных к ПОДТВЕРЖДЁННЫМ
+ * отгрузкам — то есть только к тем записям в project.shipments, у которых заполнено
+ * поле incomingUPD (это одно и то же поле для "Входящий УПД" и "Входящий акт", просто
+ * подпись над ним меняется в зависимости от docType — реального отдельного поля для
+ * акта нет).
+ *
+ * Отгрузка без заполненного входящего документа считается ещё не фактической, а лишь
+ * "заготовкой" (такая запись создаётся автоматически вместе с доверенностью, когда
+ * реального движения товара ещё не было) — она НЕ должна двигать прогресс-бар.
+ */
 export function getShippingProgress(
     project: {
       materials?: Array<{ quantity?: number }>;
-      shipments?: Array<{ poaNumber?: string; trustDeedId?: string; quantity?: number }>;
+      shipments?: Array<{ poaNumber?: string; trustDeedId?: string; quantity?: number; incomingUPD?: string }>;
     },
     trustDeeds?: Array<{ number?: string; id?: string; quantity?: number }>
 ): ShippingProgressInfo {
@@ -119,9 +129,13 @@ export function getShippingProgress(
       0
   );
 
+  const confirmedShipments = (project.shipments ?? []).filter(
+      (s) => Boolean(s.incomingUPD && s.incomingUPD.trim() !== '')
+  );
+
   let shippedTotal: number;
   if (trustDeeds && trustDeeds.length > 0) {
-    shippedTotal = (project.shipments ?? []).reduce((acc, s) => {
+    shippedTotal = confirmedShipments.reduce((acc, s) => {
       const deed = s.poaNumber
           ? trustDeeds.find(d => d.number === s.poaNumber)
           : s.trustDeedId
@@ -130,7 +144,7 @@ export function getShippingProgress(
       return acc + (Number(deed?.quantity) || Number(s.quantity) || 0);
     }, 0);
   } else {
-    shippedTotal = (project.shipments ?? []).reduce(
+    shippedTotal = confirmedShipments.reduce(
         (acc, s) => acc + (Number(s.quantity) || 0),
         0
     );
