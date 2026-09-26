@@ -51,10 +51,27 @@ export interface DirectoryItem {
 }
 
 export interface ExpenseCategory extends DirectoryItem {}
+
+/** Вид товара (справочник) — например "Кирпич", "Керамогранит". Заводится ТОЛЬКО
+ * через раздел «Справочники»; на форме материала — строго выбор из существующих,
+ * без возможности создать новый прямо там (в отличие от большинства других полей),
+ * так как на конкретные виды товара завязана бизнес-логика (см. MaterialsTab —
+ * специальная раскладка формы и расчёт количества для вида "Кирпич"). */
+export interface ProductType extends DirectoryItem {}
+
 export interface Material extends DirectoryItem {
-  brand?: string;
-  country?: string;
-  article?: string;
+  /** Вид товара — ссылка на справочник ProductType (id и денормализованное имя) */
+  productTypeId?: string;
+  productTypeName?: string;
+  /** Характеристики — например "1 НФ 250*120*65мм, Цвет: PATINA GREEN BROWN..." */
+  characteristics?: string;
+  /** Производитель — ссылка на companies с companyType = "Производитель" */
+  manufacturerId?: string;
+  manufacturerName?: string;
+  /** Кол-во штук в 1 м² — используется для пересчёта м²↔шт для видов товара типа "Кирпич" */
+  qtyPerM2?: number;
+  /** Кол-во штук в поддоне — используется для расчёта количества поддонов */
+  qtyPerPallet?: number;
 }
 export interface Unit extends DirectoryItem {}
 export interface Driver extends DirectoryItem {
@@ -111,11 +128,29 @@ export interface ProjectMaterial {
   id: string;
   materialId?: string;
   materialName: string;
+  /**
+   * Финальное количество, идущее во все расчёты закупа/продажи (не менялось —
+   * для обычных материалов это просто введённое число, для видов товара с
+   * расчётом по поддонам (см. quantityPallets) сюда автоматически попадает
+   * "количество шт кратно поддону").
+   */
   quantity: number;
   unitId?: string;
   unitName: string;
   supplierId?: string;
   supplierName: string;
+
+  /**
+   * Поля ниже заполняются только для материалов, у которых в справочнике указан
+   * вид товара с расчётом по м²/поддонам (сейчас — "Кирпич"). Хранятся отдельно
+   * от quantity, потому что quantity — это уже округлённое под поддон число, и
+   * при повторном открытии формы редактирования нужно восстановить именно то,
+   * что реально ввёл пользователь, а не обратно вычислять это из quantity.
+   */
+  quantityM2?: number;        // введённое количество м² (округлено до 1 знака)
+  quantityPcsRaw?: number;    // введённое/пересчитанное количество шт ДО округления под поддон
+  quantityPallets?: number;   // количество поддонов — фиксируется в момент расчёта (не пересчитывается
+  // задним числом, если справочные шт-в-поддоне потом изменятся)
 
   // Закуп
   purchasePrice: number;        // цена закупа с НДС, за ед.

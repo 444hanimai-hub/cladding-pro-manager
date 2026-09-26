@@ -2,14 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { collection, onSnapshot, query, addDoc, updateDoc, doc, deleteDoc, serverTimestamp, orderBy } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { Company, Contact, ExpenseCategory, AppUser, DirectoryItem, Material, Carrier } from '../types';
+import { Company, Contact, ExpenseCategory, AppUser, DirectoryItem, Material, Carrier, ProductType } from '../types';
 import {
     User, Plus, Trash2, Edit2, Save, X, Users, Layers, Maximize,
-    Truck, Wallet, Search, Briefcase, Pencil, ChevronDown,
+    Truck, Wallet, Search, Briefcase, Pencil, ChevronDown, Tag,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
+import CompanySelect from './CompanySelect';
 
 const inputCls = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
 const labelCls = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
@@ -17,12 +18,16 @@ const rowCls = "border-b border-[#E1D8C5]/60 last:border-b-0 group transition-co
 const cellCls = "px-4 py-3";
 const editInputCls = "w-full bg-surface-2 border border-line rounded-md px-2 h-8 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors";
 
+// Тип компании "Производитель" — используется в справочнике материалов.
+const MANUFACTURER_COMPANY_TYPE = 'Производитель';
+
 export default function DirectoryManager({ appUser }: { appUser: AppUser | null }) {
-    const [activeTab, setActiveTab] = useState<'companies'|'contacts'|'expense_categories'|'materials'|'units'|'drivers'|'carriers'>('companies');
+    const [activeTab, setActiveTab] = useState<'companies'|'contacts'|'expense_categories'|'materials'|'product_types'|'units'|'drivers'|'carriers'>('companies');
     const [companies, setCompanies] = useState<Company[]>([]);
     const [contacts, setContacts] = useState<Contact[]>([]);
     const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
-    const [materials, setMaterials] = useState<DirectoryItem[]>([]);
+    const [materials, setMaterials] = useState<Material[]>([]);
+    const [productTypes, setProductTypes] = useState<ProductType[]>([]);
     const [units, setUnits] = useState<DirectoryItem[]>([]);
     const [drivers, setDrivers] = useState<DirectoryItem[]>([]);
     const [carriers, setCarriers] = useState<Carrier[]>([]);
@@ -31,19 +36,22 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
     const [newCompanyName, setNewCompanyName] = useState('');
     const [newExpCategoryName, setNewExpCategoryName] = useState('');
     const [newDirectoryItemName, setNewDirectoryItemName] = useState('');
-    const [newMaterialDetails, setNewMaterialDetails] = useState({ brand: '', country: '' });
+    const [newDriverDetails, setNewDriverDetails] = useState({ phone: '', passportSeries: '', passportNumber: '', passportIssuedBy: '', passportIssuedDate: '' });
     const [newCarrierDetails, setNewCarrierDetails] = useState({ contactPerson: '', phone: '', email: '' });
     const [newContact, setNewContact] = useState({ name: '', position: '', phone: '', companyId: '' });
     const [newCompanyType, setNewCompanyType] = useState('');
     const [typeFilter, setTypeFilter] = useState('');
-    const COMPANY_TYPES = ['Заказчик', 'Генподрядчик', 'Подрядчик', 'Архитектор', 'Перевозчик', 'Поставщик'];
+    const [isMaterialModalOpen, setIsMaterialModalOpen] = useState(false);
+    const [editingMaterial, setEditingMaterial] = useState<Material | null>(null);
+    const COMPANY_TYPES = ['Заказчик', 'Генподрядчик', 'Подрядчик', 'Архитектор', 'Перевозчик', 'Поставщик', MANUFACTURER_COMPANY_TYPE];
 
     useEffect(() => {
         const unsubs = [
             onSnapshot(query(collection(db, 'companies'), orderBy('name')), s => setCompanies(s.docs.map(d => ({ id: d.id, ...d.data() } as Company)))),
             onSnapshot(query(collection(db, 'contacts'), orderBy('name')), s => setContacts(s.docs.map(d => ({ id: d.id, ...d.data() } as Contact)))),
             onSnapshot(query(collection(db, 'expense_categories'), orderBy('name')), s => setExpenseCategories(s.docs.map(d => ({ id: d.id, ...d.data() } as ExpenseCategory)))),
-            onSnapshot(query(collection(db, 'materials'), orderBy('name')), s => setMaterials(s.docs.map(d => ({ id: d.id, ...d.data() } as DirectoryItem)))),
+            onSnapshot(query(collection(db, 'materials'), orderBy('name')), s => setMaterials(s.docs.map(d => ({ id: d.id, ...d.data() } as Material)))),
+            onSnapshot(query(collection(db, 'product_types'), orderBy('name')), s => setProductTypes(s.docs.map(d => ({ id: d.id, ...d.data() } as ProductType)))),
             onSnapshot(query(collection(db, 'units'), orderBy('name')), s => setUnits(s.docs.map(d => ({ id: d.id, ...d.data() } as DirectoryItem)))),
             onSnapshot(query(collection(db, 'drivers'), orderBy('name')), s => setDrivers(s.docs.map(d => ({ id: d.id, ...d.data() } as DirectoryItem)))),
             onSnapshot(query(collection(db, 'carriers'), orderBy('name')), s => setCarriers(s.docs.map(d => ({ id: d.id, ...d.data() } as Carrier)))),
@@ -55,6 +63,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
         { id: 'companies' as const,          label: 'Компании',      icon: <Briefcase size={14} />, count: companies.length },
         { id: 'contacts' as const,           label: 'Контакты',      icon: <Users size={14} />,     count: contacts.length },
         { id: 'materials' as const,          label: 'Материалы',     icon: <Layers size={14} />,    count: materials.length },
+        { id: 'product_types' as const,      label: 'Виды товара',   icon: <Tag size={14} />,       count: productTypes.length },
         { id: 'units' as const,              label: 'Ед. измерения', icon: <Maximize size={14} />,  count: units.length },
         { id: 'drivers' as const,            label: 'Водители',      icon: <User size={14} />,      count: drivers.length },
         { id: 'carriers' as const,           label: 'Перевозчики',   icon: <Truck size={14} />,     count: carriers.length },
@@ -67,9 +76,28 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
         contacts:           contacts.filter(c => c.name.toLowerCase().includes(s)),
         expense_categories: expenseCategories.filter(c => c.name.toLowerCase().includes(s)),
         materials:          materials.filter(c => c.name.toLowerCase().includes(s)),
+        product_types:      productTypes.filter(c => c.name.toLowerCase().includes(s)),
         units:              units.filter(c => c.name.toLowerCase().includes(s)),
         drivers:            drivers.filter(c => c.name.toLowerCase().includes(s)),
         carriers:           carriers.filter(c => c.name.toLowerCase().includes(s)),
+    };
+
+    const handleOpenAddMaterial = () => {
+        setEditingMaterial(null);
+        setIsMaterialModalOpen(true);
+    };
+
+    const handleOpenEditMaterial = (m: Material) => {
+        setEditingMaterial(m);
+        setIsMaterialModalOpen(true);
+    };
+
+    const handleAddClick = () => {
+        if (activeTab === 'materials') {
+            handleOpenAddMaterial();
+            return;
+        }
+        setShowAddModal(true);
     };
 
     const handleAdd = async () => {
@@ -80,9 +108,9 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
             } else if (activeTab === 'expense_categories' && newExpCategoryName) {
                 await addDoc(collection(db, 'expense_categories'), { name: newExpCategoryName, createdAt: serverTimestamp() });
                 setNewExpCategoryName('');
-            } else if (activeTab === 'materials' && newDirectoryItemName) {
-                await addDoc(collection(db, 'materials'), { name: newDirectoryItemName, ...newMaterialDetails, createdAt: serverTimestamp() });
-                setNewDirectoryItemName(''); setNewMaterialDetails({ brand: '', country: '' });
+            } else if (activeTab === 'product_types' && newDirectoryItemName) {
+                await addDoc(collection(db, 'product_types'), { name: newDirectoryItemName, createdAt: serverTimestamp() });
+                setNewDirectoryItemName('');
             } else if (activeTab === 'units' && newDirectoryItemName) {
                 await addDoc(collection(db, 'units'), { name: newDirectoryItemName, createdAt: serverTimestamp() });
                 setNewDirectoryItemName('');
@@ -140,7 +168,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                             <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Поиск..."
                                    className="w-48 bg-surface-2 border border-line rounded-md pl-8 pr-3 h-8 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4" />
                         </div>
-                        <button onClick={() => setShowAddModal(true)}
+                        <button onClick={handleAddClick}
                                 className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-[11.5px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors">
                             <Plus size={13} /> Добавить
                         </button>
@@ -149,7 +177,8 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                 <div className="overflow-x-auto">
                     {activeTab === 'companies'          && <CompaniesTable         companies={filtered.companies} typeFilter={typeFilter} setTypeFilter={setTypeFilter} />}
                     {activeTab === 'contacts'           && <ContactsTable          contacts={filtered.contacts} companies={companies} />}
-                    {activeTab === 'materials'          && <MaterialsTable         items={filtered.materials as Material[]} />}
+                    {activeTab === 'materials'          && <MaterialsTable         items={filtered.materials} onEdit={handleOpenEditMaterial} />}
+                    {activeTab === 'product_types'      && <SimpleTable            items={filtered.product_types} collectionName="product_types" icon={<Tag size={13} />} />}
                     {activeTab === 'units'              && <SimpleTable            items={filtered.units}    collectionName="units"    icon={<Maximize size={13} />} />}
                     {activeTab === 'drivers'            && <DriversTable           items={filtered.drivers} />}
                     {activeTab === 'carriers'           && <CarriersTable          items={filtered.carriers as Carrier[]} />}
@@ -157,7 +186,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                 </div>
             </div>
 
-            {/* Add Modal */}
+            {/* Add Modal (для всех справочников, кроме материалов — у них своя модалка ниже) */}
             <AnimatePresence>
                 {showAddModal && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -167,15 +196,16 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                             <div className="px-6 py-4 border-b border-line flex items-center justify-between">
                                 <h3 className="font-serif text-[18px] font-medium text-ink">
                                     {activeTab === 'companies' ? 'Новая компания' : activeTab === 'contacts' ? 'Новый контакт' :
-                                        activeTab === 'expense_categories' ? 'Новый вид расхода' : activeTab === 'materials' ? 'Новый материал' :
-                                            activeTab === 'units' ? 'Новая ед. измерения' : activeTab === 'drivers' ? 'Новый водитель' : 'Новый перевозчик'}
+                                        activeTab === 'expense_categories' ? 'Новый вид расхода' :
+                                            activeTab === 'product_types' ? 'Новый вид товара' :
+                                                activeTab === 'units' ? 'Новая ед. измерения' : activeTab === 'drivers' ? 'Новый водитель' : 'Новый перевозчик'}
                                 </h3>
                                 <button onClick={() => setShowAddModal(false)} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 transition-colors"><X size={16} /></button>
                             </div>
                             <div className="px-6 py-5 space-y-4">
-                                {['companies','expense_categories','materials','units','drivers','carriers'].includes(activeTab) && (
+                                {['companies','expense_categories','product_types','units','drivers','carriers'].includes(activeTab) && (
                                     <div>
-                                        <label className={labelCls}>{activeTab === 'companies' ? 'Название компании' : activeTab === 'expense_categories' ? 'Название' : 'Название'}</label>
+                                        <label className={labelCls}>{activeTab === 'companies' ? 'Название компании' : 'Название'}</label>
                                         <input value={activeTab === 'companies' ? newCompanyName : activeTab === 'expense_categories' ? newExpCategoryName : newDirectoryItemName}
                                                onChange={e => { if (activeTab === 'companies') setNewCompanyName(e.target.value); else if (activeTab === 'expense_categories') setNewExpCategoryName(e.target.value); else setNewDirectoryItemName(e.target.value); }}
                                                placeholder="Введите название..." className={inputCls} autoFocus />
@@ -188,12 +218,6 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                                             <option value="">— не указан —</option>
                                             {COMPANY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                                         </select>
-                                    </div>
-                                )}
-                                {activeTab === 'materials' && (
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <div><label className={labelCls}>Бренд</label><input value={newMaterialDetails.brand} onChange={e => setNewMaterialDetails({...newMaterialDetails, brand: e.target.value})} className={inputCls} /></div>
-                                        <div><label className={labelCls}>Страна</label><input value={newMaterialDetails.country} onChange={e => setNewMaterialDetails({...newMaterialDetails, country: e.target.value})} className={inputCls} /></div>
                                     </div>
                                 )}
                                 {activeTab === 'drivers' && (
@@ -239,6 +263,17 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                             </div>
                         </motion.div>
                     </div>
+                )}
+            </AnimatePresence>
+
+            {/* Модалка добавления/редактирования материала — отдельная, в стиле форм по проекту */}
+            <AnimatePresence>
+                {isMaterialModalOpen && (
+                    <MaterialDirectoryModal
+                        editingMaterial={editingMaterial}
+                        productTypes={productTypes}
+                        onClose={() => { setIsMaterialModalOpen(false); setEditingMaterial(null); }}
+                    />
                 )}
             </AnimatePresence>
         </motion.div>
@@ -299,7 +334,7 @@ function CompaniesTable({ companies, typeFilter, setTypeFilter }: { companies: C
 
     const save = async (id: string) => { await updateDoc(doc(db, 'companies', id), { name: editName, companyType: editType }); setEditingId(null); };
     const del = async (id: string) => { if (confirm('Удалить компанию?')) await deleteDoc(doc(db, 'companies', id)); };
-    const TYPES = ['Заказчик', 'Генподрядчик', 'Подрядчик', 'Архитектор', 'Перевозчик', 'Поставщик'];
+    const TYPES = ['Заказчик', 'Генподрядчик', 'Подрядчик', 'Архитектор', 'Перевозчик', 'Поставщик', MANUFACTURER_COMPANY_TYPE];
 
     return (
         <>
@@ -446,34 +481,31 @@ function ExpenseCategoriesTable({ categories }: { categories: ExpenseCategory[] 
     );
 }
 
-function MaterialsTable({ items }: { items: Material[] }) {
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [editData, setEditData] = useState<Partial<Material>>({});
-    const save = async (id: string) => { await updateDoc(doc(db, 'materials', id), editData); setEditingId(null); };
-    const del = async (id: string) => { if (confirm('Удалить материал?')) await deleteDoc(doc(db, 'materials', id)); };
+/** Таблица материалов — теперь строка целиком кликабельна и открывает модалку редактирования. */
+function MaterialsTable({ items, onEdit }: { items: Material[]; onEdit: (m: Material) => void }) {
+    const del = async (e: React.MouseEvent, id: string) => {
+        e.stopPropagation();
+        if (confirm('Удалить материал из справочника?')) await deleteDoc(doc(db, 'materials', id));
+    };
     return (
         <table className="w-full text-left">
-            <THead cols={['Материал', 'Бренд / Страна', '']} />
+            <THead cols={['Материал', 'Вид товара', 'Производитель', '']} />
             <tbody>
             {items.map(item => (
-                <tr key={item.id} className={rowCls}>
+                <tr key={item.id} className={cn(rowCls, "cursor-pointer")} onClick={() => onEdit(item)}>
                     <td className={cellCls}>
-                        {editingId === item.id
-                            ? <input value={editData.name || ''} onChange={e => setEditData({...editData, name: e.target.value})} className={editInputCls} autoFocus />
-                            : <div className="flex items-center gap-3"><span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0"><Layers size={13} /></span><span className="text-[13px] font-medium text-ink">{item.name}</span></div>
-                        }
+                        <div className="flex items-center gap-3 min-w-0">
+                            <span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0"><Layers size={13} /></span>
+                            <div className="min-w-0">
+                                <p className="text-[13px] font-medium text-ink truncate">{item.name}</p>
+                                {item.characteristics && <p className="text-[10.5px] text-ink-4 truncate max-w-[320px]">{item.characteristics}</p>}
+                            </div>
+                        </div>
                     </td>
-                    <td className={cellCls}>
-                        {editingId === item.id
-                            ? <div className="flex gap-2"><input value={editData.brand || ''} onChange={e => setEditData({...editData, brand: e.target.value})} placeholder="Бренд" className={cn(editInputCls, "w-28")} /><input value={editData.country || ''} onChange={e => setEditData({...editData, country: e.target.value})} placeholder="Страна" className={cn(editInputCls, "w-28")} /></div>
-                            : <div><p className="text-[11px] font-medium text-ink-2">{item.brand || '—'}</p><p className="text-[10px] text-ink-4">{item.country || '—'}</p></div>
-                        }
-                    </td>
+                    <td className={cn(cellCls, "text-[12px] text-ink-3")}>{item.productTypeName || '—'}</td>
+                    <td className={cn(cellCls, "text-[12px] text-ink-3")}>{item.manufacturerName || '—'}</td>
                     <td className={cn(cellCls, "text-right")}>
-                        {editingId === item.id
-                            ? <SaveCancelBtns onSave={() => save(item.id)} onCancel={() => setEditingId(null)} />
-                            : <ActionBtns onEdit={() => { setEditingId(item.id); setEditData(item); }} onDelete={() => del(item.id)} />
-                        }
+                        <ActionBtns onEdit={() => onEdit(item)} onDelete={(e: any) => del(e, item.id)} />
                     </td>
                 </tr>
             ))}
@@ -599,5 +631,156 @@ function SimpleTable({ items, collectionName, icon }: { items: any[], collection
             ))}
             </tbody>
         </table>
+    );
+}
+
+// ───────────────────────── модалка добавления/редактирования материала ─────────────────────────
+
+/**
+ * Отдельное модальное окно для справочника материалов — в едином стиле с формами
+ * материала/отгрузки/доверенности по проекту. Вид товара выбирается ТОЛЬКО из уже
+ * существующих значений справочника (без возможности создать новый прямо здесь) —
+ * на вид товара завязана бизнес-логика в MaterialsTab, поэтому список видов должен
+ * оставаться контролируемым через раздел «Виды товара».
+ */
+function MaterialDirectoryModal({ editingMaterial, productTypes, onClose }: {
+    editingMaterial: Material | null;
+    productTypes: ProductType[];
+    onClose: () => void;
+}) {
+    const isEditing = !!editingMaterial;
+    const [name, setName] = useState(editingMaterial?.name || '');
+    const [productTypeId, setProductTypeId] = useState(editingMaterial?.productTypeId || '');
+    const [characteristics, setCharacteristics] = useState(editingMaterial?.characteristics || '');
+    const [manufacturerName, setManufacturerName] = useState(editingMaterial?.manufacturerName || '');
+    const [manufacturerId, setManufacturerId] = useState(editingMaterial?.manufacturerId || '');
+    const [qtyPerM2, setQtyPerM2] = useState(editingMaterial?.qtyPerM2 ? String(editingMaterial.qtyPerM2) : '');
+    const [qtyPerPallet, setQtyPerPallet] = useState(editingMaterial?.qtyPerPallet ? String(editingMaterial.qtyPerPallet) : '');
+    const [isSaving, setIsSaving] = useState(false);
+
+    const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
+
+    const handleSave = async () => {
+        if (!name.trim()) return;
+        setIsSaving(true);
+        try {
+            const productType = productTypes.find(pt => pt.id === productTypeId);
+            const payload = {
+                name: name.trim(),
+                productTypeId: productTypeId || '',
+                productTypeName: productType?.name || '',
+                characteristics: characteristics.trim(),
+                manufacturerId: manufacturerId || '',
+                manufacturerName: manufacturerName.trim(),
+                qtyPerM2: qtyPerM2 ? Number(qtyPerM2) : null,
+                qtyPerPallet: qtyPerPallet ? Number(qtyPerPallet) : null,
+            };
+            if (isEditing && editingMaterial) {
+                await updateDoc(doc(db, 'materials', editingMaterial.id), payload);
+            } else {
+                await addDoc(collection(db, 'materials'), { ...payload, createdAt: serverTimestamp() });
+            }
+            onClose();
+        } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, 'materials');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-ink/40 backdrop-blur-sm" />
+            <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12 }}
+                className="relative w-full max-w-lg bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
+            >
+                <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
+                    <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
+                        {isEditing ? 'Редактировать материал' : 'Новый материал'}
+                    </h2>
+                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
+                        <X size={16} />
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
+                    <div>
+                        <label className={labelCls}>Вид товара</label>
+                        <select value={productTypeId} onChange={e => setProductTypeId(e.target.value)} className={cn(inputClass, "appearance-none cursor-pointer")}>
+                            <option value="">— не указан —</option>
+                            {productTypes.map(pt => <option key={pt.id} value={pt.id}>{pt.name}</option>)}
+                        </select>
+                        <p className="text-[10.5px] text-ink-4 mt-1">Новый вид товара можно добавить только в разделе «Виды товара»</p>
+                    </div>
+
+                    <div>
+                        <label className={labelCls}>Наименование</label>
+                        <input value={name} onChange={e => setName(e.target.value)} placeholder="Например: кирпич brown velvet light" className={inputClass} autoFocus />
+                    </div>
+
+                    <div>
+                        <label className={labelCls}>Характеристики</label>
+                        <textarea
+                            value={characteristics}
+                            onChange={e => setCharacteristics(e.target.value)}
+                            rows={3}
+                            placeholder="Например: 1 НФ 250*120*65мм, Цвет: PATINA GREEN BROWN..."
+                            className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 resize-none"
+                        />
+                    </div>
+
+                    <div>
+                        <label className={labelCls}>Производитель</label>
+                        <CompanySelect
+                            value={manufacturerName}
+                            onChange={(nm, id) => { setManufacturerName(nm); setManufacturerId(id || ''); }}
+                            placeholder="Выбрать или создать производителя..."
+                            companyType={MANUFACTURER_COMPANY_TYPE}
+                        />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                        <div>
+                            <label className={labelCls}>Кол-во шт в 1 м²</label>
+                            <input
+                                type="text"
+                                inputMode="decimal"
+                                value={qtyPerM2}
+                                onChange={e => setQtyPerM2(e.target.value.replace(',', '.').replace(/[^\d.]/g, ''))}
+                                placeholder="—"
+                                className={inputClass}
+                            />
+                        </div>
+                        <div>
+                            <label className={labelCls}>Кол-во шт в поддоне</label>
+                            <input
+                                type="text"
+                                inputMode="numeric"
+                                value={qtyPerPallet}
+                                onChange={e => setQtyPerPallet(e.target.value.replace(/\D/g, ''))}
+                                placeholder="—"
+                                className={inputClass}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="px-6 py-4 border-t border-line flex justify-end gap-2 shrink-0 bg-surface-2/30">
+                    <button onClick={onClose} className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
+                        Отмена
+                    </button>
+                    <button
+                        onClick={handleSave}
+                        disabled={!name.trim() || isSaving}
+                        className="px-4 py-2 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        {isSaving ? 'Сохранение…' : 'Сохранить'}
+                    </button>
+                </div>
+            </motion.div>
+        </div>
     );
 }

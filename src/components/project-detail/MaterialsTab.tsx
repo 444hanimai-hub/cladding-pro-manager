@@ -20,6 +20,14 @@ import {
     DEFAULT_VAT_PERCENT,
 } from '../../lib/materialFinance';
 
+/**
+ * Вид товара, для которого форма материала считается по м²/штукам/поддонам, а не
+ * просто как единое "количество". Сравнение по имени (не по отдельному флажку) —
+ * так решил заказчик; вид товара при этом заводится только через справочники,
+ * поэтому опечатка здесь означала бы и опечатку в справочнике — маловероятно.
+ */
+const BRICK_PRODUCT_TYPE_NAME = 'Кирпич';
+
 // ───────────────────────── форматирование чисел ─────────────────────────
 
 function formatMoney(n: number | null | undefined): string {
@@ -489,6 +497,76 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
 
     const set = (patch: Partial<ProjectMaterial>) => setFormData({ ...formData, ...patch });
 
+    // ── Вид товара выбранного материала (из справочника) — определяет, нужна ли особая
+    // раскладка формы (кирпич: поставщик отдельной строкой + расчёт по м²/поддонам). ──
+    const selectedMaterialDir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
+    const isBrick = selectedMaterialDir?.productTypeName === BRICK_PRODUCT_TYPE_NAME;
+    const qtyPerM2 = Number(selectedMaterialDir?.qtyPerM2) || 0;
+    const qtyPerPallet = Number(selectedMaterialDir?.qtyPerPallet) || 0;
+    const hasM2Ratio = qtyPerM2 > 0;
+    const hasPalletRatio = qtyPerPallet > 0;
+
+    // Для кирпича единица измерения всегда "шт" (в наименованиях полей уже написано, что
+    // считаем в м²/шт/поддонах) — скрываем поле и проставляем значение автоматически.
+    useEffect(() => {
+        if (isBrick && m.unitName !== 'шт') {
+            set({ unitName: 'шт' });
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isBrick]);
+
+    // ── Связка "кол-во м² ↔ кол-во шт" для кирпича — тот же принцип, что и % накрутки
+    // ↔ цена продажи: локальные буферы, пересчёт только по blur/Enter/Tab. ──
+    const [m2Text, setM2Text] = useState(m.quantityM2 ? String(m.quantityM2) : '');
+    const [pcsText, setPcsText] = useState(m.quantityPcsRaw ? String(m.quantityPcsRaw) : '');
+
+    useEffect(() => {
+        setM2Text(m.quantityM2 ? String(m.quantityM2) : '');
+        setPcsText(m.quantityPcsRaw ? String(m.quantityPcsRaw) : '');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [m.materialId]);
+
+    /**
+     * Пересчитывает м²/поддоны/итоговое quantity от введённого количества штук —
+     * единым патчем (не несколькими последовательными set()), иначе второй set()
+     * перезаписал бы результат первого, читая ту же устаревшую formData.
+     */
+    const applyPcsCalculation = (pcsRaw: number) => {
+        const patch: Partial<ProjectMaterial> = { quantityPcsRaw: pcsRaw };
+        if (hasM2Ratio) {
+            const m2 = Math.round((pcsRaw / qtyPerM2) * 10) / 10; // округление до 1 знака
+            setM2Text(m2 ? String(m2) : '');
+            patch.quantityM2 = m2;
+        }
+        if (hasPalletRatio) {
+            const pallets = pcsRaw > 0 ? Math.ceil(pcsRaw / qtyPerPallet) : 0;
+            const roundedPcs = pallets * qtyPerPallet;
+            patch.quantityPallets = pallets || undefined;
+            patch.quantity = roundedPcs;
+        } else {
+            // Нет данных о шт-в-поддоне в справочнике — автоматический расчёт по поддонам
+            // не делаем, итоговое количество просто равно введённому "сырому" кол-ву шт.
+            patch.quantityPallets = undefined;
+            patch.quantity = pcsRaw;
+        }
+        set(patch);
+    };
+
+    const commitPcs = () => {
+        const pcs = Math.round(parseDecimal(pcsText));
+        setPcsText(pcs ? String(pcs) : '');
+        applyPcsCalculation(pcs);
+    };
+
+    const commitM2 = () => {
+        if (!hasM2Ratio) return;
+        const m2 = Math.round(parseDecimal(m2Text) * 10) / 10;
+        setM2Text(m2 ? String(m2) : '');
+        const pcs = Math.round(m2 * qtyPerM2);
+        setPcsText(pcs ? String(pcs) : '');
+        applyPcsCalculation(pcs);
+    };
+
     // ── Связка "% накрутки ↔ цена продажи с НДС" — локальные буферы, пересчёт только по blur/Enter/Tab ──
     const [markupText, setMarkupText] = useState(calc.markupPercent !== null ? formatPercent(calc.markupPercent) : '');
     const [salePriceText, setSalePriceText] = useState(m.salePrice ? formatMoney(m.salePrice) : '');
@@ -556,37 +634,97 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                     placeholder="Из справочника..."
                                 />
                             </div>
-                            <div className="grid grid-cols-[100px_120px_1fr] gap-3">
-                                <div>
-                                    <label className={labelClass}>Кол-во</label>
-                                    <AmountInput value={m.quantity} onCommit={n => set({ quantity: n })} className={inputClass} />
+                            {isBrick ? (
+                                <>
+                                    {/* Кирпич: поставщик отдельной строкой под наименованием */}
+                                    <div>
+                                        <label className={labelClass}>Поставщик</label>
+                                        <CompanySelect
+                                            value={m.supplierName || ''}
+                                            onChange={(name, id) => set({ supplierName: name, supplierId: id })}
+                                            placeholder="Компания-поставщик..."
+                                            companyType="Поставщик"
+                                        />
+                                    </div>
+                                    {/* Кирпич: 4 количественных поля вместо простого "Кол-во" */}
+                                    <div className="grid grid-cols-4 gap-3">
+                                        <div>
+                                            <label className={labelClass}>Кол-во, м²</label>
+                                            {hasM2Ratio ? (
+                                                <input
+                                                    type="text"
+                                                    inputMode="decimal"
+                                                    value={m2Text}
+                                                    onChange={e => setM2Text(e.target.value)}
+                                                    onBlur={commitM2}
+                                                    onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commitM2(); }}
+                                                    placeholder="0"
+                                                    className={inputClass}
+                                                />
+                                            ) : (
+                                                <div className={readonlyClass} title="Нет данных «шт в 1 м²» в справочнике материала">—</div>
+                                            )}
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Кол-во, шт</label>
+                                            <input
+                                                type="text"
+                                                inputMode="numeric"
+                                                value={pcsText}
+                                                onChange={e => setPcsText(e.target.value)}
+                                                onBlur={commitPcs}
+                                                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commitPcs(); }}
+                                                placeholder="0"
+                                                className={inputClass}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Кол-во поддонов</label>
+                                            <div className={readonlyClass} title={!hasPalletRatio ? 'Нет данных «шт в поддоне» в справочнике материала' : undefined}>
+                                                {hasPalletRatio ? (m.quantityPallets ?? '—') : '—'}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Шт кратно поддону</label>
+                                            <div className={readonlyClass} title={!hasPalletRatio ? 'Нет данных «шт в поддоне» — используется кол-во шт как есть' : undefined}>
+                                                {hasPalletRatio ? formatMoney(m.quantity) : (m.quantity ? formatMoney(m.quantity) : '—')}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="grid grid-cols-[100px_120px_1fr] gap-3">
+                                    <div>
+                                        <label className={labelClass}>Кол-во</label>
+                                        <AmountInput value={m.quantity} onCommit={n => set({ quantity: n })} className={inputClass} />
+                                    </div>
+                                    <div>
+                                        <label className={labelClass}>Ед. изм.</label>
+                                        <DirectorySelect
+                                            value={m.unitName || ''}
+                                            options={directories.units || []}
+                                            onChange={v => set({ unitName: v })}
+                                            onAdd={async name => {
+                                                await addDoc(collection(db, 'units'), { name, createdAt: serverTimestamp() });
+                                                set({ unitName: name });
+                                            }}
+                                            placeholder="—"
+                                            className={inputClass}
+                                            iconType="unit"
+                                            inputHeight="h-9"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className={labelClass}>Поставщик</label>
+                                        <CompanySelect
+                                            value={m.supplierName || ''}
+                                            onChange={(name, id) => set({ supplierName: name, supplierId: id })}
+                                            placeholder="Компания-поставщик..."
+                                            companyType="Поставщик"
+                                        />
+                                    </div>
                                 </div>
-                                <div>
-                                    <label className={labelClass}>Ед. изм.</label>
-                                    <DirectorySelect
-                                        value={m.unitName || ''}
-                                        options={directories.units || []}
-                                        onChange={v => set({ unitName: v })}
-                                        onAdd={async name => {
-                                            await addDoc(collection(db, 'units'), { name, createdAt: serverTimestamp() });
-                                            set({ unitName: name });
-                                        }}
-                                        placeholder="—"
-                                        className={inputClass}
-                                        iconType="unit"
-                                        inputHeight="h-9"
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Поставщик</label>
-                                    <CompanySelect
-                                        value={m.supplierName || ''}
-                                        onChange={(name, id) => set({ supplierName: name, supplierId: id })}
-                                        placeholder="Компания-поставщик..."
-                                        companyType="Поставщик"
-                                    />
-                                </div>
-                            </div>
+                            )}
                         </div>
                     </div>
 
@@ -720,7 +858,16 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                         <button onClick={onClose} className="flex-1 sm:flex-none inline-flex items-center justify-center h-9 px-4 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
                             Отмена
                         </button>
-                        <button onClick={onSave} className="flex-1 sm:flex-none inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors">
+                        <button
+                            onClick={() => {
+                                if (isBrick && !m.quantity) {
+                                    alert('Поле «Кол-во, шт» обязательно для заполнения.');
+                                    return;
+                                }
+                                onSave();
+                            }}
+                            className="flex-1 sm:flex-none inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors"
+                        >
                             {isEditing ? 'Сохранить изменения' : 'Добавить материал'}
                         </button>
                     </div>
