@@ -4,6 +4,7 @@ import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
 import { Plus, X, ChevronRight, FileText, Printer, Pencil, Trash2, Download, ExternalLink } from 'lucide-react';
 import { cn, formatCurrency, formatDateToDisplay } from '../../lib/utils';
+import { STATUS_BG, STATUS_COLOR } from '../../lib/statuses';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
 import { generateTrustDeedDocx, downloadBlob, uploadTrustDeedToDrive, driveFileExists, TrustDeedDocxData } from '../../lib/generateTrustDeedDocx';
 import {
@@ -17,6 +18,35 @@ import { Project, TrustDeed } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import DirectorySelect from './shared/DirectorySelect';
 import { ShipmentDetailField } from './shared/ShipmentDetailField';
+
+/**
+ * Доверенность считается "отгруженной", если по ней есть хотя бы одна отгрузка
+ * с заполненным входящим документом (УПД или акт — общее поле incomingUPD) — то
+ * есть ровно тот же критерий, что уже используется в прогресс-баре "Отгружено"
+ * на верхней карточке проекта (lib/utils.ts, getShippingProgress).
+ */
+function isDeedShipped(deed: TrustDeed, project: Project): boolean {
+    return (project.shipments || []).some(s =>
+        ((s as any).trustDeedId === deed.id || s.poaNumber === deed.number) &&
+        Boolean(s.incomingUPD && s.incomingUPD.trim() !== '')
+    );
+}
+
+const SHIPPED_BADGE_BASE = 'inline-flex items-center px-2 py-0.5 rounded-full text-[8px] font-semibold uppercase whitespace-nowrap font-ui';
+
+function getDeedShippedMeta(shipped: boolean) {
+    if (shipped) {
+        return {
+            label: 'ДА',
+            badge: cn(SHIPPED_BADGE_BASE, 'tracking-[0.04em]'),
+            badgeStyle: { backgroundColor: STATUS_BG.shipping, color: STATUS_COLOR.shipping },
+        };
+    }
+    return {
+        label: 'НЕТ',
+        badge: cn(SHIPPED_BADGE_BASE, 'bg-[#f1d9cf] text-terracotta tracking-[0.12em]'),
+    };
+}
 
 function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken, onConnectCalendar, onClearCalendarToken }: { project: Project, canEdit: boolean, directories: any, trustDeeds: TrustDeed[], accessToken?: string | null, onConnectCalendar?: () => Promise<boolean>, onClearCalendarToken?: () => void }) {
     const [selectedDeedId, setSelectedDeedId] = useState<string | null>(null);
@@ -171,6 +201,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
      * у новой доверенности id появляется только в момент сохранения, поэтому простого
      * true/false недостаточно.
      */
+    /** Возвращает ID сохранённой доверенности при успехе, или null, если сохранение прервалось (валидация, занятый номер, ошибка записи). */
     const handleSave = async (): Promise<string | null> => {
         if (!canEdit) return null;
         const number = String(formData.number || '').trim();
@@ -381,12 +412,14 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                                     <th className="px-4 py-3 font-bold">Водитель</th>
                                     <th className="px-4 py-3 font-bold">Перевозчик</th>
                                     <th className="px-4 py-3 font-bold text-right w-36">Кол-во</th>
+                                    <th className="px-4 py-3 font-bold text-center w-24">Отгружено</th>
                                     <th className="w-8 px-2 py-3" />
                                 </tr>
                                 </thead>
                                 <tbody>
                                 {sortedTrustDeeds.map((deed) => {
                                     const isSelected = deed.id === selectedDeedId;
+                                    const shippedMeta = getDeedShippedMeta(isDeedShipped(deed, project));
                                     return (
                                         <tr
                                             key={deed.id}
@@ -409,6 +442,11 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                                                 const unit = (mat as any)?.unitName || '';
                                                 return `${deed.quantity.toLocaleString('ru-RU')}${unit ? ' ' + unit : ''}`;
                                             })() : '—'}</span></td>
+                                            <td className="px-4 py-3.5 text-center">
+                                                <span className={shippedMeta.badge} style={shippedMeta.badgeStyle}>
+                                                    {shippedMeta.label}
+                                                </span>
+                                            </td>
                                             <td className="px-2 py-3.5 align-middle text-ink-4">
                                                 <ChevronRight size={14} className={cn("transition-opacity", isSelected ? "opacity-80" : "opacity-30")} />
                                             </td>
@@ -455,6 +493,13 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                                 <div>
                                     <h5 className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#B08B57] mb-2">Сроки</h5>
                                     <div>
+                                        <ShipmentDetailField
+                                            label="Отгружено"
+                                            value={(() => {
+                                                const meta = getDeedShippedMeta(isDeedShipped(selectedDeed, project));
+                                                return <span className={meta.badge} style={meta.badgeStyle}>{meta.label}</span>;
+                                            })()}
+                                        />
                                         <ShipmentDetailField label="Дата выдачи" value={selectedDeed.issueDate ? formatDateToDisplay(selectedDeed.issueDate) : undefined} />
                                         <ShipmentDetailField label="Действует до" value={selectedDeed.expiryDate ? formatDateToDisplay(selectedDeed.expiryDate) : undefined} showDivider={false} />
                                     </div>
@@ -551,8 +596,32 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
 
 
 
-function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGenerate, directories, project, isEditing }: { formData: Partial<TrustDeed> & { accountDate?: string; driverPassportIssuedBy?: string; driverPassportIssuedDate?: string; driverPhone?: string }, setFormData: any, onClose: () => void, onSave: () => void, onSaveAndGenerate: () => void, directories: any, project: Project, isEditing: boolean }) {
+function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGenerate, directories, project, isEditing }: { formData: Partial<TrustDeed> & { accountDate?: string; driverPassportIssuedBy?: string; driverPassportIssuedDate?: string; driverPhone?: string }, setFormData: any, onClose: () => void, onSave: () => void | Promise<void>, onSaveAndGenerate: () => void | Promise<void>, directories: any, project: Project, isEditing: boolean }) {
     const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
+    // Блокируем обе кнопки сохранения сразу после первого нажатия — иначе повторный клик
+    // (пока первое сохранение ещё выполняется) запускает второе параллельное сохранение,
+    // которое может честно получить отказ "номер уже занят" от своего же первого запроса.
+    const [isSaving, setIsSaving] = useState(false);
+
+    const handleSaveClick = async () => {
+        if (isSaving) return;
+        setIsSaving(true);
+        try {
+            await onSave();
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleSaveAndGenerateClick = async () => {
+        if (isSaving) return;
+        setIsSaving(true);
+        try {
+            await onSaveAndGenerate();
+        } finally {
+            setIsSaving(false);
+        }
+    };
     const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
     const sectionLabel = "text-[10px] font-bold uppercase tracking-[0.16em] text-[#A67C3C] border-b border-[#A67C3C]/10 pb-1.5";
 
@@ -575,9 +644,15 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
             >
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
                     <div>
-                        <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
-                            {isEditing ? 'Редактировать доверенность' : 'Новая доверенность'}
-                        </h2>
+                        <div className="flex items-center gap-2">
+                            <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
+                                {isEditing ? 'Редактировать доверенность' : 'Новая доверенность'}
+                            </h2>
+                            {isEditing && formData.id && (() => {
+                                const meta = getDeedShippedMeta(isDeedShipped(formData as TrustDeed, project));
+                                return <span className={meta.badge} style={meta.badgeStyle}>Отгружено: {meta.label}</span>;
+                            })()}
+                        </div>
                         <p className="text-[11px] text-ink-3 mt-0.5">Номер сквозной по всей системе (не по проекту) — при желании введите свой</p>
                     </div>
                     <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
@@ -744,11 +819,19 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                     <button onClick={onClose} className="w-full sm:w-auto inline-flex items-center justify-center h-9 px-4 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
                         Отмена
                     </button>
-                    <button onClick={onSaveAndGenerate} className="w-full sm:w-auto inline-flex items-center justify-center gap-2 h-9 px-4 rounded-md text-[13px] font-semibold border border-line text-ink-3 hover:bg-surface-2 transition-colors">
-                        <Download size={14} /> Сохранить и сформировать
+                    <button
+                        onClick={handleSaveAndGenerateClick}
+                        disabled={isSaving}
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-2 h-9 px-4 rounded-md text-[13px] font-semibold border border-line text-ink-3 hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        <Download size={14} /> {isSaving ? 'Сохранение…' : 'Сохранить и печать'}
                     </button>
-                    <button onClick={onSave} className="w-full sm:w-auto inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors">
-                        {isEditing ? 'Сохранить изменения' : 'Создать доверенность'}
+                    <button
+                        onClick={handleSaveClick}
+                        disabled={isSaving}
+                        className="w-full sm:w-auto inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        {isSaving ? 'Сохранение…' : 'Сохранить'}
                     </button>
                 </div>
             </motion.div>
