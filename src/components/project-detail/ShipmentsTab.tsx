@@ -26,7 +26,7 @@ function ShipmentsTab({ project, canEdit, trustDeeds = [] }: { project: Project,
     const shipments = project.shipments || [];
     const selectedShipment = shipments.find(s => s.id === selectedShipmentId) ?? null;
     const allMaterialShipped = React.useMemo(
-        () => getShippingProgress(project, trustDeeds).isComplete,
+        () => getShippingProgress(project).isComplete,
         [project.materials, project.shipments]
     );
 

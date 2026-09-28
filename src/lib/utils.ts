@@ -107,22 +107,26 @@ export type ShippingProgressInfo = {
 };
 
 /**
- * Процент отгрузки: считаем quantity из доверенностей, привязанных к ПОДТВЕРЖДЁННЫМ
- * отгрузкам — то есть только к тем записям в project.shipments, у которых заполнено
- * поле incomingUPD (это одно и то же поле для "Входящий УПД" и "Входящий акт", просто
- * подпись над ним меняется в зависимости от docType — реального отдельного поля для
- * акта нет).
+ * Процент отгрузки: считаем строго по ФАКТИЧЕСКИМ отгрузкам — то есть только по тем
+ * записям в project.shipments, у которых заполнено поле incomingUPD (это одно и то же
+ * поле для "Входящий УПД" и "Входящий акт", просто подпись над ним меняется в
+ * зависимости от docType — реального отдельного поля для акта нет). Количество берём
+ * из собственного поля quantity самой отгрузки — БЕЗ сверки с доверенностью.
  *
  * Отгрузка без заполненного входящего документа считается ещё не фактической, а лишь
  * "заготовкой" (такая запись создаётся автоматически вместе с доверенностью, когда
  * реального движения товара ещё не было) — она НЕ должна двигать прогресс-бар.
+ *
+ * Функция намеренно НЕ принимает доверенности вторым аргументом — раньше здесь была
+ * логика сверки через доверенность (deed.quantity), но это расходится с тем, как
+ * реально фиксируется отгрузка (по вводу входящего УПД/акта в самой отгрузке), и
+ * вносило путаницу и расхождения между разными экранами.
  */
 export function getShippingProgress(
     project: {
       materials?: Array<{ quantity?: number }>;
-      shipments?: Array<{ poaNumber?: string; trustDeedId?: string; quantity?: number; incomingUPD?: string }>;
-    },
-    trustDeeds?: Array<{ number?: string; id?: string; quantity?: number }>
+      shipments?: Array<{ quantity?: number; incomingUPD?: string }>;
+    }
 ): ShippingProgressInfo {
   const materialsTotal = (project.materials ?? []).reduce(
       (acc, m) => acc + (Number(m.quantity) || 0),
@@ -133,22 +137,10 @@ export function getShippingProgress(
       (s) => Boolean(s.incomingUPD && s.incomingUPD.trim() !== '')
   );
 
-  let shippedTotal: number;
-  if (trustDeeds && trustDeeds.length > 0) {
-    shippedTotal = confirmedShipments.reduce((acc, s) => {
-      const deed = s.poaNumber
-          ? trustDeeds.find(d => d.number === s.poaNumber)
-          : s.trustDeedId
-              ? trustDeeds.find(d => d.id === s.trustDeedId)
-              : null;
-      return acc + (Number(deed?.quantity) || Number(s.quantity) || 0);
-    }, 0);
-  } else {
-    shippedTotal = confirmedShipments.reduce(
-        (acc, s) => acc + (Number(s.quantity) || 0),
-        0
-    );
-  }
+  const shippedTotal = confirmedShipments.reduce(
+      (acc, s) => acc + (Number(s.quantity) || 0),
+      0
+  );
 
   const remaining = materialsTotal - shippedTotal;
   const percent = materialsTotal > 0 ? Math.round((shippedTotal * 100) / materialsTotal) : 0;
