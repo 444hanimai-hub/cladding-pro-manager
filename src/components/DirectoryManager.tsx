@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { collection, onSnapshot, query, addDoc, updateDoc, doc, deleteDoc, serverTimestamp, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, query, addDoc, updateDoc, setDoc, doc, deleteDoc, serverTimestamp, orderBy } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { Company, Contact, ExpenseCategory, AppUser, DirectoryItem, Material, Carrier, ProductType } from '../types';
 import {
     User, Plus, Trash2, Edit2, Save, X, Users, Layers, Maximize,
-    Truck, Wallet, Search, Briefcase, Pencil, ChevronDown, Tag,
+    Truck, Wallet, Search, Briefcase, Pencil, ChevronDown, Tag, ImagePlus, Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
 import CompanySelect from './CompanySelect';
+import { SELLER_LEGAL_ENTITY_COMPANY_TYPE } from './shared/DashboardFilters';
+import { uploadMaterialPhoto, deleteMaterialPhoto } from '../lib/firebaseStorage';
 
 const inputCls = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
 const labelCls = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
@@ -20,6 +22,12 @@ const editInputCls = "w-full bg-surface-2 border border-line rounded-md px-2 h-8
 
 // Тип компании "Производитель" — используется в справочнике материалов.
 const MANUFACTURER_COMPANY_TYPE = 'Производитель';
+// Полный список типов компаний — используется и в форме компании, и в фильтре таблицы.
+const COMPANY_ALL_TYPES = ['Заказчик', 'Генподрядчик', 'Подрядчик', 'Архитектор', 'Перевозчик', 'Поставщик', MANUFACTURER_COMPANY_TYPE, SELLER_LEGAL_ENTITY_COMPANY_TYPE];
+
+// Сравнение регистронезависимое — вид товара вводится вручную через справочник,
+// "кирпич"/"Кирпич" не должны считаться разными значениями (см. ту же логику в MaterialsTab.tsx).
+const isBrickProductTypeName = (name?: string) => (name || '').trim().toLowerCase() === 'кирпич';
 
 export default function DirectoryManager({ appUser }: { appUser: AppUser | null }) {
     const [activeTab, setActiveTab] = useState<'companies'|'contacts'|'expense_categories'|'materials'|'product_types'|'units'|'drivers'|'carriers'>('companies');
@@ -33,17 +41,16 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
     const [carriers, setCarriers] = useState<Carrier[]>([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddModal, setShowAddModal] = useState(false);
-    const [newCompanyName, setNewCompanyName] = useState('');
     const [newExpCategoryName, setNewExpCategoryName] = useState('');
     const [newDirectoryItemName, setNewDirectoryItemName] = useState('');
     const [newDriverDetails, setNewDriverDetails] = useState({ phone: '', passportSeries: '', passportNumber: '', passportIssuedBy: '', passportIssuedDate: '' });
     const [newCarrierDetails, setNewCarrierDetails] = useState({ contactPerson: '', phone: '', email: '' });
     const [newContact, setNewContact] = useState({ name: '', position: '', phone: '', companyId: '' });
-    const [newCompanyType, setNewCompanyType] = useState('');
     const [typeFilter, setTypeFilter] = useState('');
     const [isMaterialModalOpen, setIsMaterialModalOpen] = useState(false);
     const [editingMaterial, setEditingMaterial] = useState<Material | null>(null);
-    const COMPANY_TYPES = ['Заказчик', 'Генподрядчик', 'Подрядчик', 'Архитектор', 'Перевозчик', 'Поставщик', MANUFACTURER_COMPANY_TYPE];
+    const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
+    const [editingCompany, setEditingCompany] = useState<Company | null>(null);
 
     useEffect(() => {
         const unsubs = [
@@ -72,7 +79,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
 
     const s = searchTerm.toLowerCase();
     const filtered = {
-        companies:          companies.filter(c => c.name.toLowerCase().includes(s) && (!typeFilter || (c as any).companyType === typeFilter)),
+        companies:          companies.filter(c => c.name.toLowerCase().includes(s) && (!typeFilter || c.companyType === typeFilter)),
         contacts:           contacts.filter(c => c.name.toLowerCase().includes(s)),
         expense_categories: expenseCategories.filter(c => c.name.toLowerCase().includes(s)),
         materials:          materials.filter(c => c.name.toLowerCase().includes(s)),
@@ -92,9 +99,23 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
         setIsMaterialModalOpen(true);
     };
 
+    const handleOpenAddCompany = () => {
+        setEditingCompany(null);
+        setIsCompanyModalOpen(true);
+    };
+
+    const handleOpenEditCompany = (c: Company) => {
+        setEditingCompany(c);
+        setIsCompanyModalOpen(true);
+    };
+
     const handleAddClick = () => {
         if (activeTab === 'materials') {
             handleOpenAddMaterial();
+            return;
+        }
+        if (activeTab === 'companies') {
+            handleOpenAddCompany();
             return;
         }
         setShowAddModal(true);
@@ -102,10 +123,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
 
     const handleAdd = async () => {
         try {
-            if (activeTab === 'companies' && newCompanyName) {
-                await addDoc(collection(db, 'companies'), { name: newCompanyName, companyType: newCompanyType, createdAt: serverTimestamp(), managerId: auth.currentUser?.uid });
-                setNewCompanyName(''); setNewCompanyType('');
-            } else if (activeTab === 'expense_categories' && newExpCategoryName) {
+            if (activeTab === 'expense_categories' && newExpCategoryName) {
                 await addDoc(collection(db, 'expense_categories'), { name: newExpCategoryName, createdAt: serverTimestamp() });
                 setNewExpCategoryName('');
             } else if (activeTab === 'product_types' && newDirectoryItemName) {
@@ -175,7 +193,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                     </div>
                 </div>
                 <div className="overflow-x-auto">
-                    {activeTab === 'companies'          && <CompaniesTable         companies={filtered.companies} typeFilter={typeFilter} setTypeFilter={setTypeFilter} />}
+                    {activeTab === 'companies'          && <CompaniesTable         companies={filtered.companies} typeFilter={typeFilter} setTypeFilter={setTypeFilter} onEdit={handleOpenEditCompany} />}
                     {activeTab === 'contacts'           && <ContactsTable          contacts={filtered.contacts} companies={companies} />}
                     {activeTab === 'materials'          && <MaterialsTable         items={filtered.materials} productTypes={productTypes} companies={companies} onEdit={handleOpenEditMaterial} />}
                     {activeTab === 'product_types'      && <SimpleTable            items={filtered.product_types} collectionName="product_types" icon={<Tag size={13} />} />}
@@ -186,7 +204,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                 </div>
             </div>
 
-            {/* Add Modal (для всех справочников, кроме материалов — у них своя модалка ниже) */}
+            {/* Add Modal (для всех справочников, кроме материалов и компаний — у них свои модалки ниже) */}
             <AnimatePresence>
                 {showAddModal && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -195,7 +213,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                                     className="relative w-full max-w-md bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] overflow-hidden">
                             <div className="px-6 py-4 border-b border-line flex items-center justify-between">
                                 <h3 className="font-serif text-[18px] font-medium text-ink">
-                                    {activeTab === 'companies' ? 'Новая компания' : activeTab === 'contacts' ? 'Новый контакт' :
+                                    {activeTab === 'contacts' ? 'Новый контакт' :
                                         activeTab === 'expense_categories' ? 'Новый вид расхода' :
                                             activeTab === 'product_types' ? 'Новый вид товара' :
                                                 activeTab === 'units' ? 'Новая ед. измерения' : activeTab === 'drivers' ? 'Новый водитель' : 'Новый перевозчик'}
@@ -203,21 +221,12 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                                 <button onClick={() => setShowAddModal(false)} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 transition-colors"><X size={16} /></button>
                             </div>
                             <div className="px-6 py-5 space-y-4">
-                                {['companies','expense_categories','product_types','units','drivers','carriers'].includes(activeTab) && (
+                                {['expense_categories','product_types','units','drivers','carriers'].includes(activeTab) && (
                                     <div>
-                                        <label className={labelCls}>{activeTab === 'companies' ? 'Название компании' : 'Название'}</label>
-                                        <input value={activeTab === 'companies' ? newCompanyName : activeTab === 'expense_categories' ? newExpCategoryName : newDirectoryItemName}
-                                               onChange={e => { if (activeTab === 'companies') setNewCompanyName(e.target.value); else if (activeTab === 'expense_categories') setNewExpCategoryName(e.target.value); else setNewDirectoryItemName(e.target.value); }}
+                                        <label className={labelCls}>Название</label>
+                                        <input value={activeTab === 'expense_categories' ? newExpCategoryName : newDirectoryItemName}
+                                               onChange={e => { if (activeTab === 'expense_categories') setNewExpCategoryName(e.target.value); else setNewDirectoryItemName(e.target.value); }}
                                                placeholder="Введите название..." className={inputCls} autoFocus />
-                                    </div>
-                                )}
-                                {activeTab === 'companies' && (
-                                    <div>
-                                        <label className={labelCls}>Тип компании</label>
-                                        <select value={newCompanyType} onChange={e => setNewCompanyType(e.target.value)} className={cn(inputCls, "appearance-none cursor-pointer")}>
-                                            <option value="">— не указан —</option>
-                                            {COMPANY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                                        </select>
                                     </div>
                                 )}
                                 {activeTab === 'drivers' && (
@@ -277,6 +286,16 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                     />
                 )}
             </AnimatePresence>
+
+            {/* Модалка добавления/редактирования компании */}
+            <AnimatePresence>
+                {isCompanyModalOpen && (
+                    <CompanyDirectoryModal
+                        editingCompany={editingCompany}
+                        onClose={() => { setIsCompanyModalOpen(false); setEditingCompany(null); }}
+                    />
+                )}
+            </AnimatePresence>
         </motion.div>
     );
 }
@@ -308,10 +327,8 @@ function SaveCancelBtns({ onSave, onCancel }: { onSave: () => void; onCancel: ()
     );
 }
 
-function CompaniesTable({ companies, typeFilter, setTypeFilter }: { companies: Company[], typeFilter: string, setTypeFilter: (v: string) => void }) {
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [editName, setEditName] = useState('');
-    const [editType, setEditType] = useState('');
+/** Таблица компаний — строка целиком кликабельна и открывает модалку редактирования (с адресом). */
+function CompaniesTable({ companies, typeFilter, setTypeFilter, onEdit }: { companies: Company[], typeFilter: string, setTypeFilter: (v: string) => void, onEdit: (c: Company) => void }) {
     const [filterOpen, setFilterOpen] = useState(false);
     const filterBtnRef = useRef<HTMLButtonElement>(null);
     const [coords, setCoords] = useState({ top: 0, left: 0 });
@@ -324,7 +341,6 @@ function CompaniesTable({ companies, typeFilter, setTypeFilter }: { companies: C
         }
         const handler = (e: MouseEvent) => {
             if (filterBtnRef.current && !filterBtnRef.current.contains(e.target as Node)) {
-                // check if click is inside dropdown
                 const dropdown = document.getElementById('type-filter-dropdown');
                 if (!dropdown || !dropdown.contains(e.target as Node)) setFilterOpen(false);
             }
@@ -333,16 +349,17 @@ function CompaniesTable({ companies, typeFilter, setTypeFilter }: { companies: C
         return () => document.removeEventListener('mousedown', handler);
     }, [filterOpen]);
 
-    const save = async (id: string) => { await updateDoc(doc(db, 'companies', id), { name: editName, companyType: editType }); setEditingId(null); };
-    const del = async (id: string) => { if (confirm('Удалить компанию?')) await deleteDoc(doc(db, 'companies', id)); };
-    const TYPES = ['Заказчик', 'Генподрядчик', 'Подрядчик', 'Архитектор', 'Перевозчик', 'Поставщик', MANUFACTURER_COMPANY_TYPE];
+    const del = async (e: React.MouseEvent, id: string) => {
+        e.stopPropagation();
+        if (confirm('Удалить компанию?')) await deleteDoc(doc(db, 'companies', id));
+    };
 
     return (
         <>
             {filterOpen && createPortal(
                 <div
                     id="type-filter-dropdown"
-                    style={{ position: 'absolute', top: `${coords.top}px`, left: `${coords.left}px`, zIndex: 999999, minWidth: '160px' }}
+                    style={{ position: 'absolute', top: `${coords.top}px`, left: `${coords.left}px`, zIndex: 999999, minWidth: '180px' }}
                     className="bg-surface border border-line rounded-md shadow-[0_8px_32px_rgba(48,42,28,0.16)] overflow-hidden"
                 >
                     <button
@@ -352,7 +369,7 @@ function CompaniesTable({ companies, typeFilter, setTypeFilter }: { companies: C
                             !typeFilter ? "bg-[var(--ochre-bg)] text-[var(--ochre)] font-semibold" : "text-ink hover:bg-surface-2"
                         )}
                     >Все типы</button>
-                    {TYPES.map(t => (
+                    {COMPANY_ALL_TYPES.map(t => (
                         <button key={t} type="button"
                                 onClick={() => { setTypeFilter(t); setFilterOpen(false); }}
                                 className={cn("w-full flex items-center px-3 py-2 text-[13px] text-left transition-colors",
@@ -380,32 +397,22 @@ function CompaniesTable({ companies, typeFilter, setTypeFilter }: { companies: C
                             {typeFilter && <span className="w-1.5 h-1.5 rounded-full bg-ochre shrink-0" />}
                         </button>
                     </th>
+                    <th className="px-4 py-3 font-bold">Адрес</th>
                     <th className="px-4 py-3 font-bold text-right w-20"></th>
                 </tr>
                 </thead>
                 <tbody>
                 {companies.map(c => (
-                    <tr key={c.id} className={rowCls}>
+                    <tr key={c.id} className={cn(rowCls, "cursor-pointer")} onClick={() => onEdit(c)}>
                         <td className={cellCls}>
-                            {editingId === c.id
-                                ? <input value={editName} onChange={e => setEditName(e.target.value)} className={editInputCls} autoFocus onKeyDown={e => e.key === 'Enter' && save(c.id)} />
-                                : <div className="flex items-center gap-3"><span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0"><Briefcase size={13} /></span><span className="text-[13px] font-medium text-ink">{c.name}</span></div>
-                            }
+                            <div className="flex items-center gap-3"><span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0"><Briefcase size={13} /></span><span className="text-[13px] font-medium text-ink">{c.name}</span></div>
                         </td>
                         <td className={cellCls}>
-                            {editingId === c.id
-                                ? <select value={editType} onChange={e => setEditType(e.target.value)} className={cn(editInputCls, "w-36 appearance-none cursor-pointer")}>
-                                    <option value="">— не указан —</option>
-                                    {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                                </select>
-                                : <span className="text-[13px] font-medium text-ink">{(c as any).companyType || '—'}</span>
-                            }
+                            <span className="text-[13px] font-medium text-ink">{c.companyType || '—'}</span>
                         </td>
+                        <td className={cn(cellCls, "text-[12px] text-ink-3 max-w-[240px] truncate")}>{c.address || '—'}</td>
                         <td className={cn(cellCls, "text-right")}>
-                            {editingId === c.id
-                                ? <SaveCancelBtns onSave={() => save(c.id)} onCancel={() => setEditingId(null)} />
-                                : <ActionBtns onEdit={() => { setEditingId(c.id); setEditName(c.name); setEditType((c as any).companyType || ''); }} onDelete={() => del(c.id)} />
-                            }
+                            <ActionBtns onEdit={() => onEdit(c)} onDelete={(e: any) => del(e, c.id)} />
                         </td>
                     </tr>
                 ))}
@@ -504,7 +511,9 @@ function MaterialsTable({ items, productTypes, companies, onEdit }: { items: Mat
                     <tr key={item.id} className={cn(rowCls, "cursor-pointer")} onClick={() => onEdit(item)}>
                         <td className={cellCls}>
                             <div className="flex items-center gap-3 min-w-0">
-                                <span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0"><Layers size={13} /></span>
+                                <span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0 overflow-hidden">
+                                    {item.photoUrl ? <img src={item.photoUrl} alt="" className="w-full h-full object-cover" /> : <Layers size={13} />}
+                                </span>
                                 <div className="min-w-0">
                                     <p className="text-[13px] font-medium text-ink truncate">{item.name}</p>
                                     {item.characteristics && <p className="text-[10.5px] text-ink-4 truncate max-w-[320px]">{item.characteristics}</p>}
@@ -644,6 +653,94 @@ function SimpleTable({ items, collectionName, icon }: { items: any[], collection
     );
 }
 
+// ───────────────────────── модалка добавления/редактирования компании ─────────────────────────
+
+/** Модалка добавления/редактирования компании — с полем "Адрес" (нужно, например, для реквизитов юр. лица в печатной форме КП). */
+function CompanyDirectoryModal({ editingCompany, onClose }: {
+    editingCompany: Company | null;
+    onClose: () => void;
+}) {
+    const isEditing = !!editingCompany;
+    const [name, setName] = useState(editingCompany?.name || '');
+    const [companyType, setCompanyType] = useState(editingCompany?.companyType || '');
+    const [address, setAddress] = useState(editingCompany?.address || '');
+    const [isSaving, setIsSaving] = useState(false);
+
+    const handleSave = async () => {
+        if (!name.trim()) return;
+        setIsSaving(true);
+        try {
+            const payload = {
+                name: name.trim(),
+                companyType: companyType || '',
+                address: address.trim(),
+            };
+            if (isEditing && editingCompany) {
+                await updateDoc(doc(db, 'companies', editingCompany.id), payload);
+            } else {
+                await addDoc(collection(db, 'companies'), { ...payload, createdAt: serverTimestamp(), managerId: auth.currentUser?.uid });
+            }
+            onClose();
+        } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, 'companies');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-ink/40 backdrop-blur-sm" />
+            <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12 }}
+                className="relative w-full max-w-md bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
+            >
+                <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
+                    <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
+                        {isEditing ? 'Редактировать компанию' : 'Новая компания'}
+                    </h2>
+                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
+                        <X size={16} />
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
+                    <div>
+                        <label className={labelCls}>Название компании</label>
+                        <input value={name} onChange={e => setName(e.target.value)} placeholder="Введите название..." className={inputCls} autoFocus />
+                    </div>
+                    <div>
+                        <label className={labelCls}>Тип компании</label>
+                        <select value={companyType} onChange={e => setCompanyType(e.target.value)} className={cn(inputCls, "appearance-none cursor-pointer")}>
+                            <option value="">— не указан —</option>
+                            {COMPANY_ALL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className={labelCls}>Адрес</label>
+                        <input value={address} onChange={e => setAddress(e.target.value)} placeholder="Юридический адрес..." className={inputCls} />
+                    </div>
+                </div>
+
+                <div className="px-6 py-4 border-t border-line flex justify-end gap-2 shrink-0 bg-surface-2/30">
+                    <button onClick={onClose} className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
+                        Отмена
+                    </button>
+                    <button
+                        onClick={handleSave}
+                        disabled={!name.trim() || isSaving}
+                        className="px-4 py-2 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        {isSaving ? 'Сохранение…' : 'Сохранить'}
+                    </button>
+                </div>
+            </motion.div>
+        </div>
+    );
+}
+
 // ───────────────────────── модалка добавления/редактирования материала ─────────────────────────
 
 /**
@@ -664,21 +761,56 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
     onClose: () => void;
 }) {
     const isEditing = !!editingMaterial;
+    // Генерируем ID заранее (а не через addDoc) — он нужен как путь в Storage для фото
+    // ещё ДО того, как сама запись материала будет сохранена в Firestore.
+    const materialDocId = useRef(editingMaterial?.id || crypto.randomUUID()).current;
     const [name, setName] = useState(editingMaterial?.name || '');
     const [productTypeId, setProductTypeId] = useState(editingMaterial?.productTypeId || '');
     const [characteristics, setCharacteristics] = useState(editingMaterial?.characteristics || '');
     const [manufacturerId, setManufacturerId] = useState(editingMaterial?.manufacturerId || '');
-    // Название производителя для CompanySelect — только начальное отображаемое значение,
-    // вычисленное из ЖИВОГО списка компаний по текущему manufacturerId (а не из когда-то
-    // сохранённой строки, которой в материале больше нет).
     const [manufacturerName, setManufacturerName] = useState(
         () => companies.find(c => c.id === editingMaterial?.manufacturerId)?.name || ''
     );
     const [qtyPerM2, setQtyPerM2] = useState(editingMaterial?.qtyPerM2 ? String(editingMaterial.qtyPerM2) : '');
     const [qtyPerPallet, setQtyPerPallet] = useState(editingMaterial?.qtyPerPallet ? String(editingMaterial.qtyPerPallet) : '');
+    const [photoUrl, setPhotoUrl] = useState(editingMaterial?.photoUrl || '');
+    const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const photoInputRef = useRef<HTMLInputElement>(null);
 
     const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
+
+    const selectedProductTypeName = productTypes.find(pt => pt.id === productTypeId)?.name;
+    const showPhotoField = isBrickProductTypeName(selectedProductTypeName);
+
+    const handlePhotoSelect = async (file: File | null) => {
+        if (!file) return;
+        setIsUploadingPhoto(true);
+        try {
+            if (photoUrl) {
+                await deleteMaterialPhoto(photoUrl).catch(console.error);
+            }
+            const url = await uploadMaterialPhoto(file, materialDocId);
+            setPhotoUrl(url);
+        } catch (error) {
+            console.error('Не удалось загрузить фото материала:', error);
+            alert('Не удалось загрузить фото. Попробуйте ещё раз.');
+        } finally {
+            setIsUploadingPhoto(false);
+            if (photoInputRef.current) photoInputRef.current.value = '';
+        }
+    };
+
+    const handleRemovePhoto = async () => {
+        if (!photoUrl) return;
+        if (!window.confirm('Удалить фото материала?')) return;
+        try {
+            await deleteMaterialPhoto(photoUrl);
+        } catch (error) {
+            console.error('Не удалось удалить фото на Storage:', error);
+        }
+        setPhotoUrl('');
+    };
 
     const handleSave = async () => {
         if (!name.trim()) return;
@@ -691,11 +823,12 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
                 manufacturerId: manufacturerId || '',
                 qtyPerM2: qtyPerM2 ? Number(qtyPerM2) : null,
                 qtyPerPallet: qtyPerPallet ? Number(qtyPerPallet) : null,
+                photoUrl: photoUrl || null,
             };
-            if (isEditing && editingMaterial) {
-                await updateDoc(doc(db, 'materials', editingMaterial.id), payload);
+            if (isEditing) {
+                await updateDoc(doc(db, 'materials', materialDocId), payload);
             } else {
-                await addDoc(collection(db, 'materials'), { ...payload, createdAt: serverTimestamp() });
+                await setDoc(doc(db, 'materials', materialDocId), { ...payload, createdAt: serverTimestamp() });
             }
             onClose();
         } catch (error) {
@@ -783,6 +916,53 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
                             />
                         </div>
                     </div>
+
+                    {showPhotoField && (
+                        <div>
+                            <label className={labelCls}>Фото материала</label>
+                            <p className="text-[10.5px] text-ink-4 mb-2">Используется в печатной форме коммерческого предложения</p>
+                            {photoUrl ? (
+                                <div className="flex items-center gap-3">
+                                    <img src={photoUrl} alt={name} className="w-20 h-20 rounded-lg object-cover border border-line" />
+                                    <div className="flex flex-col gap-1.5">
+                                        <button
+                                            type="button"
+                                            onClick={() => photoInputRef.current?.click()}
+                                            disabled={isUploadingPhoto}
+                                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                                        >
+                                            {isUploadingPhoto ? <Loader2 size={12} className="animate-spin" /> : <ImagePlus size={12} />}
+                                            Заменить
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleRemovePhoto}
+                                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-terracotta border border-line bg-surface hover:bg-terracotta/5 transition-colors"
+                                        >
+                                            <Trash2 size={12} /> Удалить
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={() => photoInputRef.current?.click()}
+                                    disabled={isUploadingPhoto}
+                                    className="w-full inline-flex items-center justify-center gap-2 h-9 rounded-md text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 transition-colors"
+                                >
+                                    {isUploadingPhoto ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />}
+                                    {isUploadingPhoto ? 'Загружаем…' : 'Загрузить фото'}
+                                </button>
+                            )}
+                            <input
+                                ref={photoInputRef}
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={e => handlePhotoSelect(e.target.files?.[0] || null)}
+                            />
+                        </div>
+                    )}
                 </div>
 
                 <div className="px-6 py-4 border-t border-line flex justify-end gap-2 shrink-0 bg-surface-2/30">

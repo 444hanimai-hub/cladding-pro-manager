@@ -2,6 +2,10 @@ export interface Company {
   id: string;
   name: string;
   managerId: string;
+  /** Тип компании — Заказчик/Поставщик/Производитель/«Юр лицо для продажи»/... */
+  companyType?: string;
+  /** Адрес — нужен, например, для реквизитов юр. лица в печатной форме КП */
+  address?: string;
 }
 
 export interface Contact {
@@ -246,6 +250,9 @@ export interface Project {
   /** Папка проекта с документами на Google Drive — документы хранятся там, в CRM только ссылка. */
   driveDocsFolderId?: string;
   driveDocsFolderLink?: string;
+  /** Подпапка "Коммерческие предложения" внутри папки документов проекта */
+  kpFolderId?: string;
+  kpFolderLink?: string;
   materials?: ProjectMaterial[];
   allMaterialsSingleSupplier?: boolean;
   shipments?: Shipment[];

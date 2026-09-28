@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, X, Trash2, Layers, Pencil, ChevronRight } from 'lucide-react';
-import { cn } from '../../lib/utils';
+import { Plus, X, Trash2, Layers, Pencil, ChevronRight, FileText, ExternalLink, Loader2, Check } from 'lucide-react';
+import { cn, formatCurrency } from '../../lib/utils';
 import { getMarginColor } from '../../lib/financeCalculations';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
 import { Project, ProjectMaterial, TrustDeed } from '../../types';
@@ -19,6 +19,11 @@ import {
     priceFromMarkup,
     DEFAULT_VAT_PERCENT,
 } from '../../lib/materialFinance';
+import { ensureProjectDocsFolder, findOrCreateSubfolder } from '../../lib/googleDriveFolders';
+import { uploadFileToDrive } from '../../lib/googleDriveFiles';
+import { generateKPDocx, buildKPFileName } from '../../lib/generateKPDocx';
+
+const KP_SUBFOLDER_NAME = 'Коммерческие предложения';
 
 /**
  * Вид товара, для которого форма материала считается по м²/штукам/поддонам, а не
@@ -26,6 +31,9 @@ import {
  * товара при этом заводится только через справочники. Сравнение НАМЕРЕННО
  * регистронезависимое (см. isBrickProductType ниже) — "кирпич"/"Кирпич"/"КИРПИЧ "
  * должны считаться одним и тем же значением, а не разными.
+ *
+ * Этот же признак используется и для определения, подходит ли текущий шаблон КП
+ * (template_kp.docx) к отмеченным материалам — он заточен именно под кирпич.
  */
 const BRICK_PRODUCT_TYPE_NAME = 'Кирпич';
 
@@ -53,7 +61,7 @@ function parseDecimal(raw: string): number {
 
 // ───────────────────────── вкладка «Материалы» ─────────────────────────
 
-function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { project: Project, canEdit: boolean, directories: any, trustDeeds?: TrustDeed[] }) {
+function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessToken, onConnectCalendar }: { project: Project, canEdit: boolean, directories: any, trustDeeds?: TrustDeed[], accessToken?: string | null, onConnectCalendar?: () => Promise<boolean> }) {
     const [isAdding, setIsAdding] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [formData, setFormData] = useState<Partial<ProjectMaterial>>({});
@@ -162,8 +170,154 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
         }
     };
 
+    const [isKPModalOpen, setIsKPModalOpen] = useState(false);
+    const [isGeneratingKP, setIsGeneratingKP] = useState(false);
+    const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
+
+    const handleConnectGoogle = async () => {
+        if (!onConnectCalendar || isConnectingGoogle) return;
+        setIsConnectingGoogle(true);
+        try {
+            await onConnectCalendar();
+        } finally {
+            setIsConnectingGoogle(false);
+        }
+    };
+
+    /**
+     * Формирует КП из отмеченных пользователем материалов. Текущий шаблон
+     * (template_kp.docx) подходит только когда среди отмеченных позиций есть хотя бы
+     * один материал с видом товара "кирпич" — для остальных случаев отдельный шаблон
+     * будет добавлен позже, пока просто ничего не печатаем и объясняем почему.
+     *
+     * Дальше: гарантирует наличие папки документов проекта и подпапки "Коммерческие
+     * предложения" внутри неё (создаёт при необходимости, переиспользует дальше),
+     * генерирует docx и кладёт его туда. Каждый вызов создаёт НОВЫЙ файл — единственного
+     * "того самого" КП на проект больше нет, история формирований просто копится в папке.
+     */
+    const handleGenerateKP = async (selected: ProjectMaterial[]) => {
+        if (!accessToken || selected.length === 0) return;
+
+        const hasBrickSelected = selected.some(m => {
+            const dir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
+            const productTypeName = (directories.productTypes || []).find((pt: any) => pt.id === dir?.productTypeId)?.name;
+            return isBrickProductType(productTypeName);
+        });
+        if (!hasBrickSelected) {
+            alert('Этот шаблон КП подходит только если среди выбранных материалов есть хотя бы один с видом товара «Кирпич». Печатная форма для остальных случаев появится позже.');
+            return;
+        }
+
+        setIsGeneratingKP(true);
+        try {
+            let docsFolder = { id: project.driveDocsFolderId || '', link: project.driveDocsFolderLink || '' };
+            if (!docsFolder.id) {
+                docsFolder = await ensureProjectDocsFolder(project, accessToken);
+                await updateDoc(doc(db, 'projects', project.id), {
+                    driveDocsFolderId: docsFolder.id,
+                    driveDocsFolderLink: docsFolder.link,
+                    updatedAt: serverTimestamp(),
+                }).catch(console.error);
+            }
+
+            let kpFolder = { id: project.kpFolderId || '', link: project.kpFolderLink || '' };
+            if (!kpFolder.id) {
+                kpFolder = await findOrCreateSubfolder(docsFolder.id, KP_SUBFOLDER_NAME, accessToken);
+                await updateDoc(doc(db, 'projects', project.id), {
+                    kpFolderId: kpFolder.id,
+                    kpFolderLink: kpFolder.link,
+                    updatedAt: serverTimestamp(),
+                }).catch(console.error);
+            }
+
+            const sellerCompany = (directories.companies || []).find((c: any) => c.id === (project as any).sellerLegalEntityId);
+
+            const kpMaterials = selected.map(m => {
+                const dir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
+                const manufacturerName = (directories.companies || []).find((c: any) => c.id === dir?.manufacturerId)?.name;
+                const calc = calcMaterial(m);
+                return {
+                    materialName: m.materialName,
+                    characteristics: dir?.characteristics || '',
+                    manufacturerName: manufacturerName || '',
+                    qtyPerM2: dir?.qtyPerM2,
+                    qtyPerPallet: dir?.qtyPerPallet,
+                    photoUrl: dir?.photoUrl,
+                    price: m.salePrice,
+                    quantityM2: m.quantityM2,
+                    quantity: m.quantity,
+                    sum: calc.saleSum,
+                    saleVatPercent: m.saleVatPercent,
+                };
+            });
+
+            const blob = await generateKPDocx({
+                clientName: project.client,
+                projectName: project.name,
+                sellerLegalEntity: (project as any).sellerLegalEntityName || '',
+                sellerLegalEntityAddress: sellerCompany?.address || '',
+                managerName: project.leadManagerName || '',
+                materials: kpMaterials,
+            });
+
+            const filename = buildKPFileName(project.name, project.client);
+            const { link } = await uploadFileToDrive(blob, filename, kpFolder.id, accessToken);
+            window.open(link, '_blank');
+            setIsKPModalOpen(false);
+        } catch (error) {
+            console.error('Не удалось сформировать КП:', error);
+            alert('Не удалось сформировать коммерческое предложение. Попробуйте ещё раз.');
+        } finally {
+            setIsGeneratingKP(false);
+        }
+    };
+
     return (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+            {!accessToken && onConnectCalendar && (
+                <div className="rounded-xl border border-ochre/35 bg-[#FBF5E8] px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <p className="text-[12px] text-ink-3 leading-snug">
+                        Чтобы формировать коммерческие предложения, подключите Google.
+                    </p>
+                    <button
+                        type="button"
+                        onClick={handleConnectGoogle}
+                        disabled={isConnectingGoogle}
+                        className="shrink-0 h-8 px-3 rounded-lg text-[12px] font-semibold bg-[#A67C3C] text-white hover:bg-[#956f35] disabled:opacity-50 transition-colors whitespace-nowrap"
+                    >
+                        {isConnectingGoogle ? 'Подключение…' : 'Подключить Google'}
+                    </button>
+                </div>
+            )}
+
+            <div className="flex items-center gap-2">
+                <button
+                    type="button"
+                    onClick={() => setIsKPModalOpen(true)}
+                    disabled={!accessToken || materials.length === 0}
+                    className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-[12.5px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                    <FileText size={13} /> Сформировать КП
+                </button>
+                {project.kpFolderLink ? (
+                    <a
+                        href={project.kpFolderLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 transition-colors"
+                    >
+                        <ExternalLink size={13} /> Открыть КП
+                    </a>
+                ) : (
+                    <span
+                        title="КП ещё не формировались"
+                        className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-[12.5px] font-semibold border border-line bg-surface text-ink-4 opacity-50 cursor-not-allowed"
+                    >
+                        <ExternalLink size={13} /> Открыть КП
+                    </span>
+                )}
+            </div>
+
             {materials.length > 0 ? (
                 <div className="flex flex-col lg:grid lg:grid-cols-5 gap-4 items-start">
                     {/* Таблица — 3/5 */}
@@ -313,6 +467,18 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [] }: { proj
                         onSave={handleSave}
                         directories={directories}
                         isEditing={isEditing}
+                    />
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {isKPModalOpen && (
+                    <KPMaterialsSelectionModal
+                        materials={materials}
+                        directories={directories}
+                        isGenerating={isGeneratingKP}
+                        onClose={() => !isGeneratingKP && setIsKPModalOpen(false)}
+                        onConfirm={handleGenerateKP}
                     />
                 )}
             </AnimatePresence>
@@ -878,6 +1044,133 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                             className="flex-1 sm:flex-none inline-flex items-center justify-center h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors"
                         >
                             {isEditing ? 'Сохранить изменения' : 'Добавить материал'}
+                        </button>
+                    </div>
+                </div>
+            </motion.div>
+        </div>
+    );
+}
+
+// ───────────────────────── модалка выбора материалов для КП ─────────────────────────
+
+/**
+ * Список материалов проекта с чекбоксами — пользователь отмечает, что должно
+ * попасть в конкретное коммерческое предложение (можно отметить сразу все).
+ * Показываем полную склейку (наименование + характеристики + производитель из
+ * справочника, оба резолвятся по ID из живых справочников), как и в MaterialSelect.
+ */
+function KPMaterialsSelectionModal({ materials, directories, isGenerating, onClose, onConfirm }: {
+    materials: ProjectMaterial[];
+    directories: any;
+    isGenerating: boolean;
+    onClose: () => void;
+    onConfirm: (selected: ProjectMaterial[]) => void;
+}) {
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+    const toggle = (id: string) => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    };
+
+    const allSelected = materials.length > 0 && selectedIds.size === materials.length;
+    const toggleAll = () => {
+        setSelectedIds(allSelected ? new Set() : new Set(materials.map(m => m.id)));
+    };
+
+    const getFullLabel = (m: ProjectMaterial): string => {
+        const dir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
+        const manufacturerName = (directories.companies || []).find((c: any) => c.id === dir?.manufacturerId)?.name;
+        return [m.materialName, dir?.characteristics, manufacturerName].filter(Boolean).join(', ');
+    };
+
+    const handleConfirmClick = () => {
+        const selected = materials.filter(m => selectedIds.has(m.id));
+        onConfirm(selected);
+    };
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-ink/40 backdrop-blur-sm" />
+            <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12 }}
+                className="relative w-full max-w-xl bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[85vh] overflow-hidden"
+            >
+                <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
+                    <div>
+                        <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">Сформировать КП</h2>
+                        <p className="text-[11px] text-ink-3 mt-0.5">Отметьте материалы, которые должны попасть в документ</p>
+                    </div>
+                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
+                        <X size={16} />
+                    </button>
+                </div>
+
+                <div className="px-6 py-2.5 border-b border-line shrink-0">
+                    <button
+                        type="button"
+                        onClick={toggleAll}
+                        className="inline-flex items-center gap-2 text-[12.5px] font-semibold text-ochre hover:underline"
+                    >
+                        <span className={cn(
+                            "w-4 h-4 rounded flex items-center justify-center border shrink-0 transition-colors",
+                            allSelected ? "bg-ochre border-ochre text-white" : "border-line bg-surface"
+                        )}>
+                            {allSelected && <Check size={11} strokeWidth={3} />}
+                        </span>
+                        Выбрать все
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto custom-scrollbar">
+                    {materials.map(m => {
+                        const calc = calcMaterial(m);
+                        const isChecked = selectedIds.has(m.id);
+                        return (
+                            <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => toggle(m.id)}
+                                className={cn(
+                                    "w-full flex items-start gap-3 px-6 py-3 text-left border-b border-line/60 last:border-b-0 transition-colors",
+                                    isChecked ? "bg-ochre-bg/40" : "hover:bg-surface-2"
+                                )}
+                            >
+                                <span className={cn(
+                                    "w-4 h-4 rounded flex items-center justify-center border shrink-0 mt-0.5 transition-colors",
+                                    isChecked ? "bg-ochre border-ochre text-white" : "border-line bg-surface"
+                                )}>
+                                    {isChecked && <Check size={11} strokeWidth={3} />}
+                                </span>
+                                <span className="flex-1 min-w-0 text-[13px] text-ink leading-snug">{getFullLabel(m)}</span>
+                                <span className="shrink-0 text-[13px] font-mono font-semibold text-ink tabular-nums">{formatCurrency(calc.saleSum)}</span>
+                            </button>
+                        );
+                    })}
+                    {materials.length === 0 && (
+                        <p className="px-6 py-8 text-center text-[13px] text-ink-4">В проекте пока нет материалов</p>
+                    )}
+                </div>
+
+                <div className="px-6 py-4 border-t border-line flex items-center justify-between gap-3 shrink-0 bg-surface-2/30">
+                    <span className="text-[12px] text-ink-3">{selectedIds.size > 0 ? `Выбрано: ${selectedIds.size}` : ''}</span>
+                    <div className="flex gap-2">
+                        <button onClick={onClose} className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
+                            Отмена
+                        </button>
+                        <button
+                            onClick={handleConfirmClick}
+                            disabled={selectedIds.size === 0 || isGenerating}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                            {isGenerating && <Loader2 size={14} className="animate-spin" />}
+                            {isGenerating ? 'Формируем…' : 'Сформировать'}
                         </button>
                     </div>
                 </div>
