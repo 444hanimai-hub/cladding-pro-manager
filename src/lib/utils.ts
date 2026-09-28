@@ -107,26 +107,30 @@ export type ShippingProgressInfo = {
 };
 
 /**
- * Процент отгрузки: считаем строго по ФАКТИЧЕСКИМ отгрузкам — то есть только по тем
- * записям в project.shipments, у которых заполнено поле incomingUPD (это одно и то же
- * поле для "Входящий УПД" и "Входящий акт", просто подпись над ним меняется в
- * зависимости от docType — реального отдельного поля для акта нет). Количество берём
- * из собственного поля quantity самой отгрузки — БЕЗ сверки с доверенностью.
+ * Процент отгрузки.
  *
- * Отгрузка без заполненного входящего документа считается ещё не фактической, а лишь
- * "заготовкой" (такая запись создаётся автоматически вместе с доверенностью, когда
- * реального движения товара ещё не было) — она НЕ должна двигать прогресс-бар.
+ * ПРАВИЛО "что считается отгрузкой" (не меняется): только те записи в
+ * project.shipments, у которых заполнено поле incomingUPD (одно и то же поле и для
+ * "Входящий УПД", и для "Входящий акт" — отдельного поля для акта нет, меняется
+ * только подпись в зависимости от docType). Отгрузка без входящего документа — это
+ * лишь "заготовка" (создаётся автоматически вместе с доверенностью, когда реального
+ * движения товара ещё не было) и прогресс не двигает.
  *
- * Функция намеренно НЕ принимает доверенности вторым аргументом — раньше здесь была
- * логика сверки через доверенность (deed.quantity), но это расходится с тем, как
- * реально фиксируется отгрузка (по вводу входящего УПД/акта в самой отгрузке), и
- * вносило путаницу и расхождения между разными экранами.
+ * ИСТОЧНИК КОЛИЧЕСТВА: у самой отгрузки нет собственного поля quantity — оно
+ * сознательно не дублируется (см. Shipment в types.ts), чтобы не расходиться со
+ * связанной доверенностью. Поэтому количество по каждой подтверждённой отгрузке
+ * ищем через привязанную доверенность (deed.quantity, по s.poaNumber/trustDeedId) —
+ * доверенности передаются вторым, необязательным аргументом. Без них (или если для
+ * конкретной отгрузки доверенность не нашлась) используется s.quantity как запасной
+ * вариант — на случай очень старых записей, где количество когда-то хранилось прямо
+ * в отгрузке.
  */
 export function getShippingProgress(
     project: {
       materials?: Array<{ quantity?: number }>;
-      shipments?: Array<{ quantity?: number; incomingUPD?: string }>;
-    }
+      shipments?: Array<{ poaNumber?: string; trustDeedId?: string; quantity?: number; incomingUPD?: string }>;
+    },
+    trustDeeds?: Array<{ number?: string; id?: string; quantity?: number }>
 ): ShippingProgressInfo {
   const materialsTotal = (project.materials ?? []).reduce(
       (acc, m) => acc + (Number(m.quantity) || 0),
@@ -137,10 +141,12 @@ export function getShippingProgress(
       (s) => Boolean(s.incomingUPD && s.incomingUPD.trim() !== '')
   );
 
-  const shippedTotal = confirmedShipments.reduce(
-      (acc, s) => acc + (Number(s.quantity) || 0),
-      0
-  );
+  const shippedTotal = confirmedShipments.reduce((acc, s) => {
+    const deed = trustDeeds && (s.poaNumber || s.trustDeedId)
+        ? trustDeeds.find(d => (s.poaNumber && d.number === s.poaNumber) || (s.trustDeedId && d.id === s.trustDeedId))
+        : undefined;
+    return acc + (Number(deed?.quantity) || Number(s.quantity) || 0);
+  }, 0);
 
   const remaining = materialsTotal - shippedTotal;
   const percent = materialsTotal > 0 ? Math.round((shippedTotal * 100) / materialsTotal) : 0;

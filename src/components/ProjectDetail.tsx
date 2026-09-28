@@ -262,7 +262,7 @@ export default function ProjectDetail({
         return Math.ceil((deadlineDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
     })();
 
-    const shippingProgress = getShippingProgress(project);
+    const shippingProgress = getShippingProgress(project, trustDeeds);
 
     const isDone = project.status === 'done' || project.status === 'completed';
     const isCanceled = project.status === 'cancelled' || project.status === 'canceled';

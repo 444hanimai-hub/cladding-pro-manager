@@ -26,8 +26,8 @@ function ShipmentsTab({ project, canEdit, trustDeeds = [] }: { project: Project,
     const shipments = project.shipments || [];
     const selectedShipment = shipments.find(s => s.id === selectedShipmentId) ?? null;
     const allMaterialShipped = React.useMemo(
-        () => getShippingProgress(project).isComplete,
-        [project.materials, project.shipments]
+        () => getShippingProgress(project, trustDeeds).isComplete,
+        [project.materials, project.shipments, trustDeeds]
     );
 
     // Миграция: удаляем отгрузки без привязки к доверенности

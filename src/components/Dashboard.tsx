@@ -100,6 +100,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
   const [users, setUsers] = useState<AppUser[]>([]);
   const { needsCodeGate, unlock } = useFinanceAccess(appUser);
   const [allTasks, setAllTasks] = useState<ProjectTask[]>([]);
+  const [allTrustDeeds, setAllTrustDeeds] = useState<any[]>([]);
   const [allEvents, setAllEvents] = useState<ProjectEvent[]>([]);
 
   const [dateFilterType, setDateFilterType] = useState<'createdAt' | 'deadline'>('createdAt');
@@ -392,7 +393,14 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
       }));
     }, (error) => { console.error("Dashboard events group snapshot error:", error); });
 
-    return () => { unsubTasks(); unsubEvents(); };
+    // trust_deeds — коллекция верхнего уровня (не подколлекция проекта), номера
+    // уникальны сквозно по всей системе — поэтому безопасно грузить единым списком,
+    // без фильтрации по конкретному проекту (см. getShippingProgress в lib/utils.ts).
+    const unsubTrustDeeds = onSnapshot(collection(db, 'trust_deeds'), (snap) => {
+      setAllTrustDeeds(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => { console.error("Dashboard trust_deeds snapshot error:", error); });
+
+    return () => { unsubTasks(); unsubEvents(); unsubTrustDeeds(); };
   }, [appUser]);
 
   useEffect(() => {
@@ -507,6 +515,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
                         <ProjectFinancialBlock
                             key={project.id}
                             project={project}
+                            trustDeeds={allTrustDeeds.filter(d => d.projectId === project.id)}
                             isFirst={idx === 0}
                             onClick={() => onSelectProject(project.id)}
                         />
@@ -814,15 +823,16 @@ function SummaryCard({ title, value, isDark, isPercentage, trendVal, isPositive,
   );
 }
 
-function ProjectFinancialBlock({ project, onClick, isFirst }: {
+function ProjectFinancialBlock({ project, trustDeeds, onClick, isFirst }: {
   key?: any;
   project: any;
+  trustDeeds?: any[];
   onClick: () => void;
   isFirst?: boolean;
 }) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
   const profitability = getMarginPercent(f);
-  const shippingProgress = getShippingProgress(project);
+  const shippingProgress = getShippingProgress(project, trustDeeds);
 
   const isOverdue = (() => {
     if (!project.deadline || project.status === 'completed' || project.status === 'cancelled') return false;
