@@ -20,7 +20,7 @@ import { Button } from './ui/Button';
 import { Modal } from './ui/Modal';
 import { PeriodSelector, DateTypeSelector, StatusSelector, ManagerSelector, LegalEntitySelector, SELLER_LEGAL_ENTITY_COMPANY_TYPE, PeriodType } from './shared/DashboardFilters';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
-import { Project, AppUser, ProjectTask, ProjectEvent } from '../types';
+import { Project, AppUser, ProjectTask, ProjectEvent, TrustDeed } from '../types';
 import { FinanceCodeGate } from './CodeProtection';
 import { useFinanceAccess } from '../hooks/useFinanceAccess';
 import { PortalDropdown } from './ui/PortalDropdown';
@@ -57,6 +57,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
   const [projects, setProjects] = useState<Project[]>([]);
   const [allTasks, setAllTasks] = useState<ProjectTask[]>([]);
   const [allEvents, setAllEvents] = useState<ProjectEvent[]>([]);
+  const [allTrustDeeds, setAllTrustDeeds] = useState<TrustDeed[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -123,6 +124,17 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
     }, (error) => { console.error("ProjectList events group snapshot error:", error); });
 
     return () => { unsubTasks(); unsubEvents(); };
+  }, [appUser?.uid]);
+
+  useEffect(() => {
+    if (!appUser) return;
+    // trust_deeds — коллекция верхнего уровня (не подколлекция проекта), номера
+    // уникальны сквозно по всей системе — поэтому безопасно грузить единым списком,
+    // без фильтрации по конкретному проекту (см. getShippingProgress в lib/utils.ts).
+    const unsub = onSnapshot(collection(db, 'trust_deeds'), (snap) => {
+      setAllTrustDeeds(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TrustDeed)));
+    }, (error) => { console.error("ProjectList trust deeds snapshot error:", error); });
+    return () => unsub();
   }, [appUser?.uid]);
 
   useEffect(() => {
@@ -310,7 +322,7 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
         ) : viewMode === 'grid' ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(310px,1fr))] gap-[14px]">
               {filteredProjects.map((project) => (
-                  <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
+                  <ProjectCard key={project.id} project={project} allTasks={allTasks} allEvents={allEvents} trustDeeds={allTrustDeeds} showContract={showFinancialInCards} onClick={() => onSelectProject(project.id)} canDelete={isOwner} onDelete={(e) => deleteProject(project.id, e)} />
               ))}
             </div>
         ) : (
@@ -362,9 +374,9 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
   );
 }
 
-function ProjectCard({ project, allTasks, allEvents, showContract, onClick, canDelete, onDelete }: { key?: any; project: Project; allTasks: ProjectTask[]; allEvents: ProjectEvent[]; showContract: boolean; onClick: () => void; canDelete: boolean; onDelete: (e: React.MouseEvent) => void | Promise<void>; }) {
+function ProjectCard({ project, allTasks, allEvents, trustDeeds, showContract, onClick, canDelete, onDelete }: { key?: any; project: Project; allTasks: ProjectTask[]; allEvents: ProjectEvent[]; trustDeeds: TrustDeed[]; showContract: boolean; onClick: () => void; canDelete: boolean; onDelete: (e: React.MouseEvent) => void | Promise<void>; }) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-  const shippingProgress = getShippingProgress(project);
+  const shippingProgress = getShippingProgress(project, trustDeeds);
 
   const nextItem = useMemo(() => {
     const now = new Date();

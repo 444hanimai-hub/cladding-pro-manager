@@ -271,7 +271,12 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
         throw new Error('Не выбрано ни одного материала для КП.');
     }
 
-    const response = await fetch(`/template_kp.docx?v=${Date.now()}`, { cache: 'no-store' });
+    // Замените эту строку:
+// const response = await fetch(`/template_kp.docx?v=${Date.now()}`, { cache: 'no-store' });
+
+// На эту:
+    const baseUrl = import.meta.env.BASE_URL || '/';
+    const response = await fetch(`${baseUrl}template_kp.docx?v=${Date.now()}`, { cache: 'no-store' });
     if (!response.ok) {
         throw new Error('Не удалось загрузить шаблон КП (template_kp.docx). Убедитесь, что файл лежит в папке public проекта.');
     }
