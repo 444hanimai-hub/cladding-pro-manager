@@ -100,12 +100,13 @@ export default function ProjectDetail({
     const [users, setUsers] = useState<AppUser[]>([]);
     const [directories, setDirectories] = useState<{
         materials: any[],
+        productTypes: any[],
         units: any[],
         drivers: any[],
         carriers: any[],
         companies: any[],
         contacts: any[]
-    }>({ materials: [], units: [], drivers: [], carriers: [], companies: [], contacts: [] });
+    }>({ materials: [], productTypes: [], units: [], drivers: [], carriers: [], companies: [], contacts: [] });
 
     useEffect(() => {
         const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -114,13 +115,23 @@ export default function ProjectDetail({
             console.error("ProjectDetail users snapshot error:", error);
         });
 
-        // Fetch directories for materials tab
-        const collections = ['materials', 'units', 'drivers', 'carriers', 'companies', 'contacts'];
-        const unsubs = collections.map(col =>
+        // Fetch directories for materials tab. Имя коллекции в Firestore (product_types)
+        // и имя ключа в directories (productTypes) сознательно разные — сопоставляем явно,
+        // а не полагаемся на совпадение строк.
+        const collectionToKey: Record<string, string> = {
+            materials: 'materials',
+            product_types: 'productTypes',
+            units: 'units',
+            drivers: 'drivers',
+            carriers: 'carriers',
+            companies: 'companies',
+            contacts: 'contacts',
+        };
+        const unsubs = Object.entries(collectionToKey).map(([col, key]) =>
             onSnapshot(collection(db, col), (snap) => {
                 setDirectories(prev => ({
                     ...prev,
-                    [col]: snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+                    [key]: snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))
                 }));
             }, (error) => {
                 console.error(`ProjectDetail directory ${col} snapshot error:`, error);

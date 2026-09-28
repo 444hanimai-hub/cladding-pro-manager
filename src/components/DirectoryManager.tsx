@@ -177,7 +177,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                 <div className="overflow-x-auto">
                     {activeTab === 'companies'          && <CompaniesTable         companies={filtered.companies} typeFilter={typeFilter} setTypeFilter={setTypeFilter} />}
                     {activeTab === 'contacts'           && <ContactsTable          contacts={filtered.contacts} companies={companies} />}
-                    {activeTab === 'materials'          && <MaterialsTable         items={filtered.materials} onEdit={handleOpenEditMaterial} />}
+                    {activeTab === 'materials'          && <MaterialsTable         items={filtered.materials} productTypes={productTypes} companies={companies} onEdit={handleOpenEditMaterial} />}
                     {activeTab === 'product_types'      && <SimpleTable            items={filtered.product_types} collectionName="product_types" icon={<Tag size={13} />} />}
                     {activeTab === 'units'              && <SimpleTable            items={filtered.units}    collectionName="units"    icon={<Maximize size={13} />} />}
                     {activeTab === 'drivers'            && <DriversTable           items={filtered.drivers} />}
@@ -272,6 +272,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                     <MaterialDirectoryModal
                         editingMaterial={editingMaterial}
                         productTypes={productTypes}
+                        companies={companies}
                         onClose={() => { setIsMaterialModalOpen(false); setEditingMaterial(null); }}
                     />
                 )}
@@ -481,8 +482,13 @@ function ExpenseCategoriesTable({ categories }: { categories: ExpenseCategory[] 
     );
 }
 
-/** Таблица материалов — теперь строка целиком кликабельна и открывает модалку редактирования. */
-function MaterialsTable({ items, onEdit }: { items: Material[]; onEdit: (m: Material) => void }) {
+/**
+ * Таблица материалов — строка целиком кликабельна и открывает модалку редактирования.
+ * Вид товара и производитель отображаются по ID, разрешая актуальное название из
+ * ЖИВЫХ справочников (productTypes/companies) — а не из когда-то скопированной
+ * строки, которая могла "отстать" после переименования в справочнике.
+ */
+function MaterialsTable({ items, productTypes, companies, onEdit }: { items: Material[]; productTypes: ProductType[]; companies: Company[]; onEdit: (m: Material) => void }) {
     const del = async (e: React.MouseEvent, id: string) => {
         e.stopPropagation();
         if (confirm('Удалить материал из справочника?')) await deleteDoc(doc(db, 'materials', id));
@@ -491,24 +497,28 @@ function MaterialsTable({ items, onEdit }: { items: Material[]; onEdit: (m: Mate
         <table className="w-full text-left">
             <THead cols={['Материал', 'Вид товара', 'Производитель', '']} />
             <tbody>
-            {items.map(item => (
-                <tr key={item.id} className={cn(rowCls, "cursor-pointer")} onClick={() => onEdit(item)}>
-                    <td className={cellCls}>
-                        <div className="flex items-center gap-3 min-w-0">
-                            <span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0"><Layers size={13} /></span>
-                            <div className="min-w-0">
-                                <p className="text-[13px] font-medium text-ink truncate">{item.name}</p>
-                                {item.characteristics && <p className="text-[10.5px] text-ink-4 truncate max-w-[320px]">{item.characteristics}</p>}
+            {items.map(item => {
+                const productTypeName = productTypes.find(pt => pt.id === item.productTypeId)?.name;
+                const manufacturerName = companies.find(c => c.id === item.manufacturerId)?.name;
+                return (
+                    <tr key={item.id} className={cn(rowCls, "cursor-pointer")} onClick={() => onEdit(item)}>
+                        <td className={cellCls}>
+                            <div className="flex items-center gap-3 min-w-0">
+                                <span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0"><Layers size={13} /></span>
+                                <div className="min-w-0">
+                                    <p className="text-[13px] font-medium text-ink truncate">{item.name}</p>
+                                    {item.characteristics && <p className="text-[10.5px] text-ink-4 truncate max-w-[320px]">{item.characteristics}</p>}
+                                </div>
                             </div>
-                        </div>
-                    </td>
-                    <td className={cn(cellCls, "text-[12px] text-ink-3")}>{item.productTypeName || '—'}</td>
-                    <td className={cn(cellCls, "text-[12px] text-ink-3")}>{item.manufacturerName || '—'}</td>
-                    <td className={cn(cellCls, "text-right")}>
-                        <ActionBtns onEdit={() => onEdit(item)} onDelete={(e: any) => del(e, item.id)} />
-                    </td>
-                </tr>
-            ))}
+                        </td>
+                        <td className={cn(cellCls, "text-[12px] text-ink-3")}>{productTypeName || '—'}</td>
+                        <td className={cn(cellCls, "text-[12px] text-ink-3")}>{manufacturerName || '—'}</td>
+                        <td className={cn(cellCls, "text-right")}>
+                            <ActionBtns onEdit={() => onEdit(item)} onDelete={(e: any) => del(e, item.id)} />
+                        </td>
+                    </tr>
+                );
+            })}
             </tbody>
         </table>
     );
@@ -642,18 +652,28 @@ function SimpleTable({ items, collectionName, icon }: { items: any[], collection
  * существующих значений справочника (без возможности создать новый прямо здесь) —
  * на вид товара завязана бизнес-логика в MaterialsTab, поэтому список видов должен
  * оставаться контролируемым через раздел «Виды товара».
+ *
+ * В материал сохраняются ТОЛЬКО ID (productTypeId, manufacturerId) — название вида
+ * товара и производителя нигде не дублируется строкой, чтобы переименование в
+ * соответствующем справочнике сразу отражалось везде, где материал используется.
  */
-function MaterialDirectoryModal({ editingMaterial, productTypes, onClose }: {
+function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onClose }: {
     editingMaterial: Material | null;
     productTypes: ProductType[];
+    companies: Company[];
     onClose: () => void;
 }) {
     const isEditing = !!editingMaterial;
     const [name, setName] = useState(editingMaterial?.name || '');
     const [productTypeId, setProductTypeId] = useState(editingMaterial?.productTypeId || '');
     const [characteristics, setCharacteristics] = useState(editingMaterial?.characteristics || '');
-    const [manufacturerName, setManufacturerName] = useState(editingMaterial?.manufacturerName || '');
     const [manufacturerId, setManufacturerId] = useState(editingMaterial?.manufacturerId || '');
+    // Название производителя для CompanySelect — только начальное отображаемое значение,
+    // вычисленное из ЖИВОГО списка компаний по текущему manufacturerId (а не из когда-то
+    // сохранённой строки, которой в материале больше нет).
+    const [manufacturerName, setManufacturerName] = useState(
+        () => companies.find(c => c.id === editingMaterial?.manufacturerId)?.name || ''
+    );
     const [qtyPerM2, setQtyPerM2] = useState(editingMaterial?.qtyPerM2 ? String(editingMaterial.qtyPerM2) : '');
     const [qtyPerPallet, setQtyPerPallet] = useState(editingMaterial?.qtyPerPallet ? String(editingMaterial.qtyPerPallet) : '');
     const [isSaving, setIsSaving] = useState(false);
@@ -664,14 +684,11 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, onClose }: {
         if (!name.trim()) return;
         setIsSaving(true);
         try {
-            const productType = productTypes.find(pt => pt.id === productTypeId);
             const payload = {
                 name: name.trim(),
                 productTypeId: productTypeId || '',
-                productTypeName: productType?.name || '',
                 characteristics: characteristics.trim(),
                 manufacturerId: manufacturerId || '',
-                manufacturerName: manufacturerName.trim(),
                 qtyPerM2: qtyPerM2 ? Number(qtyPerM2) : null,
                 qtyPerPallet: qtyPerPallet ? Number(qtyPerPallet) : null,
             };

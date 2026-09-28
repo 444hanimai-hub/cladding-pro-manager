@@ -7,6 +7,10 @@ import { cn } from '../lib/utils';
 
 interface MaterialSelectProps {
     value: string;
+    /** ID выбранного материала (если есть) — по нему восстанавливаем полную склейку
+     * в самом поле (не только в выпадающем списке), в том числе при повторном
+     * открытии формы редактирования, когда справочник материалов уже загружен. */
+    materialId?: string;
     onChange: (value: string, id?: string) => void;
     placeholder?: string;
     className?: string;
@@ -16,20 +20,26 @@ interface MaterialOption {
     id: string;
     name: string;
     characteristics?: string;
-    manufacturerName?: string;
+    manufacturerId?: string;
 }
 
 /** Склейка "Наименование, Характеристики, Производитель" для отображения в списке —
  * сама сохраняемая ссылка (value) остаётся коротким названием материала, склейка
- * нужна только для того, чтобы было проще найти нужный материал среди похожих. */
-function formatMaterialLabel(m: MaterialOption): string {
-    return [m.name, m.characteristics, m.manufacturerName].filter(Boolean).join(', ');
+ * нужна только для того, чтобы было проще найти нужный материал среди похожих.
+ * Название производителя сюда приходит УЖЕ разрешённым по ID из живого справочника
+ * компаний (см. вызов ниже) — в самом материале хранится только manufacturerId. */
+function formatMaterialLabel(m: MaterialOption, manufacturerName?: string): string {
+    return [m.name, m.characteristics, manufacturerName].filter(Boolean).join(', ');
 }
 
-export default function MaterialSelect({ value, onChange, placeholder, className }: MaterialSelectProps) {
+export default function MaterialSelect({ value, materialId, onChange, placeholder, className }: MaterialSelectProps) {
     const [isOpen, setIsOpen] = useState(false);
     const [searchTerm, setSearchTerm] = useState(value);
     const [materials, setMaterials] = useState<MaterialOption[]>([]);
+    // Живой справочник компаний, только для разрешения manufacturerId → название —
+    // тот же принцип, что и для вида товара: не хранить копию строки, а смотреть
+    // актуальное название прямо в момент отображения.
+    const [companyNames, setCompanyNames] = useState<Record<string, string>>({});
     const containerRef = useRef<HTMLDivElement>(null);
     const dropdownRef = useRef<HTMLDivElement>(null);
     const [coords, setCoords] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 0 });
@@ -43,7 +53,7 @@ export default function MaterialSelect({ value, onChange, placeholder, className
                     id: doc.id,
                     name: data.name || '',
                     characteristics: data.characteristics || '',
-                    manufacturerName: data.manufacturerName || '',
+                    manufacturerId: data.manufacturerId || '',
                 };
             }));
         });
@@ -51,8 +61,23 @@ export default function MaterialSelect({ value, onChange, placeholder, className
     }, []);
 
     useEffect(() => {
-        setSearchTerm(value);
-    }, [value]);
+        const unsubscribe = onSnapshot(collection(db, 'companies'), (snapshot) => {
+            const map: Record<string, string> = {};
+            snapshot.docs.forEach(doc => { map[doc.id] = (doc.data() as any).name || ''; });
+            setCompanyNames(map);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    // Пока список открыт (человек ищет/печатает) — показываем то, что он реально
+    // набирает, ничего не подменяя. Как только список закрыт — если materialId
+    // указывает на известный материал, показываем полную склейку по нему, а не
+    // просто короткое сохранённое имя (value).
+    useEffect(() => {
+        if (isOpen) return;
+        const matched = materialId ? materials.find(mat => mat.id === materialId) : undefined;
+        setSearchTerm(matched ? formatMaterialLabel(matched, companyNames[matched.manufacturerId || '']) : value);
+    }, [value, materialId, materials, companyNames, isOpen]);
 
     useEffect(() => {
         const updateCoords = () => {
@@ -94,17 +119,18 @@ export default function MaterialSelect({ value, onChange, placeholder, className
     // Поиск идёт и по названию, и по всей склейке — так находится, даже если ввести
     // часть характеристик или производителя, а не только короткое название.
     const filteredMaterials = materials.filter(m =>
-        formatMaterialLabel(m).toLowerCase().includes(searchTerm.toLowerCase())
+        formatMaterialLabel(m, companyNames[m.manufacturerId || '']).toLowerCase().includes(searchTerm.toLowerCase())
     );
 
     const showCreate = searchTerm.trim() !== '' &&
         !materials.some(m => m.name.toLowerCase() === searchTerm.toLowerCase().trim());
 
     const handleSelect = (item: MaterialOption) => {
-        // В само поле и в сохраняемое значение уходит короткое название — склейка
-        // нужна только для наглядности внутри выпадающего списка.
+        // Сохраняется (onChange) короткое название — как и раньше, для совместимости
+        // с остальной системой (таблицы, доверенности и т.п.). А вот в самом поле
+        // показываем полную склейку — так сразу видно, что выбран нужный материал.
         onChange(item.name, item.id);
-        setSearchTerm(item.name);
+        setSearchTerm(formatMaterialLabel(item, companyNames[item.manufacturerId || '']));
         setIsOpen(false);
     };
 
@@ -167,7 +193,7 @@ export default function MaterialSelect({ value, onChange, placeholder, className
                   <span className="w-7 h-7 rounded-full bg-ochre-bg flex items-center justify-center text-ochre shrink-0 font-medium">
                     <Package size={13} />
                   </span>
-                                    <span className="text-[13px] font-medium text-ink truncate">{formatMaterialLabel(item)}</span>
+                                    <span className="text-[13px] font-medium text-ink truncate">{formatMaterialLabel(item, companyNames[item.manufacturerId || ''])}</span>
                                 </button>
                             ))
                         ) : !showCreate ? (

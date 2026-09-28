@@ -22,11 +22,16 @@ import {
 
 /**
  * Вид товара, для которого форма материала считается по м²/штукам/поддонам, а не
- * просто как единое "количество". Сравнение по имени (не по отдельному флажку) —
- * так решил заказчик; вид товара при этом заводится только через справочники,
- * поэтому опечатка здесь означала бы и опечатку в справочнике — маловероятно.
+ * просто как единое "количество". Сравнение по имени — так решил заказчик; вид
+ * товара при этом заводится только через справочники. Сравнение НАМЕРЕННО
+ * регистронезависимое (см. isBrickProductType ниже) — "кирпич"/"Кирпич"/"КИРПИЧ "
+ * должны считаться одним и тем же значением, а не разными.
  */
 const BRICK_PRODUCT_TYPE_NAME = 'Кирпич';
+
+function isBrickProductType(name?: string): boolean {
+    return (name || '').trim().toLowerCase() === BRICK_PRODUCT_TYPE_NAME.toLowerCase();
+}
 
 // ───────────────────────── форматирование чисел ─────────────────────────
 
@@ -498,9 +503,12 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
     const set = (patch: Partial<ProjectMaterial>) => setFormData({ ...formData, ...patch });
 
     // ── Вид товара выбранного материала (из справочника) — определяет, нужна ли особая
-    // раскладка формы (кирпич: поставщик отдельной строкой + расчёт по м²/поддонам). ──
+    // раскладка формы (кирпич: поставщик отдельной строкой + расчёт по м²/поддонам).
+    // Название вида товара берём ЖИВЬЁМ из справочника product_types по ID — а не из
+    // когда-то сохранённой копии в самом материале (её там больше нет вообще). ──
     const selectedMaterialDir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
-    const isBrick = selectedMaterialDir?.productTypeName === BRICK_PRODUCT_TYPE_NAME;
+    const selectedProductTypeName = (directories.productTypes || []).find((pt: any) => pt.id === selectedMaterialDir?.productTypeId)?.name;
+    const isBrick = isBrickProductType(selectedProductTypeName);
     const qtyPerM2 = Number(selectedMaterialDir?.qtyPerM2) || 0;
     const qtyPerPallet = Number(selectedMaterialDir?.qtyPerPallet) || 0;
     const hasM2Ratio = qtyPerM2 > 0;
@@ -630,6 +638,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                 <label className={labelClass}>Наименование</label>
                                 <MaterialSelect
                                     value={m.materialName || ''}
+                                    materialId={m.materialId}
                                     onChange={(name, id) => set({ materialName: name, materialId: id })}
                                     placeholder="Из справочника..."
                                 />

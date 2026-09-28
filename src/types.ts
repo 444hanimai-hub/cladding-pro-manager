@@ -60,18 +60,25 @@ export interface ExpenseCategory extends DirectoryItem {}
 export interface ProductType extends DirectoryItem {}
 
 export interface Material extends DirectoryItem {
-  /** Вид товара — ссылка на справочник ProductType (id и денормализованное имя) */
+  /**
+   * Вид товара — ТОЛЬКО ссылка на справочник ProductType (id). Название сюда
+   * намеренно НЕ дублируется (раньше было поле productTypeName) — переименование
+   * вида товара в справочнике должно сразу отражаться везде, где он используется
+   * (в том числе в логике формы материала, которая по названию вида товара решает,
+   * показывать ли расчёт по м²/поддонам) — со скопированной строкой это работало
+   * только после того, как каждый материал вручную пересохраняли.
+   */
   productTypeId?: string;
-  productTypeName?: string;
   /** Характеристики — например "1 НФ 250*120*65мм, Цвет: PATINA GREEN BROWN..." */
   characteristics?: string;
-  /** Производитель — ссылка на companies с companyType = "Производитель" */
+  /** Производитель — ТОЛЬКО ссылка на companies (id), по той же причине, что и вид товара выше. */
   manufacturerId?: string;
-  manufacturerName?: string;
   /** Кол-во штук в 1 м² — используется для пересчёта м²↔шт для видов товара типа "Кирпич" */
   qtyPerM2?: number;
   /** Кол-во штук в поддоне — используется для расчёта количества поддонов */
   qtyPerPallet?: number;
+  /** Фото материала (для вида товара "кирпич") — хранится в Firebase Storage, используется в КП */
+  photoUrl?: string;
 }
 export interface Unit extends DirectoryItem {}
 export interface Driver extends DirectoryItem {
