@@ -268,6 +268,42 @@ function getImageDimensions(bytes: ArrayBuffer, mime: string): { width: number; 
     return null;
 }
 
+/**
+ * Определяет реальную ширину ячейки с {{MATERIAL_PHOTO}} прямо из разметки шаблона
+ * (<w:tcW w:w="..." w:type="dxa"/> внутри охватывающей <w:tc>) — так итоговый размер
+ * фото автоматически подстраивается под колонку конкретного шаблона, а не живёт
+ * отдельным, никак не связанным с таблицей числом. 1 twip (dxa) = 635 EMU.
+ * Возвращает null, если ширина не задана явно в твипах (например, автоширина/проценты) —
+ * тогда используется запасной фиксированный размер.
+ */
+function findPhotoCellWidthEmu(rowXml: string, markerIndex: number): number | null {
+    const tcOpen = '<w:tc';
+    const tcClose = '</w:tc>';
+    let searchFrom = 0;
+    while (true) {
+        const openIdx = rowXml.indexOf(tcOpen, searchFrom);
+        if (openIdx === -1 || openIdx > markerIndex) break;
+        const tagEnd = rowXml.indexOf('>', openIdx) + 1;
+        const closeIdx = rowXml.indexOf(tcClose, tagEnd);
+        if (closeIdx === -1) break;
+        const cellEnd = closeIdx + tcClose.length;
+        if (markerIndex < cellEnd) {
+            const cellXml = rowXml.slice(openIdx, cellEnd);
+            const tcWTag = cellXml.match(/<w:tcW\b[^>]*\/>/);
+            if (tcWTag) {
+                const wMatch = tcWTag[0].match(/w:w="(\d+)"/);
+                const typeMatch = tcWTag[0].match(/w:type="(\w+)"/);
+                if (wMatch && (!typeMatch || typeMatch[1] === 'dxa')) {
+                    return parseInt(wMatch[1], 10) * 635;
+                }
+            }
+            return null;
+        }
+        searchFrom = cellEnd;
+    }
+    return null;
+}
+
 function extFromMime(mime: string): string {
     if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
     if (mime.includes('gif')) return 'gif';
@@ -281,13 +317,18 @@ function extFromMime(mime: string): string {
  * в архив, релс и при необходимости Content_Types.xml — своя, отдельная связка на
  * каждую строку.
  */
-async function embedPhoto(rowXml: string, driveFileId: string | undefined, accessToken: string, index: number, zip: JSZip): Promise<string> {
-    const marker = 'MATERIAL_PHOTO';
+/** Строит "гибкую" регулярку для {{MARKER}}, устойчивую к разрывам тегов Word
+ * между буквами (та же логика, что и в substitutePlaceholders/findRowBounds). */
+function buildPlaceholderRegex(marker: string): RegExp {
     const pattern = marker
         .split('')
         .map(char => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
         .join('(?:<[^>]+>)*');
-    const markerRegex = new RegExp(`\\{\\{(?:<[^>]+>)*${pattern}(?:<[^>]+>)*\\}\\}`, 'i');
+    return new RegExp(`\\{\\{(?:<[^>]+>)*${pattern}(?:<[^>]+>)*\\}\\}`, 'i');
+}
+
+async function embedPhoto(rowXml: string, driveFileId: string | undefined, accessToken: string, index: number, zip: JSZip, maxWidthEmu: number): Promise<string> {
+    const markerRegex = buildPlaceholderRegex('MATERIAL_PHOTO');
 
     if (!markerRegex.test(rowXml)) return rowXml;
 
@@ -338,17 +379,17 @@ async function embedPhoto(rowXml: string, driveFileId: string | undefined, acces
         }
     }
 
-    // Вписываем реальные пропорции картинки в рамку ~2.5×1.9 см (а не насильно
-    // квадратом) — иначе прямоугольное фото (как у кирпича, сложенного в ряд)
-    // растягивается и искажается. Если формат не распознан (не png/jpeg) —
-    // используем ту же рамку как запасной размер.
-    const MAX_W_EMU = 900000;
-    const MAX_H_EMU = 700000;
+    // Ширина — реальная ширина ячейки из шаблона (см. findPhotoCellWidthEmu), чтобы
+    // фото автоматически подстраивалось под колонку конкретного шаблона. Высоту
+    // отдельно не подгоняем под строку (в docx высота строки обычно и так растёт
+    // под содержимое) — только ограничиваем разумным потолком, чтобы случайно очень
+    // "вытянутое" по вертикали фото не раздуло строку до абсурдных размеров.
+    const MAX_H_EMU_CEILING = 1400000;
     const dims = getImageDimensions(bytes, ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
-    let cx = MAX_W_EMU;
-    let cy = MAX_H_EMU;
+    let cx = maxWidthEmu;
+    let cy = MAX_H_EMU_CEILING;
     if (dims) {
-        const scale = Math.min(MAX_W_EMU / dims.width, MAX_H_EMU / dims.height);
+        const scale = Math.min(maxWidthEmu / dims.width, MAX_H_EMU_CEILING / dims.height);
         cx = Math.max(1, Math.round(dims.width * scale));
         cy = Math.max(1, Math.round(dims.height * scale));
     }
@@ -399,6 +440,15 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
     const before = documentXml.slice(0, start);
     const after = documentXml.slice(end);
 
+    // Ширину ячейки под фото определяем ОДИН раз из образца строки (структура
+    // ячеек одинакова для всех размноженных копий) — а не пересчитываем на
+    // каждую позицию заново.
+    const photoMarkerMatch = buildPlaceholderRegex('MATERIAL_PHOTO').exec(sampleRow);
+    const photoCellWidthEmu = photoMarkerMatch ? findPhotoCellWidthEmu(sampleRow, photoMarkerMatch.index) : null;
+    // Небольшой отступ от найденной ширины ячейки, чтобы фото не упиралось точно
+    // в границу колонки (с учётом внутренних полей ячейки в Word по умолчанию).
+    const photoMaxWidthEmu = photoCellWidthEmu ? Math.max(200000, photoCellWidthEmu - 100000) : 900000;
+
     const totalSum = data.materials.reduce((sum, m) => sum + (m.sum || 0), 0);
     const firstVatPercent = data.materials[0]?.saleVatPercent ?? 22;
 
@@ -427,7 +477,7 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
 
         let rowCopy = stripEmptyOptionalParagraphs(sampleRow, rowReplacements, ['METER_QUANTITY', 'QUANTITY_PER_PALLET', 'MAUFACTURER']);
         photoIndex += 1;
-        rowCopy = await embedPhoto(rowCopy, m.photoDriveFileId, data.accessToken, photoIndex, zip);
+        rowCopy = await embedPhoto(rowCopy, m.photoDriveFileId, data.accessToken, photoIndex, zip, photoMaxWidthEmu);
         rowCopy = substitutePlaceholders(rowCopy, rowReplacements);
         rowsXml += rowCopy;
     }
