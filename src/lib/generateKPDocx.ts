@@ -4,7 +4,7 @@
  * Генерация коммерческого предложения по шаблону template_kp.docx — шаблон специально
  * под материалы вида товара "кирпич" (имя файла и структура таблицы заточены под это).
  * Технически похоже на generateTrustDeedDocx.ts (JSZip, прямая работа с XML внутри
- * архива docx), но с двумя добавленными сложностями:
+ * архива docx), но с добавленными сложностями:
  *
  * 1. Таблица материалов — переменное число строк (по числу выбранных позиций).
  *    В шаблоне должна быть РОВНО ОДНА строка-образец с плейсхолдерами внутри —
@@ -16,6 +16,14 @@
  *    (footer1.xml/footer2.xml/footer3.xml — для разных страниц раздела), и заранее
  *    неизвестно, в каком именно лежит нужный текст. Поэтому обрабатываем placeholder-
  *    подстановкой КАЖДЫЙ footer*.xml файл, который реально есть в архиве.
+ *
+ * 3. Фото материала хранится на Google Drive (не в Firebase Storage — бесплатный
+ *    тариф не позволяет хранить файлы), поэтому при вставке в документ байты
+ *    скачиваются напрямую через Google Drive API, тем же access-токеном, которым
+ *    готовый файл КП потом загружается обратно на Диск. Это значит: если папка с
+ *    фото не расшарена на аккаунт того, кто формирует КП, конкретно эта фотография
+ *    просто не вставится (ячейка останется пустой) — остальной документ всё равно
+ *    сформируется корректно.
  */
 
 import JSZip from 'jszip';
@@ -101,8 +109,8 @@ export interface KPMaterialInput {
     qtyPerM2?: number;
     /** Кол-во шт в поддоне (из справочника материала) — используется для "N шт. в поддоне". */
     qtyPerPallet?: number;
-    /** Фото материала (Firebase Storage URL) — если есть, вставляется в ячейку картинкой. */
-    photoUrl?: string;
+    /** ID файла фото на Google Drive (из справочника материала) — если есть, вставляется в ячейку картинкой. */
+    photoDriveFileId?: string;
     /** Цена продажи за ед., с НДС. */
     price: number;
     /** Кол-во м² (для материалов, где это применимо). */
@@ -122,6 +130,8 @@ export interface KPDocxInput {
     sellerLegalEntityAddress: string;
     managerName: string;
     materials: KPMaterialInput[];
+    /** Google-токен того, кто формирует КП — нужен, чтобы скачать байты фото с Диска. */
+    accessToken: string;
 }
 
 // ───────────────────────── работа с XML ─────────────────────────
@@ -192,12 +202,32 @@ function substitutePlaceholders(xml: string, replacements: Record<string, string
     return result;
 }
 
+/** Скачивает байты файла с Google Drive через официальный API (требует access-токен
+ * того, кто формирует КП — см. комментарий в шапке файла про ограничение доступа). */
+async function fetchDriveFileBytes(fileId: string, accessToken: string): Promise<{ bytes: ArrayBuffer; mime: string }> {
+    const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!resp.ok) throw new Error(`Drive API HTTP ${resp.status}`);
+    const bytes = await resp.arrayBuffer();
+    const mime = resp.headers.get('Content-Type') || 'image/png';
+    return { bytes, mime };
+}
+
+function extFromMime(mime: string): string {
+    if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
+    if (mime.includes('gif')) return 'gif';
+    if (mime.includes('webp')) return 'webp';
+    return 'png';
+}
+
 /**
  * Вставляет фото материала в ячейку вместо {{MATERIAL_PHOTO}} (или просто убирает
- * плейсхолдер, если фото нет). Добавляет байты картинки в архив, релс и
- * при необходимости Content_Types.xml — своя, отдельная связка на каждую строку.
+ * плейсхолдер, если фото нет или его не удалось скачать). Добавляет байты картинки
+ * в архив, релс и при необходимости Content_Types.xml — своя, отдельная связка на
+ * каждую строку.
  */
-async function embedPhoto(rowXml: string, photoUrl: string | undefined, index: number, zip: JSZip): Promise<string> {
+async function embedPhoto(rowXml: string, driveFileId: string | undefined, accessToken: string, index: number, zip: JSZip): Promise<string> {
     const marker = 'MATERIAL_PHOTO';
     const pattern = marker
         .split('')
@@ -215,20 +245,18 @@ async function embedPhoto(rowXml: string, photoUrl: string | undefined, index: n
     }
     if (!targetParagraph) return rowXml;
 
-    if (!photoUrl) {
+    if (!driveFileId) {
         return rowXml.replace(targetParagraph, '');
     }
 
     let bytes: ArrayBuffer;
-    let ext = 'png';
+    let ext: string;
     try {
-        const resp = await fetch(photoUrl);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        bytes = await resp.arrayBuffer();
-        const urlExt = (photoUrl.split('?')[0].split('.').pop() || 'png').toLowerCase();
-        if (['png', 'jpg', 'jpeg', 'gif'].includes(urlExt)) ext = urlExt;
+        const result = await fetchDriveFileBytes(driveFileId, accessToken);
+        bytes = result.bytes;
+        ext = extFromMime(result.mime);
     } catch (error) {
-        console.error('Не удалось загрузить фото материала для КП, оставляем ячейку пустой:', error);
+        console.error('Не удалось скачать фото материала с Google Диска, оставляем ячейку пустой (проверьте, расшарен ли файл):', error);
         return rowXml.replace(targetParagraph, '');
     }
 
@@ -250,7 +278,7 @@ async function embedPhoto(rowXml: string, photoUrl: string | undefined, index: n
     if (ctFile) {
         let ctXml = await ctFile.async('text');
         if (!ctXml.includes(`Extension="${ext}"`)) {
-            const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : 'image/png';
+            const mime = ext === 'jpg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/png';
             ctXml = ctXml.replace('</Types>', `<Default Extension="${ext}" ContentType="${mime}"/></Types>`);
             zip.file(contentTypesPath, ctXml);
         }
@@ -331,7 +359,7 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
 
         let rowCopy = stripEmptyOptionalParagraphs(sampleRow, rowReplacements, ['METER_QUANTITY', 'QUANTITY_PER_PALLET', 'MAUFACTURER']);
         photoIndex += 1;
-        rowCopy = await embedPhoto(rowCopy, m.photoUrl, photoIndex, zip);
+        rowCopy = await embedPhoto(rowCopy, m.photoDriveFileId, data.accessToken, photoIndex, zip);
         rowCopy = substitutePlaceholders(rowCopy, rowReplacements);
         rowsXml += rowCopy;
     }

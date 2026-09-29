@@ -81,8 +81,13 @@ export interface Material extends DirectoryItem {
   qtyPerM2?: number;
   /** Кол-во штук в поддоне — используется для расчёта количества поддонов */
   qtyPerPallet?: number;
-  /** Фото материала (для вида товара "кирпич") — хранится в Firebase Storage, используется в КП */
-  photoUrl?: string;
+  /**
+   * Фото материала (для вида товара "кирпич"), используется в КП. Хранится на
+   * Google Drive (не в Firebase Storage — бесплатный тариф Storage не позволяет
+   * хранить файлы) — здесь только ID файла на Диске, сама картинка лежит в папке,
+   * которую пользователь готовит заранее и расшаривает всем, кто формирует КП.
+   */
+  photoDriveFileId?: string;
 }
 export interface Unit extends DirectoryItem {}
 export interface Driver extends DirectoryItem {

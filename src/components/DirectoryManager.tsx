@@ -5,14 +5,31 @@ import { db, auth } from '../lib/firebase';
 import { Company, Contact, ExpenseCategory, AppUser, DirectoryItem, Material, Carrier, ProductType } from '../types';
 import {
     User, Plus, Trash2, Edit2, Save, X, Users, Layers, Maximize,
-    Truck, Wallet, Search, Briefcase, Pencil, ChevronDown, Tag, ImagePlus, Loader2,
+    Truck, Wallet, Search, Briefcase, Pencil, ChevronDown, Tag,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
 import CompanySelect from './CompanySelect';
 import { SELLER_LEGAL_ENTITY_COMPANY_TYPE } from './shared/DashboardFilters';
-import { uploadMaterialPhoto, deleteMaterialPhoto } from '../lib/firebaseStorage';
+
+/**
+ * Достаёт ID файла из обычной ссылки "Поделиться" на Google Диске — поддерживает
+ * два самых распространённых формата (.../file/d/ID/... и .../open?id=ID), плюс
+ * на случай, если пользователь вставит просто голый ID без ссылки вокруг.
+ */
+function parseDriveFileId(input: string): string {
+    const trimmed = input.trim();
+    if (!trimmed) return '';
+    const byPath = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (byPath) return byPath[1];
+    const byQuery = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (byQuery) return byQuery[1];
+    const byGenericPath = trimmed.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (byGenericPath) return byGenericPath[1];
+    if (/^[a-zA-Z0-9_-]{10,}$/.test(trimmed)) return trimmed;
+    return '';
+}
 
 const inputCls = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
 const labelCls = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
@@ -512,7 +529,14 @@ function MaterialsTable({ items, productTypes, companies, onEdit }: { items: Mat
                         <td className={cellCls}>
                             <div className="flex items-center gap-3 min-w-0">
                                 <span className="w-7 h-7 rounded-lg bg-ochre-bg flex items-center justify-center text-ochre shrink-0 overflow-hidden">
-                                    {item.photoUrl ? <img src={item.photoUrl} alt="" className="w-full h-full object-cover" /> : <Layers size={13} />}
+                                    {item.photoDriveFileId
+                                        ? <img
+                                            src={`https://drive.google.com/thumbnail?id=${item.photoDriveFileId}&sz=w100`}
+                                            alt=""
+                                            className="w-full h-full object-cover"
+                                            onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                        />
+                                        : <Layers size={13} />}
                                 </span>
                                 <div className="min-w-0">
                                     <p className="text-[13px] font-medium text-ink truncate">{item.name}</p>
@@ -773,43 +797,29 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
     );
     const [qtyPerM2, setQtyPerM2] = useState(editingMaterial?.qtyPerM2 ? String(editingMaterial.qtyPerM2) : '');
     const [qtyPerPallet, setQtyPerPallet] = useState(editingMaterial?.qtyPerPallet ? String(editingMaterial.qtyPerPallet) : '');
-    const [photoUrl, setPhotoUrl] = useState(editingMaterial?.photoUrl || '');
-    const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+    const [photoDriveFileId, setPhotoDriveFileId] = useState(editingMaterial?.photoDriveFileId || '');
+    // Буфер для самого поля ввода — пользователь может вставить туда любую ссылку
+    // на Диск, а не только "чистый" ID; распознаём ID при потере фокуса (см. commitPhotoLink).
+    const [photoLinkText, setPhotoLinkText] = useState(editingMaterial?.photoDriveFileId || '');
     const [isSaving, setIsSaving] = useState(false);
-    const photoInputRef = useRef<HTMLInputElement>(null);
 
     const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
 
     const selectedProductTypeName = productTypes.find(pt => pt.id === productTypeId)?.name;
     const showPhotoField = isBrickProductTypeName(selectedProductTypeName);
 
-    const handlePhotoSelect = async (file: File | null) => {
-        if (!file) return;
-        setIsUploadingPhoto(true);
-        try {
-            if (photoUrl) {
-                await deleteMaterialPhoto(photoUrl).catch(console.error);
-            }
-            const url = await uploadMaterialPhoto(file, materialDocId);
-            setPhotoUrl(url);
-        } catch (error) {
-            console.error('Не удалось загрузить фото материала:', error);
-            alert('Не удалось загрузить фото. Попробуйте ещё раз.');
-        } finally {
-            setIsUploadingPhoto(false);
-            if (photoInputRef.current) photoInputRef.current.value = '';
+    const commitPhotoLink = () => {
+        const id = parseDriveFileId(photoLinkText);
+        setPhotoDriveFileId(id);
+        setPhotoLinkText(id); // нормализуем поле к самому ID — так видно, что ссылка распозналась
+        if (photoLinkText.trim() && !id) {
+            alert('Не удалось распознать ссылку на файл Google Диска. Проверьте, что скопировали именно ссылку "Поделиться" на файл.');
         }
     };
 
-    const handleRemovePhoto = async () => {
-        if (!photoUrl) return;
-        if (!window.confirm('Удалить фото материала?')) return;
-        try {
-            await deleteMaterialPhoto(photoUrl);
-        } catch (error) {
-            console.error('Не удалось удалить фото на Storage:', error);
-        }
-        setPhotoUrl('');
+    const handleRemovePhoto = () => {
+        setPhotoDriveFileId('');
+        setPhotoLinkText('');
     };
 
     const handleSave = async () => {
@@ -823,7 +833,7 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
                 manufacturerId: manufacturerId || '',
                 qtyPerM2: qtyPerM2 ? Number(qtyPerM2) : null,
                 qtyPerPallet: qtyPerPallet ? Number(qtyPerPallet) : null,
-                photoUrl: photoUrl || null,
+                photoDriveFileId: photoDriveFileId || null,
             };
             if (isEditing) {
                 await updateDoc(doc(db, 'materials', materialDocId), payload);
@@ -919,48 +929,46 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
 
                     {showPhotoField && (
                         <div>
-                            <label className={labelCls}>Фото материала</label>
-                            <p className="text-[10.5px] text-ink-4 mb-2">Используется в печатной форме коммерческого предложения</p>
-                            {photoUrl ? (
-                                <div className="flex items-center gap-3">
-                                    <img src={photoUrl} alt={name} className="w-20 h-20 rounded-lg object-cover border border-line" />
-                                    <div className="flex flex-col gap-1.5">
-                                        <button
-                                            type="button"
-                                            onClick={() => photoInputRef.current?.click()}
-                                            disabled={isUploadingPhoto}
-                                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 transition-colors"
-                                        >
-                                            {isUploadingPhoto ? <Loader2 size={12} className="animate-spin" /> : <ImagePlus size={12} />}
-                                            Заменить
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={handleRemovePhoto}
-                                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-terracotta border border-line bg-surface hover:bg-terracotta/5 transition-colors"
-                                        >
-                                            <Trash2 size={12} /> Удалить
-                                        </button>
-                                    </div>
+                            <label className={labelCls}>Фото материала — ссылка на Google Диск</label>
+                            <p className="text-[10.5px] text-ink-4 mb-2">Вставьте ссылку «Поделиться» на файл из папки с фото на Диске — используется в печатной форме КП</p>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="text"
+                                    value={photoLinkText}
+                                    onChange={e => setPhotoLinkText(e.target.value)}
+                                    onBlur={commitPhotoLink}
+                                    placeholder="https://drive.google.com/file/d/..."
+                                    className={inputClass}
+                                />
+                                {photoDriveFileId && (
+                                    <button
+                                        type="button"
+                                        onClick={handleRemovePhoto}
+                                        title="Убрать фото"
+                                        className="shrink-0 w-9 h-9 flex items-center justify-center rounded-md border border-line text-terracotta hover:bg-terracotta/5 transition-colors"
+                                    >
+                                        <Trash2 size={14} />
+                                    </button>
+                                )}
+                            </div>
+                            {photoDriveFileId && (
+                                <div className="mt-2 flex items-center gap-3">
+                                    <img
+                                        src={`https://drive.google.com/thumbnail?id=${photoDriveFileId}&sz=w200`}
+                                        alt={name}
+                                        className="w-20 h-20 rounded-lg object-cover border border-line bg-surface-2"
+                                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                    />
+                                    <a
+                                        href={`https://drive.google.com/file/d/${photoDriveFileId}/view`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-[12px] text-ochre hover:underline"
+                                    >
+                                        Открыть на Диске
+                                    </a>
                                 </div>
-                            ) : (
-                                <button
-                                    type="button"
-                                    onClick={() => photoInputRef.current?.click()}
-                                    disabled={isUploadingPhoto}
-                                    className="w-full inline-flex items-center justify-center gap-2 h-9 rounded-md text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 transition-colors"
-                                >
-                                    {isUploadingPhoto ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />}
-                                    {isUploadingPhoto ? 'Загружаем…' : 'Загрузить фото'}
-                                </button>
                             )}
-                            <input
-                                ref={photoInputRef}
-                                type="file"
-                                accept="image/*"
-                                className="hidden"
-                                onChange={e => handlePhotoSelect(e.target.files?.[0] || null)}
-                            />
                         </div>
                     )}
                 </div>

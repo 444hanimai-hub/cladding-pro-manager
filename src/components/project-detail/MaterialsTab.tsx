@@ -242,7 +242,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                     manufacturerName: manufacturerName || '',
                     qtyPerM2: dir?.qtyPerM2,
                     qtyPerPallet: dir?.qtyPerPallet,
-                    photoUrl: dir?.photoUrl,
+                    photoDriveFileId: dir?.photoDriveFileId,
                     price: m.salePrice,
                     quantityM2: m.quantityM2,
                     quantity: m.quantity,
@@ -258,6 +258,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                 sellerLegalEntityAddress: sellerCompany?.address || '',
                 managerName: project.leadManagerName || '',
                 materials: kpMaterials,
+                accessToken,
             });
 
             const filename = buildKPFileName(project.name, project.client);
