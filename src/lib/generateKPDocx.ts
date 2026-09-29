@@ -218,6 +218,56 @@ async function fetchDriveFileBytes(fileId: string, accessToken: string): Promise
     return { bytes, mime };
 }
 
+/** Реальные размеры PNG — ширина/высота лежат прямо в заголовке чанка IHDR
+ * по фиксированному смещению, сразу после 8-байтовой сигнатуры PNG. */
+function getPngDimensions(view: DataView): { width: number; height: number } | null {
+    if (view.byteLength < 24) return null;
+    if (view.getUint32(0) !== 0x89504e47) return null; // сигнатура "\x89PNG"
+    const width = view.getUint32(16);
+    const height = view.getUint32(20);
+    return width > 0 && height > 0 ? { width, height } : null;
+}
+
+/** Реальные размеры JPEG — нужно пройтись по служебным маркерам файла до
+ * сегмента SOFn (Start Of Frame), где и записаны истинные ширина/высота. */
+function getJpegDimensions(view: DataView): { width: number; height: number } | null {
+    if (view.byteLength < 4 || view.getUint16(0) !== 0xffd8) return null;
+    let offset = 2;
+    const len = view.byteLength;
+    while (offset < len - 1) {
+        if (view.getUint8(offset) !== 0xff) { offset++; continue; }
+        const marker = view.getUint8(offset + 1);
+        offset += 2;
+        if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+        if (offset + 1 >= len) break;
+        const segLen = view.getUint16(offset);
+        const isSOF = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+        if (isSOF) {
+            if (offset + 7 >= len) break;
+            const height = view.getUint16(offset + 3);
+            const width = view.getUint16(offset + 5);
+            return width > 0 && height > 0 ? { width, height } : null;
+        }
+        offset += segLen;
+    }
+    return null;
+}
+
+/** Определяет реальные пиксельные размеры картинки — по ним дальше вписываем её
+ * в ячейку таблицы с сохранением пропорций, а не насильно квадратом. Для форматов,
+ * которые не разбираем (gif/webp), возвращаем null — тогда просто используем
+ * разумный запасной размер по умолчанию. */
+function getImageDimensions(bytes: ArrayBuffer, mime: string): { width: number; height: number } | null {
+    try {
+        const view = new DataView(bytes);
+        if (mime.includes('png')) return getPngDimensions(view);
+        if (mime.includes('jpeg') || mime.includes('jpg')) return getJpegDimensions(view);
+    } catch {
+        return null;
+    }
+    return null;
+}
+
 function extFromMime(mime: string): string {
     if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
     if (mime.includes('gif')) return 'gif';
@@ -288,12 +338,26 @@ async function embedPhoto(rowXml: string, driveFileId: string | undefined, acces
         }
     }
 
-    const sizeEmu = 800000;
+    // Вписываем реальные пропорции картинки в рамку ~2.5×1.9 см (а не насильно
+    // квадратом) — иначе прямоугольное фото (как у кирпича, сложенного в ряд)
+    // растягивается и искажается. Если формат не распознан (не png/jpeg) —
+    // используем ту же рамку как запасной размер.
+    const MAX_W_EMU = 900000;
+    const MAX_H_EMU = 700000;
+    const dims = getImageDimensions(bytes, ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
+    let cx = MAX_W_EMU;
+    let cy = MAX_H_EMU;
+    if (dims) {
+        const scale = Math.min(MAX_W_EMU / dims.width, MAX_H_EMU / dims.height);
+        cx = Math.max(1, Math.round(dims.width * scale));
+        cy = Math.max(1, Math.round(dims.height * scale));
+    }
+
     const docPrId = 9000 + index;
     const drawing =
         `<w:r><w:drawing>` +
         `<wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">` +
-        `<wp:extent cx="${sizeEmu}" cy="${sizeEmu}"/>` +
+        `<wp:extent cx="${cx}" cy="${cy}"/>` +
         `<wp:effectExtent l="0" t="0" r="0" b="0"/>` +
         `<wp:docPr id="${docPrId}" name="KPPhoto${index}"/>` +
         `<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>` +
@@ -302,7 +366,7 @@ async function embedPhoto(rowXml: string, driveFileId: string | undefined, acces
         `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
         `<pic:nvPicPr><pic:cNvPr id="${docPrId}" name="KPPhoto${index}"/><pic:cNvPicPr/></pic:nvPicPr>` +
         `<pic:blipFill><a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
-        `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${sizeEmu}" cy="${sizeEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>` +
+        `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>` +
         `</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 
     const pPrMatch = targetParagraph.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
