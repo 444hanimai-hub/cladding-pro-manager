@@ -203,9 +203,13 @@ function substitutePlaceholders(xml: string, replacements: Record<string, string
 }
 
 /** Скачивает байты файла с Google Drive через официальный API (требует access-токен
- * того, кто формирует КП — см. комментарий в шапке файла про ограничение доступа). */
+ * того, кто формирует КП — см. комментарий в шапке файла про ограничение доступа).
+ * supportsAllDrives=true — без этого параметра файлы, лежащие на "Общих дисках"
+ * (Shared Drives) Google Workspace, попросту не видны запросу и возвращают 404,
+ * даже если прав доступа формально достаточно; для личного "Мой диск" параметр
+ * ни на что не влияет, поэтому оставляем его всегда, а не только опционально. */
 async function fetchDriveFileBytes(fileId: string, accessToken: string): Promise<{ bytes: ArrayBuffer; mime: string }> {
-    const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`, {
         headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!resp.ok) throw new Error(`Drive API HTTP ${resp.status}`);
