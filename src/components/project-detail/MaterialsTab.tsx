@@ -22,6 +22,7 @@ import {
 import { ensureProjectDocsFolder, findOrCreateSubfolder } from '../../lib/googleDriveFolders';
 import { uploadFileToDrive } from '../../lib/googleDriveFiles';
 import { generateKPDocx, buildKPFileName } from '../../lib/generateKPDocx';
+import { syncPlannedExpensesForMaterials, getMaterialIdsWithActualExpenses } from '../../lib/plannedExpenses';
 
 const KP_SUBFOLDER_NAME = 'Коммерческие предложения';
 
@@ -113,9 +114,15 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
             // во вкладке «Финансы» (возможность редактировать там сумму вручную остаётся,
             // просто следующее изменение материалов снова её пересчитает).
             const newTotals = calcProjectMaterialsTotals(updated);
+            // Плановые расходы (закуп/транспорт/дизайнер/ГП на каждый материал + общий
+            // налог по проекту) пересобираются заново из свежего состава материалов —
+            // id детерминированные, поэтому уже существующие ссылки фактических расходов
+            // на плановые (plannedExpenseId) не рвутся, просто суммы обновляются на месте.
+            const newExpenses = syncPlannedExpensesForMaterials(project.finance?.expenses || [], updated);
             await updateDoc(doc(db, 'projects', project.id), {
                 materials: updated,
                 'finance.contractSum': newTotals.saleSum,
+                'finance.expenses': newExpenses,
                 updatedAt: serverTimestamp(),
             });
             setIsAdding(false);
@@ -154,14 +161,27 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
             alert('Материал нельзя удалить: по нему уже оформлена доверенность. Сначала удалите или измените доверенность, чтобы она не ссылалась на этот материал.');
             return;
         }
-        if (!window.confirm('Удалить этот материал из проекта?')) return;
 
+        // Фактические расходы (не плановые — плановые созданы автоматически и удалятся
+        // вместе с материалом без вопросов) — если хоть один есть, блокируем удаление
+        // точно так же, как с доверенностями.
+        const materialIdsWithActualExpenses = getMaterialIdsWithActualExpenses(project.finance?.expenses || []);
+        if (materialIdsWithActualExpenses.has(material.id)) {
+            alert('Материал нельзя удалить: по нему уже есть фактические расходы. Сначала удалите или переназначьте эти расходы на другой материал.');
+            return;
+        }
+
+        // Ни доверенности, ни фактических расходов нет — по договорённости удаляем
+        // молча, без диалога подтверждения (у материала есть только плановые расходы,
+        // они уйдут вместе с ним автоматически).
         try {
             const updated = materials.filter(m => m.id !== id);
             const newTotals = calcProjectMaterialsTotals(updated);
+            const newExpenses = syncPlannedExpensesForMaterials(project.finance?.expenses || [], updated);
             await updateDoc(doc(db, 'projects', project.id), {
                 materials: updated,
                 'finance.contractSum': newTotals.saleSum,
+                'finance.expenses': newExpenses,
                 updatedAt: serverTimestamp(),
             });
             if (selectedId === id) setSelectedId(null);

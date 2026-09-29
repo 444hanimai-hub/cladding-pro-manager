@@ -1,20 +1,41 @@
 import React, { useState, useEffect } from 'react';
-import { createPortal } from 'react-dom';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronDown, Plus, X, Trash2, Pencil, Paperclip, ExternalLink, Loader2, FileText, PieChart as PieChartIcon } from 'lucide-react';
+import { X, Trash2, Paperclip, ExternalLink, Loader2, FileText, PieChart as PieChartIcon } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 import { cn, formatCurrency, formatAmountGrouped, parseGroupedAmount } from '../../lib/utils';
-import { getTotalExpenses } from '../../lib/financeCalculations';
+import {
+    getPlannedExpensesTotal,
+    getActualExpensesTotal,
+    getExpensesTotalByTypeAndCategory,
+    getNetProfitPlanned,
+    getNetProfitActual,
+    getMarginPercentPlanned,
+    getMarginPercentActual,
+} from '../../lib/financeCalculations';
+import { EXPENSE_CATEGORY_TAX, PLANNED_TAX_EXPENSE_ID, EXPENSE_CATEGORY_PURCHASE, EXPENSE_CATEGORY_TRANSPORT, EXPENSE_CATEGORY_DESIGNER, EXPENSE_CATEGORY_GC } from '../../lib/plannedExpenses';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
-import { Project, AppUser, Expense, ExpenseReceiptFile } from '../../types';
+import { Project, AppUser, Expense, ExpenseReceiptFile, ProjectMaterial } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import CodeProtection from '../CodeProtection';
 import { ensureProjectDocsFolder, findOrCreateSubfolder, formatDateYMD } from '../../lib/googleDriveFolders';
 import { uploadFileToDrive, deleteDriveFile, buildReceiptFileName } from '../../lib/googleDriveFiles';
 
 const EXPENSES_SUBFOLDER_NAME = 'Расходы';
+
+/** Склейка "Наименование · Поставщик" — тот же вид, что и в таблице вкладки «Материалы». */
+function getMaterialLabel(m?: ProjectMaterial): string {
+    if (!m) return '';
+    return m.supplierName ? `${m.materialName} · ${m.supplierName}` : m.materialName || '';
+}
+
+function formatExpenseDate(dateStr: string): string {
+    if (!dateStr) return '—';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
 
 function FinanceTab({
                         project,
@@ -52,16 +73,18 @@ function FinanceTab({
 
     const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
     const expenses = f.expenses || [];
-    const totalExpenses = getTotalExpenses(f);
+    const materials = project.materials || [];
+    const materialsById = new Map(materials.map(m => [m.id, m]));
 
-    // Расходы без бонуса менеджера
-    const expensesWithoutBonus = expenses.filter(
-        (e: any) => e.category?.toLowerCase() !== 'бонус менеджера'
-    );
-    const totalExpensesWithoutBonus = expensesWithoutBonus.reduce((s: number, e: any) => s + (e.amount || 0), 0);
-    const profitAfterExpenses = (f.contractSum || 0) - totalExpensesWithoutBonus;
-    const netProfit = (f.contractSum || 0) - totalExpenses;
-    const marginPercent = f.contractSum ? Math.round(netProfit / f.contractSum * 100) : 0;
+    // ── Карточки план/факт ──
+    const plannedExpensesTotal = getPlannedExpensesTotal(f);
+    const actualExpensesTotal = getActualExpensesTotal(f);
+    const taxPlanned = getExpensesTotalByTypeAndCategory(f, 'planned', EXPENSE_CATEGORY_TAX);
+    const taxActual = getExpensesTotalByTypeAndCategory(f, 'actual', EXPENSE_CATEGORY_TAX);
+    const netProfitPlanned = getNetProfitPlanned(f);
+    const netProfitActual = getNetProfitActual(f);
+    const marginPlanned = getMarginPercentPlanned(f);
+    const marginActual = getMarginPercentActual(f);
 
     const updateFinance = async (updates: Partial<typeof f>) => {
         try {
@@ -104,13 +127,6 @@ function FinanceTab({
 
     const handleSaveExpense = async (expenseData: Expense) => {
         try {
-            // Категория — сохраняем в справочник, если такой ещё нет (как и раньше).
-            const q = query(collection(db, 'expense_categories'), where('name', '==', expenseData.category));
-            const snapshot = await getDocs(q);
-            if (snapshot.empty) {
-                await addDoc(collection(db, 'expense_categories'), { name: expenseData.category, createdAt: serverTimestamp() });
-            }
-
             let updatedExpenses;
             if (editingExpenseId) {
                 updatedExpenses = expenses.map(e => e.id === editingExpenseId ? expenseData : e);
@@ -135,9 +151,56 @@ function FinanceTab({
         }
     };
 
-    const sortedExpenses = [...expenses].sort(
+    // ── Группировка таблицы: плановый расход (серая заливка) → под ним все
+    // фактические, что на него ссылаются (обычная заливка, сумма красным) → следующий
+    // плановый и его фактические → и так по всем плановым проекта → в конце все
+    // фактические расходы, НЕ привязанные ни к какому плановому. ──
+    const plannedExpenses = expenses.filter(e => (e.type || 'actual') === 'planned');
+    const actualExpenses = expenses.filter(e => (e.type || 'actual') === 'actual');
+
+    const actualByPlanId = new Map<string, Expense[]>();
+    const ungroupedActual: Expense[] = [];
+    for (const a of actualExpenses) {
+        const parentExists = a.plannedExpenseId && plannedExpenses.some(p => p.id === a.plannedExpenseId);
+        if (parentExists) {
+            const arr = actualByPlanId.get(a.plannedExpenseId!) || [];
+            arr.push(a);
+            actualByPlanId.set(a.plannedExpenseId!, arr);
+        } else {
+            ungroupedActual.push(a);
+        }
+    }
+
+    const materialOrder = new Map(materials.map((m, i) => [m.id, i]));
+    const categoryPriority: Record<string, number> = {
+        [EXPENSE_CATEGORY_PURCHASE]: 0,
+        [EXPENSE_CATEGORY_TRANSPORT]: 1,
+        [EXPENSE_CATEGORY_DESIGNER]: 2,
+        [EXPENSE_CATEGORY_GC]: 3,
+    };
+    const plannedSorted = [...plannedExpenses].sort((a, b) => {
+        const aIsTax = a.id === PLANNED_TAX_EXPENSE_ID;
+        const bIsTax = b.id === PLANNED_TAX_EXPENSE_ID;
+        if (aIsTax !== bIsTax) return aIsTax ? 1 : -1; // общий налог по проекту — всегда последней плановой группой
+        const aOrder = materialOrder.get(a.materialId || '') ?? 0;
+        const bOrder = materialOrder.get(b.materialId || '') ?? 0;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        return (categoryPriority[a.category] ?? 99) - (categoryPriority[b.category] ?? 99);
+    });
+
+    type RenderRow = { expense: Expense; isPlanned: boolean };
+    const rows: RenderRow[] = [];
+    for (const planned of plannedSorted) {
+        rows.push({ expense: planned, isPlanned: true });
+        const children = (actualByPlanId.get(planned.id) || []).sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
+        for (const child of children) rows.push({ expense: child, isPlanned: false });
+    }
+    const sortedUngrouped = [...ungroupedActual].sort(
         (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
     );
+    for (const u of sortedUngrouped) rows.push({ expense: u, isPlanned: false });
 
     const editingExpense = editingExpenseId ? expenses.find(e => e.id === editingExpenseId) || null : null;
 
@@ -147,8 +210,8 @@ function FinanceTab({
             animate={{ opacity: 1, y: 0 }}
             className="space-y-5"
         >
-            {/* Сводные карточки */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+            {/* Сводные карточки план/факт */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                 <FinanceCard
                     label="СУММА КОНТРАКТА"
                     subtext="основа расчёта"
@@ -157,31 +220,14 @@ function FinanceTab({
                     canEdit={canEdit}
                     onValueChange={(v) => updateFinance({ contractSum: v })}
                 />
-                <FinanceCard
-                    label="ПРИБЫЛЬ"
-                    subtext="после всех расходов"
-                    value={profitAfterExpenses}
-                    variant="profit"
-                />
-                <FinanceCard
-                    label="ЧИСТАЯ ПРИБЫЛЬ"
-                    subtext="после бонуса менеджера"
-                    value={netProfit}
-                    variant="profit"
-                />
-                <FinanceCard
-                    label="РАСХОДЫ"
-                    subtext={`${expenses.length} операций`}
-                    value={totalExpenses}
-                    variant="expense"
-                />
-                <FinanceCard
-                    label="МАРЖА"
-                    subtext="от контракта"
-                    value={marginPercent}
-                    isPercentage
-                    variant="margin"
-                />
+                <FinanceCard label="РАСХОДЫ (ПЛАН)" value={plannedExpensesTotal} variant="expense" />
+                <FinanceCard label="РАСХОДЫ (ФАКТ)" value={actualExpensesTotal} variant="expense" />
+                <FinanceCard label="НАЛОГ (ПЛАН)" value={taxPlanned} variant="expense" />
+                <FinanceCard label="НАЛОГ (ФАКТ)" value={taxActual} variant="expense" />
+                <FinanceCard label="ЧИСТАЯ ПРИБЫЛЬ (ПЛАН)" value={netProfitPlanned} variant="profit" />
+                <FinanceCard label="ЧИСТАЯ ПРИБЫЛЬ (ФАКТ)" value={netProfitActual} variant="profit" />
+                <FinanceCard label="РЕНТАБЕЛЬНОСТЬ (ПЛАН)" value={Math.round(marginPlanned)} isPercentage variant="margin" />
+                <FinanceCard label="РЕНТАБЕЛЬНОСТЬ (ФАКТ)" value={Math.round(marginActual)} isPercentage variant="margin" />
             </div>
 
             {/* Расходы + диаграмма */}
@@ -198,14 +244,13 @@ function FinanceTab({
                                 onClick={handleOpenAdd}
                                 className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[11px] font-medium transition-colors border-[#D8B978] bg-[#B48444] text-white shadow-[0_1px_2px_rgba(132,91,37,0.18)] hover:bg-[#A6783D]"
                             >
-                                <Plus size={12} strokeWidth={2.5} />
                                 Добавить расход
                             </button>
                         )}
                     </div>
 
                     <div className="overflow-x-auto">
-                        <table className="w-full min-w-[520px] border-collapse text-left">
+                        <table className="w-full min-w-[640px] border-collapse text-left">
                             <thead>
                             <tr className="border-b border-[#DED8CC] bg-[#F8F3E9]">
                                 <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
@@ -213,6 +258,9 @@ function FinanceTab({
                                 </th>
                                 <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
                                     Вид расхода
+                                </th>
+                                <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
+                                    Материал
                                 </th>
                                 <th className="px-4 py-2.5 text-center text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
                                     Документы
@@ -225,69 +273,78 @@ function FinanceTab({
                             </thead>
 
                             <tbody className="divide-y divide-[#DED8CC] bg-[#FBF8F2]/50">
-                            {sortedExpenses.map((expense) => (
-                                <tr
-                                    key={expense.id}
-                                    onClick={() => canEdit && handleOpenEdit(expense.id)}
-                                    className={cn("group transition-colors hover:bg-white/60", canEdit && "cursor-pointer")}
-                                >
-                                    <td className="px-4 py-3 text-[11.5px] font-medium tabular-nums text-[#8A8574]">
-                                        {new Date(expense.date).toLocaleDateString('ru-RU', {
-                                            day: '2-digit',
-                                            month: '2-digit',
-                                            year: 'numeric',
-                                        })}
-                                    </td>
+                            {rows.map(({ expense, isPlanned }) => {
+                                const materialLabel = getMaterialLabel(materialsById.get(expense.materialId || ''));
+                                return (
+                                    <tr
+                                        key={expense.id}
+                                        onClick={() => canEdit && !isPlanned && handleOpenEdit(expense.id)}
+                                        className={cn(
+                                            "group transition-colors",
+                                            isPlanned ? "bg-[#EFEAE0]" : "hover:bg-white/60",
+                                            canEdit && !isPlanned && "cursor-pointer"
+                                        )}
+                                    >
+                                        <td className={cn("px-4 py-3 text-[11.5px] font-medium tabular-nums", isPlanned ? "text-[#6B6555]" : "text-[#8A8574]")}>
+                                            {formatExpenseDate(expense.date)}
+                                        </td>
 
-                                    <td className="px-4 py-3">
-                                        <div className="flex min-w-0 items-center gap-2.5">
-                          <span className="truncate text-[12.5px] font-medium text-[#302A1C]">
+                                        <td className={cn("px-4 py-3", !isPlanned && "pl-7")}>
+                                            <div className="flex min-w-0 items-center gap-2.5">
+                          <span className={cn("truncate text-[12.5px] font-medium", isPlanned ? "text-[#4A4636] font-semibold" : "text-[#302A1C]")}>
                             {expense.category || 'Без категории'}
                           </span>
-                                            {(expense.managerPercent || 0) > 0 && (
-                                                <span className="text-[10px] text-[#B48444] font-semibold shrink-0">{expense.managerPercent}%</span>
+                                                {(expense.managerPercent || 0) > 0 && (
+                                                    <span className="text-[10px] text-[#B48444] font-semibold shrink-0">{expense.managerPercent}%</span>
+                                                )}
+                                            </div>
+                                            {expense.description && (
+                                                <p className="text-[11px] text-[#8A8574] truncate mt-0.5 max-w-[220px]">{expense.description}</p>
                                             )}
-                                        </div>
-                                        {expense.description && (
-                                            <p className="text-[11px] text-[#8A8574] truncate mt-0.5 max-w-[220px]">{expense.description}</p>
-                                        )}
-                                    </td>
+                                        </td>
 
-                                    <td className="px-4 py-3 text-center">
-                                        {expense.receipts && expense.receipts.length > 0 ? (
-                                            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8A8574]">
-                                                <Paperclip size={12} /> {expense.receipts.length}
-                                            </span>
-                                        ) : (
-                                            <span className="text-[11px] text-[#C9C2AE]">—</span>
-                                        )}
-                                    </td>
+                                        <td className="px-4 py-3 text-[11.5px] text-[#8A8574] max-w-[180px] truncate">
+                                            {materialLabel || '—'}
+                                        </td>
 
-                                    <td className="px-4 py-3 text-right">
-                        <span className="font-mono text-[12.5px] font-bold tabular-nums text-[#9B3F54]">
+                                        <td className="px-4 py-3 text-center">
+                                            {expense.receipts && expense.receipts.length > 0 ? (
+                                                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8A8574]">
+                                                    <Paperclip size={12} /> {expense.receipts.length}
+                                                </span>
+                                            ) : (
+                                                <span className="text-[11px] text-[#C9C2AE]">—</span>
+                                            )}
+                                        </td>
+
+                                        <td className="px-4 py-3 text-right">
+                        <span className={cn("font-mono text-[12.5px] font-bold tabular-nums", isPlanned ? "text-[#4A4636]" : "text-[#9B3F54]")}>
                           {formatCurrency(expense.amount)}
                         </span>
-                                    </td>
-
-                                    {canEdit && (
-                                        <td className="px-2 py-3 text-right">
-                                            <button
-                                                type="button"
-                                                onClick={(e) => { e.stopPropagation(); removeExpense(expense.id); }}
-                                                className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
-                                                aria-label="Удалить расход"
-                                            >
-                                                <Trash2 size={12} strokeWidth={1.9} />
-                                            </button>
                                         </td>
-                                    )}
-                                </tr>
-                            ))}
 
-                            {expenses.length === 0 && (
+                                        {canEdit && (
+                                            <td className="px-2 py-3 text-right">
+                                                {!isPlanned && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => { e.stopPropagation(); removeExpense(expense.id); }}
+                                                        className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
+                                                        aria-label="Удалить расход"
+                                                    >
+                                                        <Trash2 size={12} strokeWidth={1.9} />
+                                                    </button>
+                                                )}
+                                            </td>
+                                        )}
+                                    </tr>
+                                );
+                            })}
+
+                            {rows.length === 0 && (
                                 <tr>
                                     <td
-                                        colSpan={canEdit ? 5 : 4}
+                                        colSpan={canEdit ? 6 : 5}
                                         className="px-4 py-10 text-center"
                                     >
                                         <p className="text-[12px] font-medium text-[#8A8574]">
@@ -306,12 +363,12 @@ function FinanceTab({
                         Структура расходов
                     </p>
 
-                    {expenses.length > 0 ? (
+                    {actualExpenses.length > 0 ? (
                         <div className="h-[260px]">
                             <ResponsiveContainer width="100%" height="100%">
                                 <PieChart>
                                     <Pie
-                                        data={expenses.reduce((acc: any[], exp) => {
+                                        data={actualExpenses.reduce((acc: any[], exp) => {
                                             const existing = acc.find(item => item.name === exp.category);
                                             if (existing) {
                                                 existing.value += exp.amount;
@@ -327,7 +384,7 @@ function FinanceTab({
                                         paddingAngle={2}
                                         stroke="none"
                                     >
-                                        {expenses.map((entry: any, index: number) => (
+                                        {actualExpenses.map((entry: any, index: number) => (
                                             <Cell
                                                 key={`expense-cell-${entry.category}-${index}`}
                                                 fill={getExpenseCategoryColor(entry.category, index)}
@@ -354,7 +411,7 @@ function FinanceTab({
                                 <PieChartIcon size={22} strokeWidth={1.8} />
                             </div>
                             <p className="text-[12px] font-medium text-[#8A8574]">
-                                Статей расходов пока нет
+                                Фактических расходов пока нет
                             </p>
                         </div>
                     )}
@@ -524,6 +581,16 @@ function ContractSumInput({
 
 // ───────────────────────── модалка добавления/редактирования расхода ─────────────────────────
 
+/**
+ * Форма расхода. Раз плановые расходы теперь заводятся ТОЛЬКО автоматически (при
+ * сохранении/удалении материала — см. lib/plannedExpenses.ts), у формы нет ни поля,
+ * ни переключателя "Тип расхода" — каждый расход, заведённый вручную здесь, это
+ * всегда type: "actual".
+ *
+ * Вид расхода — строго выбор из уже существующего справочника (без возможности
+ * создать новое значение прямо тут), чтобы справочник не разрастался мусором —
+ * на его значения (конкретно на 5 автоматических категорий) завязана бизнес-логика.
+ */
 function ExpenseModal({ project, expenses, editingExpense, contractSum, accessToken, onConnectCalendar, onClose, onSave }: {
     project: Project;
     expenses: Expense[];
@@ -537,9 +604,12 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
     const isEditing = !!editingExpense;
     const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
     const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
+    const selectClass = cn(inputClass, "appearance-none cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed");
 
     const [date, setDate] = useState(editingExpense?.date || '');
     const [category, setCategory] = useState(editingExpense?.category || '');
+    const [materialId, setMaterialId] = useState(editingExpense?.materialId || '');
+    const [plannedExpenseId, setPlannedExpenseId] = useState(editingExpense?.plannedExpenseId || '');
     const [description, setDescription] = useState(editingExpense?.description || '');
     const [amount, setAmount] = useState(editingExpense?.amount || 0);
     const [managerPercent, setManagerPercent] = useState(editingExpense?.managerPercent || 0);
@@ -549,14 +619,7 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
     const [isSaving, setIsSaving] = useState(false);
     const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-    // Портал-дропдаун категорий (как было)
-    const categoryInputRef = React.useRef<HTMLInputElement>(null);
-    const categoryWrapperRef = React.useRef<HTMLDivElement>(null);
-    const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
-    const [categorySearch, setCategorySearch] = useState('');
     const [expenseCategories, setExpenseCategories] = useState<string[]>([]);
-    const [portalPos, setPortalPos] = useState<{top:number;left:number;width:number}>({top:0,left:0,width:0});
-
     useEffect(() => {
         const unsub = onSnapshot(collection(db, 'expense_categories'), (snap) => {
             setExpenseCategories(snap.docs.map(d => d.data().name as string).filter(Boolean));
@@ -564,23 +627,8 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
         return () => unsub();
     }, []);
 
-    useEffect(() => {
-        if (!categoryDropdownOpen) return;
-        const handleClick = (e: MouseEvent) => {
-            const t = e.target as Node;
-            if (!categoryWrapperRef.current?.contains(t) && !document.getElementById('expense-cat-portal')?.contains(t)) {
-                setCategoryDropdownOpen(false);
-            }
-        };
-        document.addEventListener('mousedown', handleClick);
-        return () => document.removeEventListener('mousedown', handleClick);
-    }, [categoryDropdownOpen]);
-
-    useEffect(() => {
-        if (!categoryDropdownOpen || !categoryWrapperRef.current) return;
-        const rect = categoryWrapperRef.current.getBoundingClientRect();
-        setPortalPos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX, width: rect.width });
-    }, [categoryDropdownOpen]);
+    const plannedOptions = expenses.filter(e => (e.type || 'actual') === 'planned');
+    const materials = project.materials || [];
 
     const isManagerBonus = category.toLowerCase() === 'бонус менеджера';
     // База для бонуса менеджера — контракт минус прочие расходы, БЕЗ учёта самого
@@ -590,8 +638,6 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
         .reduce((sum, e) => sum + (e.amount || 0), 0);
     const profitBase = contractSum - otherExpensesTotal;
     const effectiveAmount = amount;
-
-    const filteredCats = expenseCategories.filter(c => c.toLowerCase().includes(categorySearch.toLowerCase()));
 
     // ── Связка "% менеджера ↔ сумма" для категории "Бонус менеджера" — тот же
     // принцип, что и "% накрутки ↔ цена продажи" в материалах: локальные текстовые
@@ -629,6 +675,23 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
         setManagerPercent(pct !== null ? Math.round(pct * 100) / 100 : 0);
         setPercentText(pct !== null ? String(Math.round(pct * 100) / 100) : '');
         setAmountText(amt ? amt.toLocaleString('ru-RU') : '');
+    };
+
+    /**
+     * При выборе планового расхода подтягиваем из него материал, вид расхода, сумму
+     * и комментарий (сумму и комментарий — только как отправную точку, дальше их
+     * можно менять; материал и вид расхода блокируются, пока привязка не снята).
+     */
+    const handleSelectPlanned = (newPlannedId: string) => {
+        setPlannedExpenseId(newPlannedId);
+        if (!newPlannedId) return;
+        const planned = expenses.find(e => e.id === newPlannedId);
+        if (!planned) return;
+        setCategory(planned.category);
+        setMaterialId(planned.materialId || '');
+        setAmount(planned.amount);
+        setAmountText(planned.amount ? planned.amount.toLocaleString('ru-RU') : '');
+        if (planned.description) setDescription(planned.description);
     };
 
     const handleAttachFiles = async (fileList: FileList | null) => {
@@ -703,6 +766,9 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                 id: editingExpense?.id || crypto.randomUUID(),
                 date,
                 category,
+                type: 'actual',
+                materialId: materialId || undefined,
+                plannedExpenseId: plannedExpenseId || undefined,
                 amount: effectiveAmount,
                 description: description || undefined,
                 managerPercent: isManagerBonus && managerPercent > 0 ? managerPercent : undefined,
@@ -733,6 +799,25 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar">
+                    {/* Ссылка на плановый расход — определяет, откуда идёт факт */}
+                    {plannedOptions.length > 0 && (
+                        <div>
+                            <label className={labelClass}>Ссылка на плановый расход</label>
+                            <select
+                                value={plannedExpenseId}
+                                onChange={e => handleSelectPlanned(e.target.value)}
+                                className={selectClass}
+                            >
+                                <option value="">— без привязки к плану —</option>
+                                {plannedOptions.map(p => {
+                                    const mat = findProjectMaterialById(project, p.materialId);
+                                    const label = mat ? `${p.category} · ${getMaterialLabel(mat)}` : p.category;
+                                    return <option key={p.id} value={p.id}>{label} — {formatCurrency(p.amount)}</option>;
+                                })}
+                            </select>
+                        </div>
+                    )}
+
                     {/* Дата / Сумма / % менеджера (последнее — только для категории "Бонус менеджера") */}
                     <div className={cn("grid gap-3", isManagerBonus ? "grid-cols-[130px_1fr_100px]" : "grid-cols-[130px_1fr]")}>
                         <div>
@@ -780,47 +865,37 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                         )}
                     </div>
 
-                    {/* Вид расхода — во всю ширину */}
-                    <div className="relative" ref={categoryWrapperRef}>
-                        <label className={labelClass}>Вид расхода</label>
-                        <div className="relative">
-                            <input
-                                ref={categoryInputRef}
-                                type="text"
-                                value={categoryDropdownOpen ? categorySearch : category}
-                                onChange={(e) => {
-                                    setCategorySearch(e.target.value);
-                                    if (!categoryDropdownOpen) setCategoryDropdownOpen(true);
-                                }}
-                                onFocus={() => { setCategorySearch(''); setCategoryDropdownOpen(true); }}
-                                placeholder="Выберите категорию..."
-                                className={inputClass}
-                            />
-                            <ChevronDown size={13} className={cn("absolute right-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none transition-transform", categoryDropdownOpen && "rotate-180")} />
+                    {/* Вид расхода — строго из справочника, создать новое значение здесь нельзя */}
+                    <div className="grid grid-cols-2 gap-3">
+                        <div>
+                            <label className={labelClass}>Вид расхода</label>
+                            <select
+                                value={category}
+                                onChange={e => setCategory(e.target.value)}
+                                disabled={!!plannedExpenseId}
+                                className={selectClass}
+                            >
+                                <option value="">Выберите вид расхода...</option>
+                                {expenseCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                            </select>
+                            {plannedExpenseId && (
+                                <p className="text-[10.5px] text-ink-4 mt-1">Подставлено из плана — снимите привязку к плану, чтобы изменить</p>
+                            )}
                         </div>
-                        {categoryDropdownOpen && createPortal(
-                            <div id="expense-cat-portal" style={{ position:'absolute', top: portalPos.top, left: portalPos.left, width: portalPos.width, zIndex: 999999 }}>
-                                <div className="rounded-md bg-surface border border-line shadow-[0_8px_24px_rgba(48,42,28,0.14)] overflow-hidden">
-                                    <div className="max-h-[200px] overflow-y-auto">
-                                        {filteredCats.length > 0 ? filteredCats.map(cat => (
-                                            <button key={cat} type="button"
-                                                    onMouseDown={(e) => { e.preventDefault(); setCategory(cat); setCategoryDropdownOpen(false); setCategorySearch(''); }}
-                                                    className={cn("w-full text-left px-3 py-2 text-[13px] transition-colors hover:bg-surface-2", category === cat ? "bg-ochre-bg text-ochre font-semibold" : "text-ink")}
-                                            >{cat}</button>
-                                        )) : (
-                                            <p className="px-3 py-2 text-[12px] italic text-ink-4">Ничего не найдено</p>
-                                        )}
-                                        {categorySearch.trim() && !expenseCategories.some(c => c.toLowerCase() === categorySearch.toLowerCase().trim()) && (
-                                            <button type="button"
-                                                    onMouseDown={(e) => { e.preventDefault(); setCategory(categorySearch.trim()); setCategoryDropdownOpen(false); setCategorySearch(''); }}
-                                                    className="w-full text-left px-3 py-2 text-[12.5px] font-semibold text-ochre border-t border-line bg-surface hover:bg-surface-2 transition-colors flex items-center gap-2"
-                                            ><Plus size={12} /> Создать «{categorySearch.trim()}»</button>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>,
-                            document.body
-                        )}
+                        <div>
+                            <label className={labelClass}>Материал</label>
+                            <select
+                                value={materialId}
+                                onChange={e => setMaterialId(e.target.value)}
+                                disabled={!!plannedExpenseId}
+                                className={selectClass}
+                            >
+                                <option value="">— не привязан —</option>
+                                {materials.map(m => (
+                                    <option key={m.id} value={m.id}>{getMaterialLabel(m)} — {formatCurrency(m.quantity * m.salePrice)}</option>
+                                ))}
+                            </select>
+                        </div>
                     </div>
 
                     {/* Описание */}
@@ -915,6 +990,12 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
             </motion.div>
         </div>
     );
+}
+
+/** Вспомогательная функция вида "id материала проекта → сама позиция сметы". */
+function findProjectMaterialById(project: Project, materialId?: string): ProjectMaterial | undefined {
+    if (!materialId) return undefined;
+    return (project.materials || []).find(m => m.id === materialId);
 }
 
 export default FinanceTab;
