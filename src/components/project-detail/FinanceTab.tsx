@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { collection, onSnapshot, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Trash2, Paperclip, ExternalLink, Loader2, FileText, PieChart as PieChartIcon } from 'lucide-react';
-import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
+import { X, Trash2, Paperclip, ExternalLink, Loader2, FileText, PieChart as PieChartIcon, ChevronDown } from 'lucide-react';
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
 import { cn, formatCurrency, formatAmountGrouped, parseGroupedAmount } from '../../lib/utils';
 import {
     getPlannedExpensesTotal,
@@ -24,10 +25,22 @@ import { uploadFileToDrive, deleteDriveFile, buildReceiptFileName } from '../../
 
 const EXPENSES_SUBFOLDER_NAME = 'Расходы';
 
-/** Склейка "Наименование · Поставщик" — тот же вид, что и в таблице вкладки «Материалы». */
-function getMaterialLabel(m?: ProjectMaterial): string {
+/** Короткая склейка "Наименование · Поставщик" — для выпадающих списков формы
+ * (там, где вся строка и так видна целиком, характеристики были бы избыточны). */
+function getMaterialShortLabel(m?: ProjectMaterial): string {
     if (!m) return '';
     return m.supplierName ? `${m.materialName} · ${m.supplierName}` : m.materialName || '';
+}
+
+/** Полная склейка "Наименование, Характеристики, Производитель" — для таблицы
+ * расходов (там материал — важное поле, достойное полного описания). Характеристики
+ * и производитель берутся из КАТАЛОГА материалов (справочника), а не из самой
+ * позиции сметы — поэтому нужен доступ к directories.materials/companies. */
+function getMaterialFullLabel(m: ProjectMaterial | undefined, directories: any): string {
+    if (!m) return '';
+    const catalogMaterial = (directories?.materials || []).find((dm: any) => dm.id === m.materialId);
+    const manufacturerName = (directories?.companies || []).find((c: any) => c.id === catalogMaterial?.manufacturerId)?.name;
+    return [m.materialName, catalogMaterial?.characteristics, manufacturerName].filter(Boolean).join(', ');
 }
 
 function formatExpenseDate(dateStr: string): string {
@@ -46,6 +59,7 @@ function FinanceTab({
                         onUnlock,
                         accessToken,
                         onConnectCalendar,
+                        directories,
                     }: {
     project: Project;
     canEdit: boolean;
@@ -55,6 +69,7 @@ function FinanceTab({
     onUnlock: () => void;
     accessToken?: string | null;
     onConnectCalendar?: () => Promise<boolean>;
+    directories?: any;
 }) {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
@@ -202,6 +217,39 @@ function FinanceTab({
     );
     for (const u of sortedUngrouped) rows.push({ expense: u, isPlanned: false });
 
+    // ── Фильтры по колонкам (кроме «Сумма») — значения считаются по ВСЕМ строкам
+    // (а не только по уже отфильтрованным), чтобы список вариантов не "прыгал"
+    // при включении другого фильтра. ──
+    const [dateFilter, setDateFilter] = useState<string | null>(null);
+    const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+    const [materialFilter, setMaterialFilter] = useState<string | null>(null);
+    const [docsFilter, setDocsFilter] = useState<string | null>(null);
+    const DOCS_FILTER_YES = 'Есть документы';
+    const DOCS_FILTER_NO = 'Нет документов';
+
+    const rowMaterialLabel = (expense: Expense) => getMaterialFullLabel(materialsById.get(expense.materialId || ''), directories);
+
+    const uniqueSorted = (values: string[]) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ru'));
+    const dateOptions = uniqueSorted(rows.map(r => r.isPlanned ? '' : formatExpenseDate(r.expense.date)).filter(Boolean));
+    const categoryOptions = uniqueSorted(rows.map(r => r.expense.category || ''));
+    const materialOptions = uniqueSorted(rows.map(r => rowMaterialLabel(r.expense)));
+    const docsOptions = [DOCS_FILTER_YES, DOCS_FILTER_NO];
+
+    const filteredRows = rows.filter(({ expense, isPlanned }) => {
+        if (dateFilter !== null) {
+            const label = isPlanned ? '' : formatExpenseDate(expense.date);
+            if (label !== dateFilter) return false;
+        }
+        if (categoryFilter !== null && expense.category !== categoryFilter) return false;
+        if (materialFilter !== null && rowMaterialLabel(expense) !== materialFilter) return false;
+        if (docsFilter !== null) {
+            const hasDocs = !!(expense.receipts && expense.receipts.length > 0);
+            if (docsFilter === DOCS_FILTER_YES && !hasDocs) return false;
+            if (docsFilter === DOCS_FILTER_NO && hasDocs) return false;
+        }
+        return true;
+    });
+
     const editingExpense = editingExpenseId ? expenses.find(e => e.id === editingExpenseId) || null : null;
 
     return (
@@ -250,21 +298,13 @@ function FinanceTab({
                     </div>
 
                     <div className="overflow-x-auto">
-                        <table className="w-full min-w-[640px] border-collapse text-left">
+                        <table className="w-full min-w-[820px] border-collapse text-left">
                             <thead>
                             <tr className="border-b border-[#DED8CC] bg-[#F8F3E9]">
-                                <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                    Дата
-                                </th>
-                                <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                    Вид расхода
-                                </th>
-                                <th className="px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                    Материал
-                                </th>
-                                <th className="px-4 py-2.5 text-center text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
-                                    Документы
-                                </th>
+                                <ColumnFilterHeader label="Дата" options={dateOptions} value={dateFilter} onChange={setDateFilter} />
+                                <ColumnFilterHeader label="Вид расхода" options={categoryOptions} value={categoryFilter} onChange={setCategoryFilter} />
+                                <ColumnFilterHeader label="Материал" options={materialOptions} value={materialFilter} onChange={setMaterialFilter} />
+                                <ColumnFilterHeader label="Документы" options={docsOptions} value={docsFilter} onChange={setDocsFilter} align="center" />
                                 <th className="px-4 py-2.5 text-right text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
                                     Сумма
                                 </th>
@@ -273,8 +313,8 @@ function FinanceTab({
                             </thead>
 
                             <tbody className="divide-y divide-[#DED8CC] bg-[#FBF8F2]/50">
-                            {rows.map(({ expense, isPlanned }) => {
-                                const materialLabel = getMaterialLabel(materialsById.get(expense.materialId || ''));
+                            {filteredRows.map(({ expense, isPlanned }) => {
+                                const materialLabel = rowMaterialLabel(expense);
                                 return (
                                     <tr
                                         key={expense.id}
@@ -286,7 +326,7 @@ function FinanceTab({
                                         )}
                                     >
                                         <td className={cn("px-4 py-3 text-[11.5px] font-medium tabular-nums", isPlanned ? "text-[#6B6555]" : "text-[#8A8574]")}>
-                                            {formatExpenseDate(expense.date)}
+                                            {isPlanned ? '' : formatExpenseDate(expense.date)}
                                         </td>
 
                                         <td className={cn("px-4 py-3", !isPlanned && "pl-7")}>
@@ -303,7 +343,7 @@ function FinanceTab({
                                             )}
                                         </td>
 
-                                        <td className="px-4 py-3 text-[11.5px] text-[#8A8574] max-w-[180px] truncate">
+                                        <td className="px-4 py-3 text-[12.5px] text-[#1F1C14] font-medium max-w-[320px] truncate" title={materialLabel || undefined}>
                                             {materialLabel || '—'}
                                         </td>
 
@@ -341,14 +381,14 @@ function FinanceTab({
                                 );
                             })}
 
-                            {rows.length === 0 && (
+                            {filteredRows.length === 0 && (
                                 <tr>
                                     <td
                                         colSpan={canEdit ? 6 : 5}
                                         className="px-4 py-10 text-center"
                                     >
                                         <p className="text-[12px] font-medium text-[#8A8574]">
-                                            Расходы пока не добавлены
+                                            {rows.length === 0 ? 'Расходы пока не добавлены' : 'Нет расходов по выбранным фильтрам'}
                                         </p>
                                     </td>
                                 </tr>
@@ -363,49 +403,59 @@ function FinanceTab({
                         Структура расходов
                     </p>
 
-                    {actualExpenses.length > 0 ? (
-                        <div className="h-[260px]">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <PieChart>
-                                    <Pie
-                                        data={actualExpenses.reduce((acc: any[], exp) => {
-                                            const existing = acc.find(item => item.name === exp.category);
-                                            if (existing) {
-                                                existing.value += exp.amount;
-                                            } else {
-                                                acc.push({ name: exp.category, value: exp.amount });
-                                            }
-                                            return acc;
-                                        }, [])}
-                                        dataKey="value"
-                                        nameKey="name"
-                                        innerRadius={58}
-                                        outerRadius={88}
-                                        paddingAngle={2}
-                                        stroke="none"
-                                    >
-                                        {actualExpenses.map((entry: any, index: number) => (
-                                            <Cell
-                                                key={`expense-cell-${entry.category}-${index}`}
-                                                fill={getExpenseCategoryColor(entry.category, index)}
-                                            />
-                                        ))}
-                                    </Pie>
-                                    <Tooltip
-                                        formatter={(value: number) => formatCurrency(value)}
-                                        contentStyle={{
-                                            borderRadius: 12,
-                                            border: '1px solid #DED8CC',
-                                            background: '#FBF8F2',
-                                            color: '#302A1C',
-                                            boxShadow: '0 8px 20px rgba(48,42,28,0.08)',
-                                            fontSize: 12,
-                                        }}
-                                    />
-                                </PieChart>
-                            </ResponsiveContainer>
-                        </div>
-                    ) : (
+                    {actualExpenses.length > 0 ? (() => {
+                        const chartData = actualExpenses.reduce((acc: { name: string; value: number }[], exp) => {
+                            const existing = acc.find(item => item.name === exp.category);
+                            if (existing) {
+                                existing.value += exp.amount;
+                            } else {
+                                acc.push({ name: exp.category, value: exp.amount });
+                            }
+                            return acc;
+                        }, []);
+                        return (
+                            <div className="h-[300px]">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie
+                                            data={chartData}
+                                            dataKey="value"
+                                            nameKey="name"
+                                            innerRadius={54}
+                                            outerRadius={80}
+                                            paddingAngle={2}
+                                            stroke="none"
+                                        >
+                                            {chartData.map((entry, index) => (
+                                                <Cell
+                                                    key={`expense-cell-${entry.name}-${index}`}
+                                                    fill={getExpenseCategoryColor(entry.name, index)}
+                                                />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip
+                                            formatter={(value: number) => formatCurrency(value)}
+                                            contentStyle={{
+                                                borderRadius: 12,
+                                                border: '1px solid #DED8CC',
+                                                background: '#FBF8F2',
+                                                color: '#302A1C',
+                                                boxShadow: '0 8px 20px rgba(48,42,28,0.08)',
+                                                fontSize: 12,
+                                            }}
+                                        />
+                                        <Legend
+                                            verticalAlign="bottom"
+                                            align="center"
+                                            iconType="circle"
+                                            iconSize={8}
+                                            wrapperStyle={{ paddingTop: 16, fontSize: 11.5, color: '#59523E' }}
+                                        />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            </div>
+                        );
+                    })() : (
                         <div className="flex h-[260px] flex-col items-center justify-center text-center">
                             <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#EFE7D7] text-[#B8AE9A]">
                                 <PieChartIcon size={22} strokeWidth={1.8} />
@@ -448,6 +498,85 @@ const EXPENSE_CATEGORY_FALLBACK = ['#b07a2c', '#2d4f35', '#3b4a55', '#a04930', '
 
 function getExpenseCategoryColor(category: string, index: number): string {
     return EXPENSE_CATEGORY_COLORS[category] ?? EXPENSE_CATEGORY_FALLBACK[index % EXPENSE_CATEGORY_FALLBACK.length];
+}
+
+/** Заголовок колонки таблицы с выпадающим фильтром по значению — тот же паттерн,
+ * что и фильтр «Тип» в справочнике компаний: портал, чтобы не резалось overflow
+ * таблицы, закрытие по клику снаружи. */
+function ColumnFilterHeader({ label, options, value, onChange, align = 'left' }: {
+    label: string;
+    options: string[];
+    value: string | null;
+    onChange: (v: string | null) => void;
+    align?: 'left' | 'center';
+}) {
+    const [open, setOpen] = useState(false);
+    const btnRef = useRef<HTMLButtonElement>(null);
+    const [coords, setCoords] = useState({ top: 0, left: 0 });
+    const filterId = `expense-col-filter-${label}`;
+
+    useEffect(() => {
+        if (!open) return;
+        if (btnRef.current) {
+            const rect = btnRef.current.getBoundingClientRect();
+            setCoords({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX });
+        }
+        const handler = (e: MouseEvent) => {
+            if (btnRef.current && !btnRef.current.contains(e.target as Node)) {
+                const dropdown = document.getElementById(filterId);
+                if (!dropdown || !dropdown.contains(e.target as Node)) setOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [open, filterId]);
+
+    return (
+        <th className={cn("px-4 py-2.5 text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]", align === 'center' && "text-center")}>
+            <button
+                ref={btnRef}
+                type="button"
+                onClick={() => setOpen(o => !o)}
+                className={cn("inline-flex items-center gap-1 transition-colors hover:text-[#302A1C]", value && "text-[#B48444]")}
+            >
+                {label}
+                <ChevronDown size={9} className={cn("transition-transform", open && "rotate-180")} />
+                {value && <span className="w-1.5 h-1.5 rounded-full bg-[#B48444] shrink-0" />}
+            </button>
+            {open && createPortal(
+                <div
+                    id={filterId}
+                    style={{ position: 'absolute', top: `${coords.top}px`, left: `${coords.left}px`, zIndex: 999999, minWidth: '200px', maxWidth: '280px' }}
+                    className="bg-surface border border-line rounded-md shadow-[0_8px_32px_rgba(48,42,28,0.16)] overflow-hidden"
+                >
+                    <div className="max-h-[260px] overflow-y-auto">
+                        <button
+                            type="button"
+                            onClick={() => { onChange(null); setOpen(false); }}
+                            className={cn("w-full text-left px-3 py-2 text-[12px] normal-case font-normal tracking-normal transition-colors",
+                                !value ? "bg-[var(--ochre-bg)] text-[var(--ochre)] font-semibold" : "text-ink hover:bg-surface-2"
+                            )}
+                        >Все</button>
+                        {options.map(opt => (
+                            <button
+                                key={opt}
+                                type="button"
+                                onClick={() => { onChange(opt); setOpen(false); }}
+                                className={cn("w-full text-left px-3 py-2 text-[12px] normal-case font-normal tracking-normal truncate transition-colors",
+                                    value === opt ? "bg-[var(--ochre-bg)] text-[var(--ochre)] font-semibold" : "text-ink hover:bg-surface-2"
+                                )}
+                                title={opt}
+                            >{opt}</button>
+                        ))}
+                        {options.length === 0 && (
+                            <p className="px-3 py-2 text-[11.5px] italic text-ink-4 normal-case font-normal tracking-normal">Нет значений</p>
+                        )}
+                    </div>
+                </div>,
+                document.body
+            )}
+        </th>
+    );
 }
 
 /** Стили карточек как SummaryCard на дашборде */
@@ -811,7 +940,7 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                                 <option value="">— без привязки к плану —</option>
                                 {plannedOptions.map(p => {
                                     const mat = findProjectMaterialById(project, p.materialId);
-                                    const label = mat ? `${p.category} · ${getMaterialLabel(mat)}` : p.category;
+                                    const label = mat ? `${p.category} · ${getMaterialShortLabel(mat)}` : p.category;
                                     return <option key={p.id} value={p.id}>{label} — {formatCurrency(p.amount)}</option>;
                                 })}
                             </select>
@@ -876,7 +1005,12 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                                 className={selectClass}
                             >
                                 <option value="">Выберите вид расхода...</option>
-                                {expenseCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                                {/* Текущее значение всегда есть среди option'ов, даже если его ещё нет в списке
+                                    справочника (например, справочник ещё не успел подгрузиться в момент выбора
+                                    планового расхода) — иначе select показывал бы пусто вместо реального значения. */}
+                                {(category && !expenseCategories.includes(category) ? [category, ...expenseCategories] : expenseCategories).map(cat => (
+                                    <option key={cat} value={cat}>{cat}</option>
+                                ))}
                             </select>
                             {plannedExpenseId && (
                                 <p className="text-[10.5px] text-ink-4 mt-1">Подставлено из плана — снимите привязку к плану, чтобы изменить</p>
@@ -892,7 +1026,7 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                             >
                                 <option value="">— не привязан —</option>
                                 {materials.map(m => (
-                                    <option key={m.id} value={m.id}>{getMaterialLabel(m)} — {formatCurrency(m.quantity * m.salePrice)}</option>
+                                    <option key={m.id} value={m.id}>{getMaterialShortLabel(m)} — {formatCurrency(m.quantity * m.salePrice)}</option>
                                 ))}
                             </select>
                         </div>

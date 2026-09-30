@@ -414,6 +414,7 @@ export default function ProjectDetail({
                                 onUnlock={unlock}
                                 accessToken={accessToken}
                                 onConnectCalendar={onConnectCalendar}
+                                directories={directories}
                             />
                         </motion.div>
                     )}

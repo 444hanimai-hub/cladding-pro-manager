@@ -75,11 +75,19 @@ export function syncPlannedExpensesForMaterials(
     const generated: Expense[] = [];
     let totalTax = 0;
 
+    // Плановая запись с нулевой (или отрицательной — на всякий случай) суммой не
+    // создаётся вообще — незачем засорять расходы пустыми строками. Раз генерация
+    // идёт "с нуля" при каждой пересборке (см. kept выше), такая запись просто не
+    // появится в новом массиве, даже если раньше существовала с ненулевой суммой.
+    const pushIfPositive = (expense: Expense) => {
+        if (expense.amount > 0) generated.push(expense);
+    };
+
     for (const m of materials) {
         const calc = calcMaterial(m);
         totalTax += calc.vatPayable;
 
-        generated.push({
+        pushIfPositive({
             id: buildPlannedExpenseId('purchase', m.id),
             date: '',
             category: EXPENSE_CATEGORY_PURCHASE,
@@ -87,7 +95,7 @@ export function syncPlannedExpensesForMaterials(
             materialId: m.id,
             amount: calc.purchaseSum,
         });
-        generated.push({
+        pushIfPositive({
             id: buildPlannedExpenseId('transport', m.id),
             date: '',
             category: EXPENSE_CATEGORY_TRANSPORT,
@@ -95,7 +103,7 @@ export function syncPlannedExpensesForMaterials(
             materialId: m.id,
             amount: m.transportAmount || 0,
         });
-        generated.push({
+        pushIfPositive({
             id: buildPlannedExpenseId('designer', m.id),
             date: '',
             category: EXPENSE_CATEGORY_DESIGNER,
@@ -103,7 +111,7 @@ export function syncPlannedExpensesForMaterials(
             materialId: m.id,
             amount: calc.designerSum,
         });
-        generated.push({
+        pushIfPositive({
             id: buildPlannedExpenseId('gc', m.id),
             date: '',
             category: EXPENSE_CATEGORY_GC,
@@ -113,15 +121,13 @@ export function syncPlannedExpensesForMaterials(
         });
     }
 
-    if (materials.length > 0) {
-        generated.push({
-            id: PLANNED_TAX_EXPENSE_ID,
-            date: '',
-            category: EXPENSE_CATEGORY_TAX,
-            type: 'planned',
-            amount: totalTax,
-        });
-    }
+    pushIfPositive({
+        id: PLANNED_TAX_EXPENSE_ID,
+        date: '',
+        category: EXPENSE_CATEGORY_TAX,
+        type: 'planned',
+        amount: totalTax,
+    });
 
     return [...kept, ...generated];
 }
