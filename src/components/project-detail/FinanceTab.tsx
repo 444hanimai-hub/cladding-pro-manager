@@ -258,24 +258,29 @@ function FinanceTab({
             animate={{ opacity: 1, y: 0 }}
             className="space-y-5"
         >
-            {/* Сводные карточки план/факт */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                <FinanceCard
-                    label="СУММА КОНТРАКТА"
-                    subtext="основа расчёта"
-                    value={f.contractSum}
-                    variant="contract"
-                    canEdit={canEdit}
-                    onValueChange={(v) => updateFinance({ contractSum: v })}
-                />
-                <FinanceCard label="РАСХОДЫ (ПЛАН)" value={plannedExpensesTotal} variant="expense" />
-                <FinanceCard label="РАСХОДЫ (ФАКТ)" value={actualExpensesTotal} variant="expense" />
-                <FinanceCard label="НАЛОГ (ПЛАН)" value={taxPlanned} variant="expense" />
-                <FinanceCard label="НАЛОГ (ФАКТ)" value={taxActual} variant="expense" />
-                <FinanceCard label="ЧИСТАЯ ПРИБЫЛЬ (ПЛАН)" value={netProfitPlanned} variant="profit" />
-                <FinanceCard label="ЧИСТАЯ ПРИБЫЛЬ (ФАКТ)" value={netProfitActual} variant="profit" />
-                <FinanceCard label="РЕНТАБЕЛЬНОСТЬ (ПЛАН)" value={Math.round(marginPlanned)} isPercentage variant="margin" />
-                <FinanceCard label="РЕНТАБЕЛЬНОСТЬ (ФАКТ)" value={Math.round(marginActual)} isPercentage variant="margin" />
+            {/* Сводные карточки план/факт — 5 штук: контракт (чёрная, без плана — у суммы
+                контракта нет понятия "план", это одно редактируемое число) + 4 карточки
+                план/факт с плашкой соотношения. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                <div
+                    className="flex min-h-[108px] flex-col gap-2.5 rounded-2xl p-[18px_20px] relative overflow-hidden"
+                    style={{ background: 'linear-gradient(135deg, var(--ink) 0%, #2a2618 100%)', border: '1px solid #2a2618' }}
+                >
+                    <p className={DASHBOARD_CARD_LABEL} style={{ color: 'rgba(245,233,204,0.6)' }}>СУММА КОНТРАКТА</p>
+                    {canEdit ? (
+                        <ContractSumInput value={f.contractSum} onChange={(v) => updateFinance({ contractSum: v })} />
+                    ) : (
+                        <div className="flex items-baseline gap-1.5 min-w-0">
+                            <span className={cn(DASHBOARD_CARD_VALUE, 'text-bg')}>{formatAmountGrouped(f.contractSum)}</span>
+                            <span className={cn(DASHBOARD_CARD_UNIT, 'text-bg shrink-0')}>₽</span>
+                        </div>
+                    )}
+                </div>
+
+                <PlanFactCard label="РАСХОДЫ" plannedValue={plannedExpensesTotal} actualValue={actualExpensesTotal} colorCategory="expense" />
+                <PlanFactCard label="НАЛОГ К УПЛАТЕ" plannedValue={taxPlanned} actualValue={taxActual} colorCategory="expense" />
+                <PlanFactCard label="ЧИСТАЯ ПРИБЫЛЬ" plannedValue={netProfitPlanned} actualValue={netProfitActual} colorCategory="profit" />
+                <PlanFactCard label="РЕНТАБЕЛЬНОСТЬ" plannedValue={marginPlanned} actualValue={marginActual} colorCategory="profit" isPercentage badgeMode="diffPP" />
             </div>
 
             {/* Расходы + диаграмма */}
@@ -344,7 +349,7 @@ function FinanceTab({
                                         </td>
 
                                         <td className="px-4 py-3 text-[12.5px] text-[#1F1C14] font-medium max-w-[320px] truncate" title={materialLabel || undefined}>
-                                            {materialLabel || '—'}
+                                            {materialLabel}
                                         </td>
 
                                         <td className="px-4 py-3 text-center">
@@ -365,16 +370,15 @@ function FinanceTab({
 
                                         {canEdit && (
                                             <td className="px-2 py-3 text-right">
-                                                {!isPlanned && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={(e) => { e.stopPropagation(); removeExpense(expense.id); }}
-                                                        className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
-                                                        aria-label="Удалить расход"
-                                                    >
-                                                        <Trash2 size={12} strokeWidth={1.9} />
-                                                    </button>
-                                                )}
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => { e.stopPropagation(); removeExpense(expense.id); }}
+                                                    className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
+                                                    aria-label="Удалить расход"
+                                                    title={isPlanned ? 'Удалить плановый расход — при следующем сохранении материала он может появиться снова' : 'Удалить расход'}
+                                                >
+                                                    <Trash2 size={12} strokeWidth={1.9} />
+                                                </button>
                                             </td>
                                         )}
                                     </tr>
@@ -585,86 +589,71 @@ export const DASHBOARD_CARD_VALUE = 'font-display text-[34px] leading-[1.05] tab
 export const DASHBOARD_CARD_UNIT = 'font-display text-[14px] opacity-70';
 export const DASHBOARD_CARD_SUB = 'text-[11.5px] text-ink-3 mt-0.5';
 
-const FINANCE_VALUE_COLORS = {
-    profit: '#2f5e3f',
-    expense: '#8a3f47',
-    margin: '#1f1c14',
-    bonus: '#b07a2c',
+const PLAN_FACT_COLORS = {
+    profit: '#2f5e3f',    // зелёный — чистая прибыль и рентабельность, когда факт неотрицательный
+    expense: '#8a3f47',   // красный — расходы и налог
+    negative: '#a04930',  // терракотовый — любой факт, ушедший в минус, независимо от категории
 } as const;
 
-function FinanceCard({
-                         label,
-                         subtext,
-                         value,
-                         variant = 'profit',
-                         isPercentage = false,
-                         canEdit,
-                         onValueChange,
-                     }: {
+/** "XX%" = факт/план × 100, округлено. "—", если план равен нулю (соотношение не
+ * имеет смысла — не делим на ноль и не показываем вводящий в заблуждение 0%/∞%). */
+function formatRatioBadge(planned: number, actual: number): string {
+    if (!planned) return '—';
+    return `${Math.round((actual / planned) * 100)}%`;
+}
+
+/** "+X,X п.п." / "−X,X п.п." — разница в процентных пунктах (факт минус план), для
+ * рентабельности: делить процент на процент смысла не несёт, а разница — несёт. */
+function formatPercentPointsDiff(planned: number, actual: number): string {
+    const diff = Math.round((actual - planned) * 10) / 10;
+    const sign = diff > 0 ? '+' : diff < 0 ? '−' : '';
+    const abs = Math.abs(diff).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    return `${sign}${abs} п.п.`;
+}
+
+/**
+ * Карточка "план/факт": заголовок + плашка соотношения справа, мелкая серая
+ * строка плана, крупная цветная цифра факта. Цвет факта — по категории (расходы/
+ * налог красные, прибыль/рентабельность зелёные), но ЛЮБОЕ отрицательное значение
+ * факта красится терракотовым вне зависимости от категории — это сильнее сигнализирует
+ * "ушли в минус", чем обычный красный для расходов.
+ */
+function PlanFactCard({
+                          label,
+                          plannedValue,
+                          actualValue,
+                          colorCategory,
+                          isPercentage = false,
+                          badgeMode = 'ratio',
+                      }: {
     label: string;
-    subtext?: string;
-    value: number;
-    variant?: 'contract' | 'profit' | 'expense' | 'margin';
+    plannedValue: number;
+    actualValue: number;
+    colorCategory: 'profit' | 'expense';
     isPercentage?: boolean;
-    canEdit?: boolean;
-    onValueChange?: (value: number) => void;
+    badgeMode?: 'ratio' | 'diffPP';
 }) {
-    const isEditableContract = variant === 'contract' && canEdit && onValueChange;
-    const valueColor =
-        variant === 'contract'
-            ? 'var(--bg)'
-            : variant === 'profit'
-                ? FINANCE_VALUE_COLORS.profit
-                : variant === 'expense'
-                    ? FINANCE_VALUE_COLORS.expense
-                    : FINANCE_VALUE_COLORS.margin;
+    const formatValue = (v: number) => isPercentage
+        ? `${v.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`
+        : `${formatAmountGrouped(v)} ₽`;
 
-    const num = isPercentage ? `${Math.round(value)}` : formatAmountGrouped(value);
-    const unit = isPercentage ? '%' : '₽';
-
-    if (variant === 'contract') {
-        return (
-            <div
-                className="flex min-h-[108px] flex-col gap-2.5 rounded-2xl p-[18px_20px] relative overflow-hidden"
-                style={{
-                    background: 'linear-gradient(135deg, var(--ink) 0%, #2a2618 100%)',
-                    border: '1px solid #2a2618',
-                }}
-            >
-                <p className={DASHBOARD_CARD_LABEL} style={{ color: 'rgba(245,233,204,0.6)' }}>
-                    {label}
-                </p>
-                {isEditableContract ? (
-                    <ContractSumInput value={value} onChange={onValueChange} />
-                ) : (
-                    <div className="flex items-baseline gap-1.5 min-w-0">
-                        <span className={cn(DASHBOARD_CARD_VALUE, 'text-bg')}>{num}</span>
-                        {!isPercentage && (
-                            <span className={cn(DASHBOARD_CARD_UNIT, 'text-bg shrink-0')}>{unit}</span>
-                        )}
-                    </div>
-                )}
-                {subtext && (
-                    <p className="text-[11.5px] mt-auto" style={{ color: 'rgba(245,233,204,0.45)' }}>
-                        {subtext}
-                    </p>
-                )}
-            </div>
-        );
-    }
+    const factColor = actualValue < 0 ? PLAN_FACT_COLORS.negative : PLAN_FACT_COLORS[colorCategory];
+    const badgeText = badgeMode === 'diffPP'
+        ? formatPercentPointsDiff(plannedValue, actualValue)
+        : formatRatioBadge(plannedValue, actualValue);
 
     return (
-        <div className="flex min-h-[108px] flex-col gap-2.5 rounded-2xl border border-line bg-surface p-[18px_20px] shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
-            <p className={cn(DASHBOARD_CARD_LABEL, 'text-ink-3')}>{label}</p>
-            <div className="flex items-baseline gap-1.5 min-w-0">
-        <span className={DASHBOARD_CARD_VALUE} style={{ color: valueColor }}>
-          {num}
-        </span>
-                <span className={DASHBOARD_CARD_UNIT} style={{ color: valueColor }}>
-          {unit}
-        </span>
+        <div className="flex min-h-[108px] flex-col gap-1.5 rounded-2xl border border-line bg-surface p-[18px_20px] shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
+            <div className="flex items-start justify-between gap-2">
+                <p className={cn(DASHBOARD_CARD_LABEL, 'text-ink-3')}>{label}</p>
+                <span className="shrink-0 px-2 py-0.5 rounded-full bg-surface-2 text-[10.5px] font-semibold text-ink-3 tabular-nums whitespace-nowrap">
+                    {badgeText}
+                </span>
             </div>
-            {subtext && <p className={DASHBOARD_CARD_SUB}>{subtext}</p>}
+            <p className="text-[12px] text-ink-4 tabular-nums">{formatValue(plannedValue)}</p>
+            <p className="font-display text-[27px] leading-[1.05] tabular-nums" style={{ color: factColor }}>
+                {formatValue(actualValue)}
+            </p>
         </div>
     );
 }
