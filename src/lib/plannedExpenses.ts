@@ -92,6 +92,7 @@ export function syncPlannedExpensesForMaterials(
             date: '',
             category: EXPENSE_CATEGORY_PURCHASE,
             type: 'planned',
+            operationType: 'expense',
             materialId: m.id,
             amount: calc.purchaseSum,
         });
@@ -100,6 +101,7 @@ export function syncPlannedExpensesForMaterials(
             date: '',
             category: EXPENSE_CATEGORY_TRANSPORT,
             type: 'planned',
+            operationType: 'expense',
             materialId: m.id,
             amount: m.transportAmount || 0,
         });
@@ -108,6 +110,7 @@ export function syncPlannedExpensesForMaterials(
             date: '',
             category: EXPENSE_CATEGORY_DESIGNER,
             type: 'planned',
+            operationType: 'expense',
             materialId: m.id,
             amount: calc.designerSum,
         });
@@ -116,6 +119,7 @@ export function syncPlannedExpensesForMaterials(
             date: '',
             category: EXPENSE_CATEGORY_GC,
             type: 'planned',
+            operationType: 'expense',
             materialId: m.id,
             amount: calc.gcSum,
         });
@@ -126,6 +130,7 @@ export function syncPlannedExpensesForMaterials(
         date: '',
         category: EXPENSE_CATEGORY_TAX,
         type: 'planned',
+        operationType: 'expense',
         amount: totalTax,
     });
 

@@ -14,6 +14,7 @@ import {
     getNetProfitActual,
     getMarginPercentPlanned,
     getMarginPercentActual,
+    getActualIncomeTotal,
 } from '../../lib/financeCalculations';
 import { EXPENSE_CATEGORY_TAX, PLANNED_TAX_EXPENSE_ID, EXPENSE_CATEGORY_PURCHASE, EXPENSE_CATEGORY_TRANSPORT, EXPENSE_CATEGORY_DESIGNER, EXPENSE_CATEGORY_GC } from '../../lib/plannedExpenses';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
@@ -71,7 +72,9 @@ function FinanceTab({
     onConnectCalendar?: () => Promise<boolean>;
     directories?: any;
 }) {
-    const [isModalOpen, setIsModalOpen] = useState(false);
+    // modalMode: какая форма открыта — расход (все текущие поля) или поступление
+    // (только дата/сумма/комментарий/документы). null — обе закрыты.
+    const [modalMode, setModalMode] = useState<'expense' | 'income' | null>(null);
     const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
 
     if (needsCodeGate) {
@@ -98,6 +101,7 @@ function FinanceTab({
     const taxActual = getExpensesTotalByTypeAndCategory(f, 'actual', EXPENSE_CATEGORY_TAX);
     const netProfitPlanned = getNetProfitPlanned(f);
     const netProfitActual = getNetProfitActual(f);
+    const actualIncomeTotal = getActualIncomeTotal(f);
     const marginPlanned = getMarginPercentPlanned(f);
     const marginActual = getMarginPercentActual(f);
 
@@ -130,14 +134,23 @@ function FinanceTab({
         }
     };
 
-    const handleOpenAdd = () => {
+    const handleOpenAddExpense = () => {
         setEditingExpenseId(null);
-        setIsModalOpen(true);
+        setModalMode('expense');
     };
 
-    const handleOpenEdit = (expenseId: string) => {
+    const handleOpenAddIncome = () => {
+        setEditingExpenseId(null);
+        setModalMode('income');
+    };
+
+    /** Клик по строке таблицы — открывает СВОЮ форму в зависимости от того, чем эта
+     * операция была заведена (расход или поступление), не только по её текущему виду. */
+    const handleOpenEditRow = (expenseId: string) => {
+        const target = expenses.find(e => e.id === expenseId);
+        if (!target) return;
         setEditingExpenseId(expenseId);
-        setIsModalOpen(true);
+        setModalMode(target.operationType === 'income' ? 'income' : 'expense');
     };
 
     const handleSaveExpense = async (expenseData: Expense) => {
@@ -149,7 +162,7 @@ function FinanceTab({
                 updatedExpenses = [...expenses, expenseData];
             }
             await updateFinance({ expenses: updatedExpenses });
-            setIsModalOpen(false);
+            setModalMode(null);
             setEditingExpenseId(null);
         } catch (error) {
             console.error(error);
@@ -169,13 +182,18 @@ function FinanceTab({
     // ── Группировка таблицы: плановый расход (серая заливка) → под ним все
     // фактические, что на него ссылаются (обычная заливка, сумма красным) → следующий
     // плановый и его фактические → и так по всем плановым проекта → в конце все
-    // фактические расходы, НЕ привязанные ни к какому плановому. ──
+    // фактические ОПЕРАЦИИ (и расходы, и поступления), НЕ привязанные ни к какому
+    // плановому — у поступлений плановой пары нет вообще, поэтому они всегда
+    // оказываются именно здесь, в конце. ──
     const plannedExpenses = expenses.filter(e => (e.type || 'actual') === 'planned');
-    const actualExpenses = expenses.filter(e => (e.type || 'actual') === 'actual');
+    const actualOperations = expenses.filter(e => (e.type || 'actual') === 'actual');
+    // Только фактические РАСХОДЫ (без поступлений) — отдельно, для диаграммы
+    // "Структура расходов" и общей суммы, которая не должна включать поступления.
+    const actualExpenseOperations = actualOperations.filter(e => (e.operationType || 'expense') === 'expense');
 
     const actualByPlanId = new Map<string, Expense[]>();
     const ungroupedActual: Expense[] = [];
-    for (const a of actualExpenses) {
+    for (const a of actualOperations) {
         const parentExists = a.plannedExpenseId && plannedExpenses.some(p => p.id === a.plannedExpenseId);
         if (parentExists) {
             const arr = actualByPlanId.get(a.plannedExpenseId!) || [];
@@ -228,10 +246,14 @@ function FinanceTab({
     const DOCS_FILTER_NO = 'Нет документов';
 
     const rowMaterialLabel = (expense: Expense) => getMaterialFullLabel(materialsById.get(expense.materialId || ''), directories);
+    // У поступления нет своего "вида расхода" (своего справочника) — в этой колонке
+    // для него всегда просто "Поступление", вне зависимости от того, что лежит
+    // (или не лежит) в поле category самой записи.
+    const rowCategoryLabel = (expense: Expense) => expense.operationType === 'income' ? 'Поступление' : (expense.category || '');
 
     const uniqueSorted = (values: string[]) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ru'));
     const dateOptions = uniqueSorted(rows.map(r => r.isPlanned ? '' : formatExpenseDate(r.expense.date)).filter(Boolean));
-    const categoryOptions = uniqueSorted(rows.map(r => r.expense.category || ''));
+    const categoryOptions = uniqueSorted(rows.map(r => rowCategoryLabel(r.expense)));
     const materialOptions = uniqueSorted(rows.map(r => rowMaterialLabel(r.expense)));
     const docsOptions = [DOCS_FILTER_YES, DOCS_FILTER_NO];
 
@@ -240,7 +262,7 @@ function FinanceTab({
             const label = isPlanned ? '' : formatExpenseDate(expense.date);
             if (label !== dateFilter) return false;
         }
-        if (categoryFilter !== null && expense.category !== categoryFilter) return false;
+        if (categoryFilter !== null && rowCategoryLabel(expense) !== categoryFilter) return false;
         if (materialFilter !== null && rowMaterialLabel(expense) !== materialFilter) return false;
         if (docsFilter !== null) {
             const hasDocs = !!(expense.receipts && expense.receipts.length > 0);
@@ -263,10 +285,15 @@ function FinanceTab({
                 план/факт с плашкой соотношения. */}
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
                 <div
-                    className="flex min-h-[108px] flex-col gap-2.5 rounded-2xl p-[18px_20px] relative overflow-hidden"
+                    className="flex min-h-[108px] flex-col gap-1.5 rounded-2xl p-[18px_20px] relative overflow-hidden"
                     style={{ background: 'linear-gradient(135deg, var(--ink) 0%, #2a2618 100%)', border: '1px solid #2a2618' }}
                 >
-                    <p className={DASHBOARD_CARD_LABEL} style={{ color: 'rgba(245,233,204,0.6)' }}>СУММА КОНТРАКТА</p>
+                    <div className="flex items-start justify-between gap-2">
+                        <p className={DASHBOARD_CARD_LABEL} style={{ color: 'rgba(245,233,204,0.6)' }}>СУММА КОНТРАКТА</p>
+                        <span className="shrink-0 px-2 py-0.5 rounded-full text-[10.5px] font-semibold tabular-nums whitespace-nowrap" style={{ background: 'rgba(245,233,204,0.12)', color: 'rgba(245,233,204,0.85)' }}>
+                            {formatRatioBadge(f.contractSum, actualIncomeTotal)}
+                        </span>
+                    </div>
                     {canEdit ? (
                         <ContractSumInput value={f.contractSum} onChange={(v) => updateFinance({ contractSum: v })} />
                     ) : (
@@ -275,6 +302,10 @@ function FinanceTab({
                             <span className={cn(DASHBOARD_CARD_UNIT, 'text-bg shrink-0')}>₽</span>
                         </div>
                     )}
+                    {/* Фактически поступившая часть — то, что заказчик уже реально оплатил. */}
+                    <p className="text-[13px] font-semibold tabular-nums" style={{ color: '#7fc98f' }}>
+                        {formatAmountGrouped(actualIncomeTotal)} ₽
+                    </p>
                 </div>
 
                 <PlanFactCard label="РАСХОДЫ" plannedValue={plannedExpensesTotal} actualValue={actualExpensesTotal} colorCategory="expense" />
@@ -288,17 +319,26 @@ function FinanceTab({
                 <div className="xl:col-span-3 overflow-hidden rounded-[18px] border border-[#DED8CC] bg-[#F8F3E9] shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_3px_rgba(48,42,28,0.08)]">
                     <div className="flex items-center justify-between gap-4 border-b border-[#DED8CC] px-4 py-3">
                         <h3 className="font-display text-[15px] font-medium leading-tight text-[#302A1C]">
-                            Расходы по проекту
+                            Финансовые операции по проекту
                         </h3>
 
                         {canEdit && (
-                            <button
-                                type="button"
-                                onClick={handleOpenAdd}
-                                className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[11px] font-medium transition-colors border-[#D8B978] bg-[#B48444] text-white shadow-[0_1px_2px_rgba(132,91,37,0.18)] hover:bg-[#A6783D]"
-                            >
-                                Добавить расход
-                            </button>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={handleOpenAddIncome}
+                                    className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[11px] font-medium transition-colors border-[#9bc49f] bg-[#4f8a5c] text-white shadow-[0_1px_2px_rgba(47,94,63,0.18)] hover:bg-[#447a51]"
+                                >
+                                    Поступление
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleOpenAddExpense}
+                                    className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[11px] font-medium transition-colors border-[#D8B978] bg-[#B48444] text-white shadow-[0_1px_2px_rgba(132,91,37,0.18)] hover:bg-[#A6783D]"
+                                >
+                                    Расход
+                                </button>
+                            </div>
                         )}
                     </div>
 
@@ -307,7 +347,7 @@ function FinanceTab({
                             <thead>
                             <tr className="border-b border-[#DED8CC] bg-[#F8F3E9]">
                                 <ColumnFilterHeader label="Дата" options={dateOptions} value={dateFilter} onChange={setDateFilter} />
-                                <ColumnFilterHeader label="Вид расхода" options={categoryOptions} value={categoryFilter} onChange={setCategoryFilter} />
+                                <ColumnFilterHeader label="Вид операции" options={categoryOptions} value={categoryFilter} onChange={setCategoryFilter} />
                                 <ColumnFilterHeader label="Материал" options={materialOptions} value={materialFilter} onChange={setMaterialFilter} />
                                 <ColumnFilterHeader label="Документы" options={docsOptions} value={docsFilter} onChange={setDocsFilter} align="center" />
                                 <th className="px-4 py-2.5 text-right text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
@@ -323,7 +363,7 @@ function FinanceTab({
                                 return (
                                     <tr
                                         key={expense.id}
-                                        onClick={() => canEdit && !isPlanned && handleOpenEdit(expense.id)}
+                                        onClick={() => canEdit && !isPlanned && handleOpenEditRow(expense.id)}
                                         className={cn(
                                             "group transition-colors",
                                             isPlanned ? "bg-[#EFEAE0]" : "hover:bg-white/60",
@@ -337,7 +377,7 @@ function FinanceTab({
                                         <td className={cn("px-4 py-3", !isPlanned && "pl-7")}>
                                             <div className="flex min-w-0 items-center gap-2.5">
                           <span className={cn("truncate text-[12.5px] font-medium", isPlanned ? "text-[#4A4636] font-semibold" : "text-[#302A1C]")}>
-                            {expense.category || 'Без категории'}
+                            {expense.operationType === 'income' ? 'Поступление' : (expense.category || 'Без категории')}
                           </span>
                                                 {(expense.managerPercent || 0) > 0 && (
                                                     <span className="text-[10px] text-[#B48444] font-semibold shrink-0">{expense.managerPercent}%</span>
@@ -363,7 +403,10 @@ function FinanceTab({
                                         </td>
 
                                         <td className="px-4 py-3 text-right">
-                        <span className={cn("font-mono text-[12.5px] font-bold tabular-nums", isPlanned ? "text-[#4A4636]" : "text-[#9B3F54]")}>
+                        <span
+                            className="font-mono text-[12.5px] font-bold tabular-nums"
+                            style={{ color: isPlanned ? '#4A4636' : (expense.operationType === 'income' ? '#2f5e3f' : '#9B3F54') }}
+                        >
                           {formatCurrency(expense.amount)}
                         </span>
                                         </td>
@@ -374,8 +417,8 @@ function FinanceTab({
                                                     type="button"
                                                     onClick={(e) => { e.stopPropagation(); removeExpense(expense.id); }}
                                                     className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
-                                                    aria-label="Удалить расход"
-                                                    title={isPlanned ? 'Удалить плановый расход — при следующем сохранении материала он может появиться снова' : 'Удалить расход'}
+                                                    aria-label="Удалить операцию"
+                                                    title={isPlanned ? 'Удалить плановый расход — при следующем сохранении материала он может появиться снова' : 'Удалить операцию'}
                                                 >
                                                     <Trash2 size={12} strokeWidth={1.9} />
                                                 </button>
@@ -407,8 +450,8 @@ function FinanceTab({
                         Структура расходов
                     </p>
 
-                    {actualExpenses.length > 0 ? (() => {
-                        const chartData = actualExpenses.reduce((acc: { name: string; value: number }[], exp) => {
+                    {actualExpenseOperations.length > 0 ? (() => {
+                        const chartData = actualExpenseOperations.reduce((acc: { name: string; value: number }[], exp) => {
                             const existing = acc.find(item => item.name === exp.category);
                             if (existing) {
                                 existing.value += exp.amount;
@@ -473,7 +516,7 @@ function FinanceTab({
             </div>
 
             <AnimatePresence>
-                {isModalOpen && (
+                {modalMode === 'expense' && (
                     <ExpenseModal
                         project={project}
                         expenses={expenses}
@@ -481,7 +524,17 @@ function FinanceTab({
                         contractSum={f.contractSum || 0}
                         accessToken={accessToken}
                         onConnectCalendar={onConnectCalendar}
-                        onClose={() => { setIsModalOpen(false); setEditingExpenseId(null); }}
+                        onClose={() => { setModalMode(null); setEditingExpenseId(null); }}
+                        onSave={handleSaveExpense}
+                    />
+                )}
+                {modalMode === 'income' && (
+                    <IncomeModal
+                        project={project}
+                        editingExpense={editingExpense}
+                        accessToken={accessToken}
+                        onConnectCalendar={onConnectCalendar}
+                        onClose={() => { setModalMode(null); setEditingExpenseId(null); }}
                         onSave={handleSaveExpense}
                     />
                 )}
@@ -749,10 +802,11 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
     const materials = project.materials || [];
 
     const isManagerBonus = category.toLowerCase() === 'бонус менеджера';
-    // База для бонуса менеджера — контракт минус прочие расходы, БЕЗ учёта самого
+    // База для бонуса менеджера — контракт минус прочие РАСХОДЫ (поступления сюда
+    // попадать не должны — это другая природа операции, не расход), БЕЗ учёта самого
     // редактируемого расхода (иначе при редактировании его прежняя сумма вычлась бы дважды).
     const otherExpensesTotal = expenses
-        .filter(e => e.id !== editingExpense?.id)
+        .filter(e => e.id !== editingExpense?.id && (e.operationType || 'expense') === 'expense')
         .reduce((sum, e) => sum + (e.amount || 0), 0);
     const profitBase = contractSum - otherExpensesTotal;
     const effectiveAmount = amount;
@@ -885,6 +939,7 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                 date,
                 category,
                 type: 'actual',
+                operationType: 'expense',
                 materialId: materialId || undefined,
                 plannedExpenseId: plannedExpenseId || undefined,
                 amount: effectiveAmount,
@@ -1119,6 +1174,245 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
 function findProjectMaterialById(project: Project, materialId?: string): ProjectMaterial | undefined {
     if (!materialId) return undefined;
     return (project.materials || []).find(m => m.id === materialId);
+}
+
+// ───────────────────────── модалка добавления/редактирования поступления ─────────────────────────
+
+/**
+ * Поступление денежных средств от заказчика — отдельная, намеренно куда более
+ * простая форма, чем у расхода: только дата, сумма, комментарий и документы.
+ * Ни вида расхода, ни материала, ни ссылки на план — этих понятий у поступления
+ * нет. type/operationType проставляются автоматически в handleSubmit, на самой
+ * форме этих полей нет вообще (как и договаривались).
+ */
+function IncomeModal({ project, editingExpense, accessToken, onConnectCalendar, onClose, onSave }: {
+    project: Project;
+    editingExpense: Expense | null;
+    accessToken?: string | null;
+    onConnectCalendar?: () => Promise<boolean>;
+    onClose: () => void;
+    onSave: (expense: Expense) => void | Promise<void>;
+}) {
+    const isEditing = !!editingExpense;
+    const inputClass = "w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4";
+    const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
+
+    const [date, setDate] = useState(editingExpense?.date || '');
+    const [amount, setAmount] = useState(editingExpense?.amount || 0);
+    const [description, setDescription] = useState(editingExpense?.description || '');
+    const [receipts, setReceipts] = useState<ExpenseReceiptFile[]>(editingExpense?.receipts || []);
+    const [isUploading, setIsUploading] = useState(false);
+    const [isConnecting, setIsConnecting] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+    const handleAttachFiles = async (fileList: FileList | null) => {
+        if (!fileList || fileList.length === 0) return;
+        if (!accessToken) return;
+        setIsUploading(true);
+        try {
+            const docsFolder = await ensureProjectDocsFolder(project, accessToken);
+            if (docsFolder.id !== project.driveDocsFolderId) {
+                await updateDoc(doc(db, 'projects', project.id), {
+                    driveDocsFolderId: docsFolder.id,
+                    driveDocsFolderLink: docsFolder.link,
+                    updatedAt: serverTimestamp(),
+                }).catch(console.error);
+            }
+            const expensesFolder = await findOrCreateSubfolder(docsFolder.id, EXPENSES_SUBFOLDER_NAME, accessToken);
+
+            const dateYMD = formatDateYMD(date);
+            const files = Array.from(fileList);
+            const newReceipts: ExpenseReceiptFile[] = [];
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                // "Поступление" вместо вида расхода — своего справочника у поступлений нет.
+                const filename = buildReceiptFileName(dateYMD, 'Поступление', amount, file.name, receipts.length + i + 1);
+                const uploaded = await uploadFileToDrive(file, filename, expensesFolder.id, accessToken);
+                newReceipts.push({ id: crypto.randomUUID(), driveFileId: uploaded.id, driveFileLink: uploaded.link, fileName: filename });
+            }
+            setReceipts(prev => [...prev, ...newReceipts]);
+        } catch (error) {
+            console.error('Не удалось прикрепить документ:', error);
+            alert('Не удалось загрузить документ на Google Drive. Попробуйте ещё раз.');
+        } finally {
+            setIsUploading(false);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
+    const handleRemoveReceipt = async (receipt: ExpenseReceiptFile) => {
+        if (!window.confirm(`Удалить документ «${receipt.fileName}»? Файл будет удалён и с Google Диска — это действие нельзя отменить.`)) return;
+        if (accessToken) {
+            try {
+                await deleteDriveFile(receipt.driveFileId, accessToken);
+            } catch (error) {
+                console.error('Не удалось удалить файл на Google Drive:', error);
+                alert('Не удалось удалить файл на Google Диске. Попробуйте ещё раз.');
+                return;
+            }
+        }
+        setReceipts(prev => prev.filter(r => r.id !== receipt.id));
+    };
+
+    const handleConnectGoogle = async () => {
+        if (!onConnectCalendar || isConnecting) return;
+        setIsConnecting(true);
+        try {
+            await onConnectCalendar();
+        } finally {
+            setIsConnecting(false);
+        }
+    };
+
+    const handleSubmit = async () => {
+        if (amount <= 0 || !date) return;
+        setIsSaving(true);
+        try {
+            const expenseData: Expense = {
+                id: editingExpense?.id || crypto.randomUUID(),
+                date,
+                category: '',
+                type: 'actual',
+                operationType: 'income',
+                amount,
+                description: description || undefined,
+                receipts: receipts.length > 0 ? receipts : undefined,
+            };
+            await onSave(expenseData);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-ink/40 backdrop-blur-sm" />
+            <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12 }}
+                className="relative w-full max-w-lg bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
+            >
+                <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
+                    <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
+                        {isEditing ? 'Редактировать поступление' : 'Добавить поступление'}
+                    </h2>
+                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 hover:text-ink transition-colors">
+                        <X size={16} />
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar">
+                    <div className="grid grid-cols-[130px_1fr] gap-3">
+                        <div>
+                            <label className={labelClass}>Дата</label>
+                            <DatePicker value={date} onChange={setDate} variant="compact" className="[&_input]:h-9" />
+                        </div>
+                        <div>
+                            <label className={labelClass}>Сумма, ₽</label>
+                            <input
+                                type="text"
+                                inputMode="numeric"
+                                value={amount ? amount.toLocaleString('ru-RU') : ''}
+                                onChange={(e) => setAmount(Number(e.target.value.replace(/\D/g, '')) || 0)}
+                                placeholder="0"
+                                className={inputClass}
+                            />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label className={labelClass}>Комментарий</label>
+                        <textarea
+                            value={description}
+                            onChange={e => setDescription(e.target.value)}
+                            rows={2}
+                            placeholder="От кого и за что поступление..."
+                            className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 resize-none"
+                        />
+                    </div>
+
+                    <div>
+                        <label className={labelClass}>Документы, подтверждающие поступление</label>
+
+                        {!accessToken && onConnectCalendar && (
+                            <div className="rounded-xl border border-ochre/35 bg-[#FBF5E8] px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
+                                <p className="text-[12px] text-ink-3 leading-snug">
+                                    Чтобы прикреплять документы, подключите Google.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={handleConnectGoogle}
+                                    disabled={isConnecting}
+                                    className="shrink-0 h-8 px-3 rounded-lg text-[12px] font-semibold bg-[#A67C3C] text-white hover:bg-[#956f35] disabled:opacity-50 transition-colors whitespace-nowrap"
+                                >
+                                    {isConnecting ? 'Подключение…' : 'Подключить Google'}
+                                </button>
+                            </div>
+                        )}
+
+                        {receipts.length > 0 && (
+                            <div className="flex flex-col gap-1.5 mb-3">
+                                {receipts.map(receipt => (
+                                    <div key={receipt.id} className="flex items-center gap-2.5 px-3 py-2 rounded-md bg-surface-2 border border-line">
+                                        <FileText size={14} className="text-ink-3 shrink-0" />
+                                        <span className="flex-1 min-w-0 text-[12.5px] text-ink truncate">{receipt.fileName}</span>
+                                        <a
+                                            href={receipt.driveFileLink}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="shrink-0 inline-flex items-center gap-1 text-[11.5px] font-medium text-ochre hover:underline"
+                                        >
+                                            <ExternalLink size={11} /> Открыть
+                                        </a>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleRemoveReceipt(receipt)}
+                                            className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-ink-3 hover:text-terracotta hover:bg-terracotta/5 transition-colors"
+                                            title="Удалить документ"
+                                        >
+                                            <Trash2 size={12} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            multiple
+                            className="hidden"
+                            onChange={e => handleAttachFiles(e.target.files)}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={!accessToken || isUploading}
+                            className="w-full inline-flex items-center justify-center gap-2 h-9 rounded-md text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                            {isUploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+                            {isUploading ? 'Загружаем…' : 'Добавить документ'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="px-6 py-4 border-t border-line flex items-center justify-end gap-2 shrink-0 bg-surface-2/30">
+                    <button onClick={onClose} className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">
+                        Отмена
+                    </button>
+                    <button
+                        onClick={handleSubmit}
+                        disabled={amount <= 0 || !date || isSaving}
+                        className="px-4 py-2 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        {isSaving ? 'Сохранение…' : (isEditing ? 'Сохранить изменения' : 'Зафиксировать поступление')}
+                    </button>
+                </div>
+            </motion.div>
+        </div>
+    );
 }
 
 export default FinanceTab;

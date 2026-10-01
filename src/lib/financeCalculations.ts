@@ -42,45 +42,70 @@ export function getMarginColor(marginPct: number): string {
 
 // ───────────────────────── план / факт (вкладка «Финансы») ─────────────────────────
 
+/** true для операций-РАСХОДОВ (включая все старые записи без явного operationType —
+ * по умолчанию это расход). Поступления ("income") этим функциям не нужны вообще —
+ * они считаются отдельно, см. getActualIncomeTotal. */
+function isExpenseOperation(e: { operationType?: 'expense' | 'income' }): boolean {
+  return (e.operationType || 'expense') === 'expense';
+}
+
 /** Сумма ВСЕХ плановых расходов (эти записи управляются только автоматически —
- * см. lib/plannedExpenses.ts). Записи без явного type (старые, до этой доработки)
- * везде трактуются как "actual", поэтому здесь не попадают. */
+ * см. lib/plannedExpenses.ts; планового поступления как понятия не существует,
+ * но фильтр по operationType оставлен для строгости). Записи без явного type
+ * (старые, до этой доработки) везде трактуются как "actual", поэтому здесь не
+ * попадают. */
 export function getPlannedExpensesTotal(finance: FinanceLike): number {
   return (finance.expenses || [])
-      .filter(e => (e.type || 'actual') === 'planned')
+      .filter(e => (e.type || 'actual') === 'planned' && isExpenseOperation(e))
       .reduce((acc, e) => acc + (e.amount || 0), 0);
 }
 
-/** Сумма ВСЕХ фактических расходов — включая те, что не привязаны ни к какому
- * плановому (свободные расходы, как и раньше: логистика, мокапы и т.п.). */
+/** Сумма ВСЕХ фактических РАСХОДОВ (не поступлений) — включая те, что не
+ * привязаны ни к какому плановому (свободные расходы, как и раньше: логистика,
+ * мокапы и т.п.). */
 export function getActualExpensesTotal(finance: FinanceLike): number {
   return (finance.expenses || [])
-      .filter(e => (e.type || 'actual') === 'actual')
+      .filter(e => (e.type || 'actual') === 'actual' && isExpenseOperation(e))
+      .reduce((acc, e) => acc + (e.amount || 0), 0);
+}
+
+/** Сумма ВСЕХ фактических ПОСТУПЛЕНИЙ от заказчика — это и есть реально
+ * оплаченная часть суммы контракта. */
+export function getActualIncomeTotal(finance: FinanceLike): number {
+  return (finance.expenses || [])
+      .filter(e => (e.type || 'actual') === 'actual' && e.operationType === 'income')
       .reduce((acc, e) => acc + (e.amount || 0), 0);
 }
 
 /** Сумма расходов конкретного типа (план/факт) и конкретного вида расхода —
- * используется для карточек "Налог (план)"/"Налог (факт)". */
+ * используется для карточек "Налог (план)"/"Налог (факт)". Поступления сюда
+ * заведомо не попадают (у них нет вида расхода вообще). */
 export function getExpensesTotalByTypeAndCategory(
     finance: FinanceLike,
     type: 'planned' | 'actual',
     category: string
 ): number {
   return (finance.expenses || [])
-      .filter(e => (e.type || 'actual') === type && isSameCategory(e.category, category))
+      .filter(e => (e.type || 'actual') === type && isExpenseOperation(e) && isSameCategory(e.category, category))
       .reduce((acc, e) => acc + (e.amount || 0), 0);
 }
 
-/** Чистая прибыль (план) = Сумма контракта − Расходы (план). Специально НЕ
- * учитывает бонус менеджера — бонус считается уже от фактической прибыли, у
- * плана такого понятия нет. */
+/** Чистая прибыль (план) = Сумма контракта (плановая) − Расходы (план).
+ * Специально НЕ учитывает бонус менеджера — бонус считается уже от фактической
+ * прибыли, у плана такого понятия нет. */
 export function getNetProfitPlanned(finance: FinanceLike): number {
   return (finance.contractSum || 0) - getPlannedExpensesTotal(finance);
 }
 
-/** Чистая прибыль (факт) = Сумма контракта − Расходы (факт). */
+/**
+ * Чистая прибыль (факт) = фактические ПОСТУПЛЕНИЯ от заказчика − фактические
+ * расходы. Намеренно НЕ от плановой суммы контракта — факт должен отражать
+ * реально осевшие деньги, а не то, что теоретически причитается по контракту.
+ * Пока заказчик не оплатил всё целиком, эта цифра будет ниже "плана" — это
+ * осознанное, ожидаемое поведение, а не ошибка расчёта.
+ */
 export function getNetProfitActual(finance: FinanceLike): number {
-  return (finance.contractSum || 0) - getActualExpensesTotal(finance);
+  return getActualIncomeTotal(finance) - getActualExpensesTotal(finance);
 }
 
 export function getMarginPercentPlanned(finance: FinanceLike): number {
