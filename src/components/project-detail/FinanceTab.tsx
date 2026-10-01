@@ -201,7 +201,12 @@ function FinanceTab({
     };
     const byDateAsc = (a: Expense, b: Expense) => new Date(a.date).getTime() - new Date(b.date).getTime();
 
-    type RenderRow = { expense: Expense; isPlanned: boolean };
+    // isLinkedToPlan — отдельно от isPlanned: true ТОЛЬКО для фактических строк,
+    // реально привязанных к конкретному плановому расходу (отображаются "дочерними"
+    // под ним) — именно у них нужен визуальный отступ. У свободных фактических
+    // расходов/поступлений (без ссылки на план) отступа быть не должно — они должны
+    // идти вровень с плановыми строками, а не казаться чьими-то "детьми".
+    type RenderRow = { expense: Expense; isPlanned: boolean; isLinkedToPlan: boolean };
     type MaterialGroup = {
         material: ProjectMaterial;
         label: string;
@@ -230,11 +235,11 @@ function FinanceTab({
         let actualIncomeSum = 0;
 
         for (const planned of materialPlanned) {
-            rows.push({ expense: planned, isPlanned: true });
+            rows.push({ expense: planned, isPlanned: true, isLinkedToPlan: false });
             consumedIds.add(planned.id);
             const children = actualOperations.filter(a => a.plannedExpenseId === planned.id).sort(byDateAsc);
             for (const child of children) {
-                rows.push({ expense: child, isPlanned: false });
+                rows.push({ expense: child, isPlanned: false, isLinkedToPlan: true });
                 consumedIds.add(child.id);
                 if ((child.operationType || 'expense') === 'expense') actualExpenseSum += child.amount || 0;
                 else actualIncomeSum += child.amount || 0;
@@ -247,7 +252,7 @@ function FinanceTab({
             .filter(a => a.materialId === m.id && !consumedIds.has(a.id))
             .sort(byDateAsc);
         for (const t of trailing) {
-            rows.push({ expense: t, isPlanned: false });
+            rows.push({ expense: t, isPlanned: false, isLinkedToPlan: false });
             consumedIds.add(t.id);
             if ((t.operationType || 'expense') === 'expense') actualExpenseSum += t.amount || 0;
             else actualIncomeSum += t.amount || 0;
@@ -270,19 +275,19 @@ function FinanceTab({
     const leftoverPlanned = plannedExpenses.filter(e => !e.materialId);
     const leftoverRows: RenderRow[] = [];
     for (const planned of leftoverPlanned) {
-        leftoverRows.push({ expense: planned, isPlanned: true });
+        leftoverRows.push({ expense: planned, isPlanned: true, isLinkedToPlan: false });
         consumedIds.add(planned.id);
         const children = actualOperations
             .filter(a => a.plannedExpenseId === planned.id && !consumedIds.has(a.id))
             .sort(byDateAsc);
         for (const c of children) {
-            leftoverRows.push({ expense: c, isPlanned: false });
+            leftoverRows.push({ expense: c, isPlanned: false, isLinkedToPlan: true });
             consumedIds.add(c.id);
         }
     }
     const leftoverTrailing = actualOperations.filter(a => !consumedIds.has(a.id)).sort(byDateAsc);
     for (const t of leftoverTrailing) {
-        leftoverRows.push({ expense: t, isPlanned: false });
+        leftoverRows.push({ expense: t, isPlanned: false, isLinkedToPlan: false });
         consumedIds.add(t.id);
     }
 
@@ -424,11 +429,12 @@ function FinanceTab({
                                         marginActual={group.marginActual}
                                         colSpan={canEdit ? 5 : 4}
                                     />
-                                    {group.rows.map(({ expense, isPlanned }) => (
+                                    {group.rows.map(({ expense, isPlanned, isLinkedToPlan }) => (
                                         <OperationRow
                                             key={expense.id}
                                             expense={expense}
                                             isPlanned={isPlanned}
+                                            isLinkedToPlan={isLinkedToPlan}
                                             canEdit={canEdit}
                                             onRowClick={() => canEdit && !isPlanned && handleOpenEditRow(expense.id)}
                                             onDelete={() => removeExpense(expense.id)}
@@ -437,11 +443,12 @@ function FinanceTab({
                                 </React.Fragment>
                             ))}
 
-                            {filteredLeftoverRows.map(({ expense, isPlanned }) => (
+                            {filteredLeftoverRows.map(({ expense, isPlanned, isLinkedToPlan }) => (
                                 <OperationRow
                                     key={expense.id}
                                     expense={expense}
                                     isPlanned={isPlanned}
+                                    isLinkedToPlan={isLinkedToPlan}
                                     canEdit={canEdit}
                                     onRowClick={() => canEdit && !isPlanned && handleOpenEditRow(expense.id)}
                                     onDelete={() => removeExpense(expense.id)}
@@ -686,9 +693,13 @@ function MaterialGroupHeaderRow({ label, marginPlanned, marginActual, colSpan }:
 /** Одна строка операции (план/факт-расход или поступление) в таблице финансовых
  * операций — вынесена в отдельный компонент, т.к. используется и внутри групп
  * по материалу, и в безымянном хвосте операций без материала. */
-function OperationRow({ expense, isPlanned, canEdit, onRowClick, onDelete }: {
+function OperationRow({ expense, isPlanned, isLinkedToPlan, canEdit, onRowClick, onDelete }: {
     expense: Expense;
     isPlanned: boolean;
+    /** Только у фактических строк, реально привязанных к конкретному плановому
+     * расходу — у них нужен отступ (визуально "дочерняя" строка). Свободные
+     * фактические расходы/поступления без ссылки на план идут вровень с планом. */
+    isLinkedToPlan: boolean;
     canEdit: boolean;
     onRowClick: () => void;
     onDelete: () => void;
@@ -706,7 +717,7 @@ function OperationRow({ expense, isPlanned, canEdit, onRowClick, onDelete }: {
                 {isPlanned ? '' : formatExpenseDate(expense.date)}
             </td>
 
-            <td className={cn("px-4 py-3", !isPlanned && "pl-7")}>
+            <td className={cn("px-4 py-3", isLinkedToPlan && "pl-7")}>
                 <div className="flex min-w-0 items-center gap-2.5">
           <span className={cn("truncate text-[12.5px] font-medium", isPlanned ? "text-[#4A4636] font-semibold" : "text-[#302A1C]")}>
             {expense.operationType === 'income' ? 'Поступление' : (expense.category || 'Без категории')}
