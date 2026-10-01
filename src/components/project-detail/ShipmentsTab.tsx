@@ -444,6 +444,10 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 unloadingDate: form.unloadingDate || '',
                 carrierUPD: form.carrierUPD || '',
                 createdAt: editingShipment?.createdAt || new Date().toISOString(),
+                // Наследуем метку по умолчанию — если расход для этой отгрузки уже был
+                // создан раньше (в т.ч. задним числом — через правку доверенности), не
+                // теряем эту информацию при обычном пересохранении других полей формы.
+                transportExpenseId: editingShipment?.transportExpenseId,
             };
 
             let updated;
@@ -458,28 +462,26 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 updatedAt: serverTimestamp(),
             };
 
-            // Фактический расход "Транспорт" создаём РОВНО в момент, когда у отгрузки
-            // ВПЕРВЫЕ появляется номер входящего УПД/акта — то есть когда "заготовка"
-            // (созданная вместе с доверенностью) становится фактической отгрузкой
-            // (тот же признак, что использует getShippingProgress для бегунка). Если
-            // номер уже был заполнен раньше и просто пересохраняют другие поля —
-            // новый расход не создаём повторно, иначе он плодился бы при каждом
-            // сохранении. Материал — тот же, что в доверенности, по которой идёт
-            // отгрузка; плановый расход для ссылки ищем среди уже существующих
-            // плановых по этому материалу и виду "Транспорт" — если такого плана нет
-            // (например, у материала транспорт был 0 и плановую запись не создали),
-            // расход всё равно фиксируем, просто без ссылки на план и с материалом,
-            // взятым напрямую из доверенности (а не из плана, которого нет).
-            const hadIncomingNumberBefore = !!(editingShipment?.incomingUPD && editingShipment.incomingUPD.trim() !== '');
+            // Фактический расход "Транспорт" создаём, если ОДНОВРЕМЕННО верно:
+            // — у отгрузки заполнен номер входящего УПД/акта (это уже фактическая
+            //   отгрузка, а не "заготовка" — тот же признак, что у бегунка);
+            // — стоимость перевозки по доверенности больше нуля (без неё создавать
+            //   расход нечем — заполнить её можно и позже, см. TrustDeedsTab.tsx,
+            //   там та же проверка срабатывает при сохранении самой доверенности);
+            // — расход по ЭТОЙ отгрузке ещё НЕ создавался (проверяем по метке
+            //   transportExpenseId, а не по "номер появился только что" — так расход
+            //   гарантированно создастся РОВНО один раз, в каком бы порядке ни
+            //   заполнялись поля и сколько раз что-либо ни пересохранялось).
             const hasIncomingNumberNow = !!(newShipment.incomingUPD && String(newShipment.incomingUPD).trim() !== '');
-            if (hasIncomingNumberNow && !hadIncomingNumberBefore && selectedDeed) {
+            if (hasIncomingNumberNow && !newShipment.transportExpenseId && selectedDeed && deedCarryingCost > 0) {
                 const resolvedMaterial = project.materials?.find(
                     m => m.id === selectedDeed.materialId || m.materialName === selectedDeed.materialName
                 );
-                if (resolvedMaterial && deedCarryingCost > 0) {
+                if (resolvedMaterial) {
                     const planned = findPlannedExpense(project.finance?.expenses || [], resolvedMaterial.id, EXPENSE_CATEGORY_TRANSPORT);
+                    const newExpenseId = crypto.randomUUID();
                     const newExpense: Expense = {
-                        id: crypto.randomUUID(),
+                        id: newExpenseId,
                         date: form.loadingDate || form.unloadingDate || new Date().toISOString().split('T')[0],
                         category: planned?.category || EXPENSE_CATEGORY_TRANSPORT,
                         type: 'actual',
@@ -489,6 +491,9 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                         amount: deedCarryingCost,
                     };
                     updatePayload['finance.expenses'] = [...(project.finance?.expenses || []), newExpense];
+                    // newShipment уже лежит внутри updated (по ссылке) — эта мутация
+                    // попадёт в payload без необходимости пересобирать updated заново.
+                    newShipment.transportExpenseId = newExpenseId;
                 }
             }
 
