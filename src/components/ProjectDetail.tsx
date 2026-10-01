@@ -5,7 +5,7 @@ import { Project, ProjectTask, TrustDeed, AppUser } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Calendar, CheckCircle, ChevronRight, MapPin, FileText, Truck, Check, DollarSign } from 'lucide-react';
 import { cn, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
-import { getMarginColor, getMarginPercent } from '../lib/financeCalculations';
+import { getMarginColor, getMarginPercentPlanned } from '../lib/financeCalculations';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
 import { useFinanceAccess } from '../hooks/useFinanceAccess';
 import StatusPill from './StatusPill';
@@ -319,20 +319,28 @@ export default function ProjectDetail({
                             )}
                         </div>
 
-                        <h1 className="font-display text-[26px] font-normal text-ink leading-[1.1] tracking-[-0.01em] mb-2 truncate">
-                            {project.name}
-                        </h1>
-
-                        <div className="flex flex-wrap items-center gap-2.5 text-[13px] text-ink-3">
-                            <span className="inline-flex items-center gap-1"><MapPin size={13} />{project.address}</span>
-                            <span>·</span>
-                            <span className="italic font-display text-[13px] text-ink-2">{project.stakeholders?.client?.companyName || project.client}</span>
+                        {/* Название проекта и адрес/заказчик теперь в ОДНОЙ строке (не друг под
+                            другом) — чтобы сама шапка карточки проекта была компактнее по высоте.
+                            Шрифты/размеры обеих частей НЕ меняли, просто переставили рядом. */}
+                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2 min-w-0">
+                            <h1 className="font-display text-[26px] font-normal text-ink leading-[1.1] tracking-[-0.01em] truncate">
+                                {project.name}
+                            </h1>
+                            <div className="flex flex-wrap items-center gap-2.5 text-[13px] text-ink-3 min-w-0">
+                                <span className="inline-flex items-center gap-1"><MapPin size={13} />{project.address}</span>
+                                <span>·</span>
+                                <span className="italic font-display text-[13px] text-ink-2">{project.stakeholders?.client?.companyName || project.client}</span>
+                            </div>
                         </div>
                     </div>
 
                     {canDisplayFinancialAmounts && (() => {
                         const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-                        const marginPct = Math.round(getMarginPercent(f));
+                        // Рентабельность — та же плановая формула, что и карточка "Рентабельность
+                        // (план)" на вкладке «Финансы»: (контракт − расходы план − налог план) ÷
+                        // контракт × 100. Специально плановая, не фактическая — это общая "шапка"
+                        // проекта, а не срез текущего факта.
+                        const marginPct = Math.round(getMarginPercentPlanned(f));
                         const marginColor = getMarginColor(marginPct);
                         return (
                             <>
@@ -344,7 +352,7 @@ export default function ProjectDetail({
                                     </div>
                                 </div>
                                 <div>
-                                    <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1.5">Маржа</p>
+                                    <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3 mb-1.5">Рентабельность</p>
                                     <p className="font-display text-[24px] font-normal leading-none tabular-nums" style={{ color: marginColor }}>{marginPct}%</p>
                                 </div>
                             </>
