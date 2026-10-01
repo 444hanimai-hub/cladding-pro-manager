@@ -6,7 +6,8 @@ import { Plus, X, Check, Trash2, Pencil, ChevronRight, Download, Truck } from 'l
 import { cn, formatCurrency, formatDate, formatDateToDisplay, getShippingProgress } from '../../lib/utils';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
 import { exportShipmentsToExcel } from '../../lib/export-shipments';
-import { Project, Shipment, TrustDeed } from '../../types';
+import { Project, Shipment, TrustDeed, Expense } from '../../types';
+import { findPlannedExpense, EXPENSE_CATEGORY_TRANSPORT } from '../../lib/plannedExpenses';
 import { DatePicker } from '../ui/DatePicker';
 import { Button } from '../ui/Button';
 import { STATUS_BG, STATUS_COLOR } from '../../lib/statuses';
@@ -452,10 +453,39 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 updated = [...shipments, newShipment];
             }
 
-            await updateDoc(doc(db, 'projects', project.id), {
+            const updatePayload: Record<string, any> = {
                 shipments: updated,
-                updatedAt: serverTimestamp()
-            });
+                updatedAt: serverTimestamp(),
+            };
+
+            // Фактический расход "Транспорт" создаём ТОЛЬКО при создании НОВОЙ отгрузки
+            // (не при редактировании существующей — иначе при каждом сохранении
+            // плодились бы дублирующиеся записи). Материал — тот же, что в доверенности,
+            // по которой идёт отгрузка; плановый расход для ссылки ищем среди уже
+            // существующих плановых по этому материалу и виду "Транспорт" — если такого
+            // плана нет (например, у материала транспорт был 0 и плановую запись не
+            // создали), расход всё равно фиксируем, просто без ссылки на план.
+            if (!editingId && selectedDeed) {
+                const resolvedMaterial = project.materials?.find(
+                    m => m.id === selectedDeed.materialId || m.materialName === selectedDeed.materialName
+                );
+                if (resolvedMaterial && deedCarryingCost > 0) {
+                    const planned = findPlannedExpense(project.finance?.expenses || [], resolvedMaterial.id, EXPENSE_CATEGORY_TRANSPORT);
+                    const newExpense: Expense = {
+                        id: crypto.randomUUID(),
+                        date: form.loadingDate || form.unloadingDate || new Date().toISOString().split('T')[0],
+                        category: planned?.category || EXPENSE_CATEGORY_TRANSPORT,
+                        type: 'actual',
+                        operationType: 'expense',
+                        materialId: resolvedMaterial.id,
+                        plannedExpenseId: planned?.id,
+                        amount: deedCarryingCost,
+                    };
+                    updatePayload['finance.expenses'] = [...(project.finance?.expenses || []), newExpense];
+                }
+            }
+
+            await updateDoc(doc(db, 'projects', project.id), updatePayload);
             onClose();
         } catch (error) {
             handleFirestoreError(error, OperationType.WRITE, `projects/${project.id}`);

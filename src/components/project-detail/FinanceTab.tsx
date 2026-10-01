@@ -703,8 +703,11 @@ function PlanFactCard({
                     {badgeText}
                 </span>
             </div>
-            <p className="text-[12px] text-ink-4 tabular-nums">{formatValue(plannedValue)}</p>
-            <p className="font-display text-[27px] leading-[1.05] tabular-nums" style={{ color: factColor }}>
+            {/* План — крупно и нейтрально, тот же стиль, что и сумма контракта. */}
+            <p className={cn(DASHBOARD_CARD_VALUE, 'text-ink')}>{formatValue(plannedValue)}</p>
+            {/* Факт — мелкой цветной строкой под планом, тот же приём, что и для
+                "поступило" на карточке суммы контракта. */}
+            <p className="text-[13px] font-semibold tabular-nums" style={{ color: factColor }}>
                 {formatValue(actualValue)}
             </p>
         </div>

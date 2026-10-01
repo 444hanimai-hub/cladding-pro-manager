@@ -137,6 +137,25 @@ export function syncPlannedExpensesForMaterials(
     return [...kept, ...generated];
 }
 
+/**
+ * Находит плановый расход по материалу (ProjectMaterial.id) и виду расхода —
+ * используется при автосоздании фактического расхода (например, при создании
+ * отгрузки: "вычислить плановый расход по параметрам: материал = тот же, что и
+ * в отгрузке, И тип = плановый, И вид расхода = Транспорт" — см. ShipmentsTab.tsx).
+ */
+export function findPlannedExpense(
+    expenses: Expense[],
+    materialId: string | undefined,
+    category: string
+): Expense | undefined {
+    if (!materialId) return undefined;
+    return expenses.find(e =>
+        (e.type || 'actual') === 'planned' &&
+        e.materialId === materialId &&
+        isSameExpenseCategory(e.category, category)
+    );
+}
+
 /** Материалы (ProjectMaterial.id), по которым уже есть хотя бы один ФАКТИЧЕСКИЙ
  * расход — используется, чтобы решить, можно ли удалить материал без предупреждения
  * (см. MaterialsTab.tsx: только плановые — можно тихо; есть фактический — блокируем). */
