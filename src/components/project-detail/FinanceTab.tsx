@@ -673,9 +673,9 @@ function MaterialGroupHeaderRow({ label, marginPlanned, marginActual, colSpan }:
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                     <span className="text-[12.5px] font-bold text-[#4A3B1E]">{label}</span>
                     <span className="text-[11.5px] font-mono tabular-nums whitespace-nowrap">
-                        <span className="text-[#6B5B3A]">План: {formatCurrency(marginPlanned)}</span>
+                        <span className="font-bold text-[#6B5B3A]">Маржа с НДС: {formatCurrency(marginPlanned)}</span>
                         <span className="mx-1.5 text-[#B8AE9A]">/</span>
-                        <span className="font-bold" style={{ color: factColor }}>Факт: {formatCurrency(marginActual)}</span>
+                        <span className="font-bold" style={{ color: factColor }}>{formatCurrency(marginActual)}</span>
                     </span>
                 </div>
             </td>
