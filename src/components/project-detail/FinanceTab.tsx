@@ -16,13 +16,14 @@ import {
     getMarginPercentActual,
     getActualIncomeTotal,
 } from '../../lib/financeCalculations';
-import { EXPENSE_CATEGORY_TAX, PLANNED_TAX_EXPENSE_ID, EXPENSE_CATEGORY_PURCHASE, EXPENSE_CATEGORY_TRANSPORT, EXPENSE_CATEGORY_DESIGNER, EXPENSE_CATEGORY_GC } from '../../lib/plannedExpenses';
+import { EXPENSE_CATEGORY_TAX, EXPENSE_CATEGORY_PURCHASE, EXPENSE_CATEGORY_TRANSPORT, EXPENSE_CATEGORY_DESIGNER, EXPENSE_CATEGORY_GC } from '../../lib/plannedExpenses';
 import { OperationType, handleFirestoreError } from '../../lib/firestore-errors';
 import { Project, AppUser, Expense, ExpenseReceiptFile, ProjectMaterial } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import CodeProtection from '../CodeProtection';
 import { ensureProjectDocsFolder, findOrCreateSubfolder, formatDateYMD } from '../../lib/googleDriveFolders';
 import { uploadFileToDrive, deleteDriveFile, buildReceiptFileName } from '../../lib/googleDriveFiles';
+import { calcMaterial } from '../../lib/materialFinance';
 
 const EXPENSES_SUBFOLDER_NAME = 'Расходы';
 
@@ -33,15 +34,15 @@ function getMaterialShortLabel(m?: ProjectMaterial): string {
     return m.supplierName ? `${m.materialName} · ${m.supplierName}` : m.materialName || '';
 }
 
-/** Полная склейка "Наименование, Характеристики, Производитель" — для таблицы
- * расходов (там материал — важное поле, достойное полного описания). Характеристики
- * и производитель берутся из КАТАЛОГА материалов (справочника), а не из самой
- * позиции сметы — поэтому нужен доступ к directories.materials/companies. */
+/** Полная склейка "Наименование, Характеристики, Поставщик" — заголовок группы
+ * материала в таблице финансовых операций. Характеристики берутся из КАТАЛОГА
+ * материалов (справочника) по materialId; поставщик — из самой позиции сметы
+ * (ProjectMaterial.supplierName), а не производитель из каталога — это разные
+ * вещи (тот же принцип, что и в форме доверенности). */
 function getMaterialFullLabel(m: ProjectMaterial | undefined, directories: any): string {
     if (!m) return '';
     const catalogMaterial = (directories?.materials || []).find((dm: any) => dm.id === m.materialId);
-    const manufacturerName = (directories?.companies || []).find((c: any) => c.id === catalogMaterial?.manufacturerId)?.name;
-    return [m.materialName, catalogMaterial?.characteristics, manufacturerName].filter(Boolean).join(', ');
+    return [m.materialName, catalogMaterial?.characteristics, (m as any).supplierName].filter(Boolean).join(', ');
 }
 
 function formatExpenseDate(dateStr: string): string {
@@ -92,7 +93,6 @@ function FinanceTab({
     const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
     const expenses = f.expenses || [];
     const materials = project.materials || [];
-    const materialsById = new Map(materials.map(m => [m.id, m]));
 
     // ── Карточки план/факт ──
     const plannedExpensesTotal = getPlannedExpensesTotal(f);
@@ -179,98 +179,157 @@ function FinanceTab({
         }
     };
 
-    // ── Группировка таблицы: плановый расход (серая заливка) → под ним все
-    // фактические, что на него ссылаются (обычная заливка, сумма красным) → следующий
-    // плановый и его фактические → и так по всем плановым проекта → в конце все
-    // фактические ОПЕРАЦИИ (и расходы, и поступления), НЕ привязанные ни к какому
-    // плановому — у поступлений плановой пары нет вообще, поэтому они всегда
-    // оказываются именно здесь, в конце. ──
+    // ── Группировка таблицы — ПО МАТЕРИАЛУ (а не плоским списком, как раньше):
+    // группа-заголовок материала (склейка "Наименование, Характеристики, Поставщик"
+    // + маржа с НДС план/факт) → под ней его плановые расходы (серая заливка) →
+    // под каждым плановым — его фактические, по возрастанию даты → затем
+    // фактические/поступления ЭТОГО материала без ссылки на план, тоже по
+    // возрастанию даты. Отдельным, безымянным хвостом в конце — операции совсем
+    // БЕЗ материала (общий налог по проекту, бонус менеджера, свободные расходы) —
+    // для них "маржа по материалу" смысла не имеет, группы без заголовка. ──
     const plannedExpenses = expenses.filter(e => (e.type || 'actual') === 'planned');
     const actualOperations = expenses.filter(e => (e.type || 'actual') === 'actual');
     // Только фактические РАСХОДЫ (без поступлений) — отдельно, для диаграммы
     // "Структура расходов" и общей суммы, которая не должна включать поступления.
     const actualExpenseOperations = actualOperations.filter(e => (e.operationType || 'expense') === 'expense');
 
-    const actualByPlanId = new Map<string, Expense[]>();
-    const ungroupedActual: Expense[] = [];
-    for (const a of actualOperations) {
-        const parentExists = a.plannedExpenseId && plannedExpenses.some(p => p.id === a.plannedExpenseId);
-        if (parentExists) {
-            const arr = actualByPlanId.get(a.plannedExpenseId!) || [];
-            arr.push(a);
-            actualByPlanId.set(a.plannedExpenseId!, arr);
-        } else {
-            ungroupedActual.push(a);
-        }
-    }
-
-    const materialOrder = new Map(materials.map((m, i) => [m.id, i]));
     const categoryPriority: Record<string, number> = {
         [EXPENSE_CATEGORY_PURCHASE]: 0,
         [EXPENSE_CATEGORY_TRANSPORT]: 1,
         [EXPENSE_CATEGORY_DESIGNER]: 2,
         [EXPENSE_CATEGORY_GC]: 3,
     };
-    const plannedSorted = [...plannedExpenses].sort((a, b) => {
-        const aIsTax = a.id === PLANNED_TAX_EXPENSE_ID;
-        const bIsTax = b.id === PLANNED_TAX_EXPENSE_ID;
-        if (aIsTax !== bIsTax) return aIsTax ? 1 : -1; // общий налог по проекту — всегда последней плановой группой
-        const aOrder = materialOrder.get(a.materialId || '') ?? 0;
-        const bOrder = materialOrder.get(b.materialId || '') ?? 0;
-        if (aOrder !== bOrder) return aOrder - bOrder;
-        return (categoryPriority[a.category] ?? 99) - (categoryPriority[b.category] ?? 99);
-    });
+    const byDateAsc = (a: Expense, b: Expense) => new Date(a.date).getTime() - new Date(b.date).getTime();
 
     type RenderRow = { expense: Expense; isPlanned: boolean };
-    const rows: RenderRow[] = [];
-    for (const planned of plannedSorted) {
-        rows.push({ expense: planned, isPlanned: true });
-        const children = (actualByPlanId.get(planned.id) || []).sort(
-            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-        );
-        for (const child of children) rows.push({ expense: child, isPlanned: false });
+    type MaterialGroup = {
+        material: ProjectMaterial;
+        label: string;
+        marginPlanned: number;
+        marginActual: number;
+        rows: RenderRow[];
+    };
+
+    // Какие записи уже "разобраны" по материальным группам — остаток (без
+    // материала вообще) считается тем, что сюда не попало.
+    const consumedIds = new Set<string>();
+
+    const materialGroups: MaterialGroup[] = materials.map(m => {
+        const calc = calcMaterial(m);
+        // "Маржа с НДС" — тот же показатель и та же формула, что и в DetailSection
+        // на вкладке «Материалы» (calc.marginExVat, несмотря на название переменной —
+        // так называется в интерфейсе по ранее согласованной терминологии).
+        const marginPlanned = calc.marginExVat;
+
+        const materialPlanned = plannedExpenses
+            .filter(e => e.materialId === m.id)
+            .sort((a, b) => (categoryPriority[a.category] ?? 99) - (categoryPriority[b.category] ?? 99));
+
+        const rows: RenderRow[] = [];
+        let actualExpenseSum = 0;
+        let actualIncomeSum = 0;
+
+        for (const planned of materialPlanned) {
+            rows.push({ expense: planned, isPlanned: true });
+            consumedIds.add(planned.id);
+            const children = actualOperations.filter(a => a.plannedExpenseId === planned.id).sort(byDateAsc);
+            for (const child of children) {
+                rows.push({ expense: child, isPlanned: false });
+                consumedIds.add(child.id);
+                if ((child.operationType || 'expense') === 'expense') actualExpenseSum += child.amount || 0;
+                else actualIncomeSum += child.amount || 0;
+            }
+        }
+
+        // Фактические расходы/поступления ЭТОГО материала без ссылки на план —
+        // по возрастанию даты, следом за всеми плановыми группами.
+        const trailing = actualOperations
+            .filter(a => a.materialId === m.id && !consumedIds.has(a.id))
+            .sort(byDateAsc);
+        for (const t of trailing) {
+            rows.push({ expense: t, isPlanned: false });
+            consumedIds.add(t.id);
+            if ((t.operationType || 'expense') === 'expense') actualExpenseSum += t.amount || 0;
+            else actualIncomeSum += t.amount || 0;
+        }
+
+        return {
+            material: m,
+            label: getMaterialFullLabel(m, directories),
+            marginPlanned,
+            // "Маржа с НДС факт" = сумма всех поступлений по материалу − все расходы
+            // по материалу (именно так, как и попросили — не через calcMaterial).
+            marginActual: actualIncomeSum - actualExpenseSum,
+            rows,
+        };
+    });
+
+    // Хвост: всё, что совсем без материала (общий налог по проекту, бонус
+    // менеджера, свободные расходы/поступления) — та же логика план→факт→свободное,
+    // просто без привязки к конкретному материалу и без строки маржи.
+    const leftoverPlanned = plannedExpenses.filter(e => !e.materialId);
+    const leftoverRows: RenderRow[] = [];
+    for (const planned of leftoverPlanned) {
+        leftoverRows.push({ expense: planned, isPlanned: true });
+        consumedIds.add(planned.id);
+        const children = actualOperations
+            .filter(a => a.plannedExpenseId === planned.id && !consumedIds.has(a.id))
+            .sort(byDateAsc);
+        for (const c of children) {
+            leftoverRows.push({ expense: c, isPlanned: false });
+            consumedIds.add(c.id);
+        }
     }
-    const sortedUngrouped = [...ungroupedActual].sort(
-        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
-    for (const u of sortedUngrouped) rows.push({ expense: u, isPlanned: false });
+    const leftoverTrailing = actualOperations.filter(a => !consumedIds.has(a.id)).sort(byDateAsc);
+    for (const t of leftoverTrailing) {
+        leftoverRows.push({ expense: t, isPlanned: false });
+        consumedIds.add(t.id);
+    }
+
+    // Единый плоский список ВСЕХ отображаемых строк (группы материалов подряд +
+    // хвост без материала) — нужен только для подсчёта вариантов фильтров и общего
+    // "пусто" состояния; для самого рендера группы обрабатываются отдельно (см. JSX).
+    const allRows: RenderRow[] = [...materialGroups.flatMap(g => g.rows), ...leftoverRows];
 
     // ── Фильтры по колонкам (кроме «Сумма») — значения считаются по ВСЕМ строкам
     // (а не только по уже отфильтрованным), чтобы список вариантов не "прыгал"
-    // при включении другого фильтра. ──
+    // при включении другого фильтра. Колонки "Материал" больше нет (он теперь в
+    // заголовке группы) — фильтра по нему тоже больше нет. ──
     const [dateFilter, setDateFilter] = useState<string | null>(null);
     const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
-    const [materialFilter, setMaterialFilter] = useState<string | null>(null);
     const [docsFilter, setDocsFilter] = useState<string | null>(null);
     const DOCS_FILTER_YES = 'Есть документы';
     const DOCS_FILTER_NO = 'Нет документов';
 
-    const rowMaterialLabel = (expense: Expense) => getMaterialFullLabel(materialsById.get(expense.materialId || ''), directories);
     // У поступления нет своего "вида расхода" (своего справочника) — в этой колонке
     // для него всегда просто "Поступление", вне зависимости от того, что лежит
     // (или не лежит) в поле category самой записи.
     const rowCategoryLabel = (expense: Expense) => expense.operationType === 'income' ? 'Поступление' : (expense.category || '');
 
     const uniqueSorted = (values: string[]) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ru'));
-    const dateOptions = uniqueSorted(rows.map(r => r.isPlanned ? '' : formatExpenseDate(r.expense.date)).filter(Boolean));
-    const categoryOptions = uniqueSorted(rows.map(r => rowCategoryLabel(r.expense)));
-    const materialOptions = uniqueSorted(rows.map(r => rowMaterialLabel(r.expense)));
+    const dateOptions = uniqueSorted(allRows.map(r => r.isPlanned ? '' : formatExpenseDate(r.expense.date)).filter(Boolean));
+    const categoryOptions = uniqueSorted(allRows.map(r => rowCategoryLabel(r.expense)));
     const docsOptions = [DOCS_FILTER_YES, DOCS_FILTER_NO];
 
-    const filteredRows = rows.filter(({ expense, isPlanned }) => {
+    const passesFilters = ({ expense, isPlanned }: RenderRow) => {
         if (dateFilter !== null) {
             const label = isPlanned ? '' : formatExpenseDate(expense.date);
             if (label !== dateFilter) return false;
         }
         if (categoryFilter !== null && rowCategoryLabel(expense) !== categoryFilter) return false;
-        if (materialFilter !== null && rowMaterialLabel(expense) !== materialFilter) return false;
         if (docsFilter !== null) {
             const hasDocs = !!(expense.receipts && expense.receipts.length > 0);
             if (docsFilter === DOCS_FILTER_YES && !hasDocs) return false;
             if (docsFilter === DOCS_FILTER_NO && hasDocs) return false;
         }
         return true;
-    });
+    };
+
+    const filteredMaterialGroups = materialGroups
+        .map(g => ({ ...g, rows: g.rows.filter(passesFilters) }))
+        .filter(g => g.rows.length > 0);
+    const filteredLeftoverRows = leftoverRows.filter(passesFilters);
+    const hasAnyVisibleRows = filteredMaterialGroups.some(g => g.rows.length > 0) || filteredLeftoverRows.length > 0;
 
     const editingExpense = editingExpenseId ? expenses.find(e => e.id === editingExpenseId) || null : null;
 
@@ -343,12 +402,11 @@ function FinanceTab({
                     </div>
 
                     <div className="overflow-x-auto">
-                        <table className="w-full min-w-[820px] border-collapse text-left">
+                        <table className="w-full min-w-[680px] border-collapse text-left">
                             <thead>
                             <tr className="border-b border-[#DED8CC] bg-[#F8F3E9]">
                                 <ColumnFilterHeader label="Дата" options={dateOptions} value={dateFilter} onChange={setDateFilter} />
                                 <ColumnFilterHeader label="Вид операции" options={categoryOptions} value={categoryFilter} onChange={setCategoryFilter} />
-                                <ColumnFilterHeader label="Материал" options={materialOptions} value={materialFilter} onChange={setMaterialFilter} />
                                 <ColumnFilterHeader label="Документы" options={docsOptions} value={docsFilter} onChange={setDocsFilter} align="center" />
                                 <th className="px-4 py-2.5 text-right text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574]">
                                     Сумма
@@ -358,84 +416,46 @@ function FinanceTab({
                             </thead>
 
                             <tbody className="divide-y divide-[#DED8CC] bg-[#FBF8F2]/50">
-                            {filteredRows.map(({ expense, isPlanned }) => {
-                                const materialLabel = rowMaterialLabel(expense);
-                                return (
-                                    <tr
-                                        key={expense.id}
-                                        onClick={() => canEdit && !isPlanned && handleOpenEditRow(expense.id)}
-                                        className={cn(
-                                            "group transition-colors",
-                                            isPlanned ? "bg-[#EFEAE0]" : "hover:bg-white/60",
-                                            canEdit && !isPlanned && "cursor-pointer"
-                                        )}
-                                    >
-                                        <td className={cn("px-4 py-3 text-[11.5px] font-medium tabular-nums", isPlanned ? "text-[#6B6555]" : "text-[#8A8574]")}>
-                                            {isPlanned ? '' : formatExpenseDate(expense.date)}
-                                        </td>
+                            {filteredMaterialGroups.map(group => (
+                                <React.Fragment key={group.material.id}>
+                                    <MaterialGroupHeaderRow
+                                        label={group.label}
+                                        marginPlanned={group.marginPlanned}
+                                        marginActual={group.marginActual}
+                                        colSpan={canEdit ? 5 : 4}
+                                    />
+                                    {group.rows.map(({ expense, isPlanned }) => (
+                                        <OperationRow
+                                            key={expense.id}
+                                            expense={expense}
+                                            isPlanned={isPlanned}
+                                            canEdit={canEdit}
+                                            onRowClick={() => canEdit && !isPlanned && handleOpenEditRow(expense.id)}
+                                            onDelete={() => removeExpense(expense.id)}
+                                        />
+                                    ))}
+                                </React.Fragment>
+                            ))}
 
-                                        <td className={cn("px-4 py-3", !isPlanned && "pl-7")}>
-                                            <div className="flex min-w-0 items-center gap-2.5">
-                          <span className={cn("truncate text-[12.5px] font-medium", isPlanned ? "text-[#4A4636] font-semibold" : "text-[#302A1C]")}>
-                            {expense.operationType === 'income' ? 'Поступление' : (expense.category || 'Без категории')}
-                          </span>
-                                                {(expense.managerPercent || 0) > 0 && (
-                                                    <span className="text-[10px] text-[#B48444] font-semibold shrink-0">{expense.managerPercent}%</span>
-                                                )}
-                                            </div>
-                                            {expense.description && (
-                                                <p className="text-[11px] text-[#8A8574] truncate mt-0.5 max-w-[220px]">{expense.description}</p>
-                                            )}
-                                        </td>
+                            {filteredLeftoverRows.map(({ expense, isPlanned }) => (
+                                <OperationRow
+                                    key={expense.id}
+                                    expense={expense}
+                                    isPlanned={isPlanned}
+                                    canEdit={canEdit}
+                                    onRowClick={() => canEdit && !isPlanned && handleOpenEditRow(expense.id)}
+                                    onDelete={() => removeExpense(expense.id)}
+                                />
+                            ))}
 
-                                        <td className="px-4 py-3 text-[12.5px] text-[#1F1C14] font-medium max-w-[320px] truncate" title={materialLabel || undefined}>
-                                            {materialLabel}
-                                        </td>
-
-                                        <td className="px-4 py-3 text-center">
-                                            {expense.receipts && expense.receipts.length > 0 ? (
-                                                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8A8574]">
-                                                    <Paperclip size={12} /> {expense.receipts.length}
-                                                </span>
-                                            ) : (
-                                                <span className="text-[11px] text-[#C9C2AE]">—</span>
-                                            )}
-                                        </td>
-
-                                        <td className="px-4 py-3 text-right">
-                        <span
-                            className="font-mono text-[12.5px] font-bold tabular-nums"
-                            style={{ color: isPlanned ? '#4A4636' : (expense.operationType === 'income' ? '#2f5e3f' : '#9B3F54') }}
-                        >
-                          {formatCurrency(expense.amount)}
-                        </span>
-                                        </td>
-
-                                        {canEdit && (
-                                            <td className="px-2 py-3 text-right">
-                                                <button
-                                                    type="button"
-                                                    onClick={(e) => { e.stopPropagation(); removeExpense(expense.id); }}
-                                                    className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
-                                                    aria-label="Удалить операцию"
-                                                    title={isPlanned ? 'Удалить плановый расход — при следующем сохранении материала он может появиться снова' : 'Удалить операцию'}
-                                                >
-                                                    <Trash2 size={12} strokeWidth={1.9} />
-                                                </button>
-                                            </td>
-                                        )}
-                                    </tr>
-                                );
-                            })}
-
-                            {filteredRows.length === 0 && (
+                            {!hasAnyVisibleRows && (
                                 <tr>
                                     <td
-                                        colSpan={canEdit ? 6 : 5}
+                                        colSpan={canEdit ? 5 : 4}
                                         className="px-4 py-10 text-center"
                                     >
                                         <p className="text-[12px] font-medium text-[#8A8574]">
-                                            {rows.length === 0 ? 'Расходы пока не добавлены' : 'Нет расходов по выбранным фильтрам'}
+                                            {allRows.length === 0 ? 'Расходы пока не добавлены' : 'Нет расходов по выбранным фильтрам'}
                                         </p>
                                     </td>
                                 </tr>
@@ -633,6 +653,106 @@ function ColumnFilterHeader({ label, options, value, onChange, align = 'left' }:
                 document.body
             )}
         </th>
+    );
+}
+
+/** Строка-заголовок группы материала в таблице финансовых операций — склейка
+ * "Наименование, Характеристики, Поставщик" слева, маржа с НДС план/факт справа
+ * (факт — сумма поступлений по материалу минус расходы по нему; красится
+ * терракотовым, если ушла в минус, иначе зелёным). */
+function MaterialGroupHeaderRow({ label, marginPlanned, marginActual, colSpan }: {
+    label: string;
+    marginPlanned: number;
+    marginActual: number;
+    colSpan: number;
+}) {
+    const factColor = marginActual < 0 ? '#a04930' : '#2f5e3f';
+    return (
+        <tr className="bg-[#EFE4C8]">
+            <td colSpan={colSpan} className="px-4 py-2.5">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <span className="text-[12.5px] font-bold text-[#4A3B1E]">{label}</span>
+                    <span className="text-[11.5px] font-mono tabular-nums whitespace-nowrap">
+                        <span className="text-[#6B5B3A]">План: {formatCurrency(marginPlanned)}</span>
+                        <span className="mx-1.5 text-[#B8AE9A]">/</span>
+                        <span className="font-bold" style={{ color: factColor }}>Факт: {formatCurrency(marginActual)}</span>
+                    </span>
+                </div>
+            </td>
+        </tr>
+    );
+}
+
+/** Одна строка операции (план/факт-расход или поступление) в таблице финансовых
+ * операций — вынесена в отдельный компонент, т.к. используется и внутри групп
+ * по материалу, и в безымянном хвосте операций без материала. */
+function OperationRow({ expense, isPlanned, canEdit, onRowClick, onDelete }: {
+    expense: Expense;
+    isPlanned: boolean;
+    canEdit: boolean;
+    onRowClick: () => void;
+    onDelete: () => void;
+}) {
+    return (
+        <tr
+            onClick={onRowClick}
+            className={cn(
+                "group transition-colors",
+                isPlanned ? "bg-[#EFEAE0]" : "hover:bg-white/60",
+                canEdit && !isPlanned && "cursor-pointer"
+            )}
+        >
+            <td className={cn("px-4 py-3 text-[11.5px] font-medium tabular-nums", isPlanned ? "text-[#6B6555]" : "text-[#8A8574]")}>
+                {isPlanned ? '' : formatExpenseDate(expense.date)}
+            </td>
+
+            <td className={cn("px-4 py-3", !isPlanned && "pl-7")}>
+                <div className="flex min-w-0 items-center gap-2.5">
+          <span className={cn("truncate text-[12.5px] font-medium", isPlanned ? "text-[#4A4636] font-semibold" : "text-[#302A1C]")}>
+            {expense.operationType === 'income' ? 'Поступление' : (expense.category || 'Без категории')}
+          </span>
+                    {(expense.managerPercent || 0) > 0 && (
+                        <span className="text-[10px] text-[#B48444] font-semibold shrink-0">{expense.managerPercent}%</span>
+                    )}
+                </div>
+                {expense.description && (
+                    <p className="text-[11px] text-[#8A8574] truncate mt-0.5 max-w-[220px]">{expense.description}</p>
+                )}
+            </td>
+
+            <td className="px-4 py-3 text-center">
+                {expense.receipts && expense.receipts.length > 0 ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#8A8574]">
+                        <Paperclip size={12} /> {expense.receipts.length}
+                    </span>
+                ) : (
+                    <span className="text-[11px] text-[#C9C2AE]">—</span>
+                )}
+            </td>
+
+            <td className="px-4 py-3 text-right">
+        <span
+            className="font-mono text-[12.5px] font-bold tabular-nums"
+            style={{ color: isPlanned ? '#4A4636' : (expense.operationType === 'income' ? '#2f5e3f' : '#9B3F54') }}
+        >
+          {formatCurrency(expense.amount)}
+        </span>
+            </td>
+
+            {canEdit && (
+                <td className="px-2 py-3 text-right">
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+                        className="rounded-md p-1 text-[#8A8574]/50 opacity-0 transition-all hover:bg-[#9B3F54]/8 hover:text-[#9B3F54] group-hover:opacity-100"
+                        aria-label="Удалить операцию"
+                        title={isPlanned ? 'Удалить плановый расход — при следующем сохранении материала он может появиться снова' : 'Удалить операцию'}
+                    >
+                        <Trash2 size={12} strokeWidth={1.9} />
+                    </button>
+                </td>
+            )}
+        </tr>
     );
 }
 
@@ -1202,12 +1322,15 @@ function IncomeModal({ project, editingExpense, accessToken, onConnectCalendar, 
 
     const [date, setDate] = useState(editingExpense?.date || '');
     const [amount, setAmount] = useState(editingExpense?.amount || 0);
+    const [materialId, setMaterialId] = useState(editingExpense?.materialId || '');
     const [description, setDescription] = useState(editingExpense?.description || '');
     const [receipts, setReceipts] = useState<ExpenseReceiptFile[]>(editingExpense?.receipts || []);
     const [isUploading, setIsUploading] = useState(false);
     const [isConnecting, setIsConnecting] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+    const materials = project.materials || [];
 
     const handleAttachFiles = async (fileList: FileList | null) => {
         if (!fileList || fileList.length === 0) return;
@@ -1278,6 +1401,7 @@ function IncomeModal({ project, editingExpense, accessToken, onConnectCalendar, 
                 category: '',
                 type: 'actual',
                 operationType: 'income',
+                materialId: materialId || undefined,
                 amount,
                 description: description || undefined,
                 receipts: receipts.length > 0 ? receipts : undefined,
@@ -1324,6 +1448,23 @@ function IncomeModal({ project, editingExpense, accessToken, onConnectCalendar, 
                             />
                         </div>
                     </div>
+
+                    {materials.length > 0 && (
+                        <div>
+                            <label className={labelClass}>Материал</label>
+                            <select
+                                value={materialId}
+                                onChange={e => setMaterialId(e.target.value)}
+                                className="w-full bg-surface border border-line rounded-md px-3 h-9 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors appearance-none cursor-pointer"
+                            >
+                                <option value="">— не привязан —</option>
+                                {materials.map(m => (
+                                    <option key={m.id} value={m.id}>{getMaterialShortLabel(m)}</option>
+                                ))}
+                            </select>
+                            <p className="text-[10.5px] text-ink-4 mt-1">За какой материал заказчик сделал перечисление — необязательно</p>
+                        </div>
+                    )}
 
                     <div>
                         <label className={labelClass}>Комментарий</label>

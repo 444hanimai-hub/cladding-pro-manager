@@ -14,7 +14,8 @@ import {
     deleteTrustDeedWithNumber,
     NumberTakenError,
 } from '../../lib/trustDeedNumbering';
-import { Project, TrustDeed } from '../../types';
+import { findPlannedExpense, EXPENSE_CATEGORY_TRANSPORT } from '../../lib/plannedExpenses';
+import { Project, TrustDeed, Expense } from '../../types';
 import { DatePicker } from '../ui/DatePicker';
 import DirectorySelect from './shared/DirectorySelect';
 import { ShipmentDetailField } from './shared/ShipmentDetailField';
@@ -290,6 +291,61 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                     updatedAt: serverTimestamp(),
                 });
             }
+
+            // ── Догоняющее создание фактического расхода "Транспорт" ──────────────
+            // Обычный случай (ставка заполнена заранее, отгрузка отмечена фактической
+            // позже) уже обрабатывает ShipmentsTab.tsx при сохранении самой отгрузки.
+            // Но возможен обратный порядок: отгрузку уже отметили фактической (номер
+            // УПД проставлен), а ставку перевозки в доверенность вписали только сейчас —
+            // тогда в момент сохранения отгрузки ставки ещё не было, и расход не
+            // создался. Здесь — та же логика, запущенная с другой стороны: при
+            // сохранении ДОВЕРЕННОСТИ ищем уже существующие фактические отгрузки по
+            // ней, для которых расход ещё не создан (проверяем по той же метке
+            // transportExpenseId, что и в ShipmentsTab.tsx — гарантированно без
+            // задвоения, в каком бы порядке ни заполнялись поля).
+            const rate = Number(dataToSave.rate) || 0;
+            if (rate > 0) {
+                const linkedShipments = (project.shipments || []).filter(s =>
+                    ((s as any).trustDeedId === deedId || s.poaNumber === number) &&
+                    Boolean(s.incomingUPD && s.incomingUPD.trim() !== '') &&
+                    !(s as any).transportExpenseId
+                );
+                if (linkedShipments.length > 0) {
+                    const resolvedMaterial = project.materials?.find(
+                        m => m.id === dataToSave.materialId || m.materialName === dataToSave.materialName
+                    );
+                    if (resolvedMaterial) {
+                        const planned = findPlannedExpense(project.finance?.expenses || [], resolvedMaterial.id, EXPENSE_CATEGORY_TRANSPORT);
+                        const pairs = linkedShipments.map(shipment => {
+                            const newExpenseId = crypto.randomUUID();
+                            const newExpense: Expense = {
+                                id: newExpenseId,
+                                date: shipment.loadingDate || shipment.unloadingDate || new Date().toISOString().split('T')[0],
+                                category: planned?.category || EXPENSE_CATEGORY_TRANSPORT,
+                                type: 'actual',
+                                operationType: 'expense',
+                                materialId: planned?.materialId || resolvedMaterial.id,
+                                amount: rate,
+                            };
+                            if (planned?.id) newExpense.plannedExpenseId = planned.id;
+                            return { shipmentId: shipment.id, newExpense };
+                        });
+
+                        const expenseIdByShipmentId = new Map(pairs.map(p => [p.shipmentId, p.newExpense.id]));
+                        const updatedShipments = (project.shipments || []).map(s =>
+                            expenseIdByShipmentId.has(s.id) ? { ...s, transportExpenseId: expenseIdByShipmentId.get(s.id) } : s
+                        );
+                        const updatedExpenses = [...(project.finance?.expenses || []), ...pairs.map(p => p.newExpense)];
+
+                        await updateDoc(doc(db, 'projects', project.id), {
+                            shipments: updatedShipments,
+                            'finance.expenses': updatedExpenses,
+                            updatedAt: serverTimestamp(),
+                        });
+                    }
+                }
+            }
+
             setIsAdding(false);
             setFormData({});
             setOriginalNumber(null);
@@ -625,11 +681,16 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
     const labelClass = "block text-[8.5px] font-semibold uppercase tracking-[0.16em] text-[#8A8574] mb-1.5";
     const sectionLabel = "text-[10px] font-bold uppercase tracking-[0.16em] text-[#A67C3C] border-b border-[#A67C3C]/10 pb-1.5";
 
-    const materialOptions = (project.materials || []).map(m => ({
-        id: m.id,
-        name: m.materialName,
-        sub: (m as any).supplierName || '',
-    }));
+    // Полная склейка "Наименование + Характеристика + Поставщик" — характеристика
+    // берётся из КАТАЛОГА материалов (справочника) по materialId, поставщик — из
+    // самой позиции сметы (ProjectMaterial.supplierName), а не из производителя
+    // в каталоге — это разные вещи (поставщик может отличаться от производителя).
+    const materialOptions = (project.materials || []).map(m => {
+        const catalogMaterial = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
+        const fullLabel = [m.materialName, catalogMaterial?.characteristics, (m as any).supplierName]
+            .filter(Boolean).join(', ');
+        return { id: m.id, name: m.materialName, fullLabel };
+    });
 
     const driverOptions = (directories.drivers || []).map((d: any) => ({ id: d.id, name: d.name }));
 
@@ -683,9 +744,9 @@ function TrustDeedModal({ formData, setFormData, onClose, onSave, onSaveAndGener
                                 <label className={labelClass}>Материал</label>
                                 <DirectorySelect
                                     value={formData.materialName || ''}
-                                    options={materialOptions.map(m => ({ id: m.id, name: m.sub ? `${m.name} · ${m.sub}` : m.name }))}
+                                    options={materialOptions.map(m => ({ id: m.id, name: m.fullLabel || m.name }))}
                                     onChange={v => {
-                                        const mat = materialOptions.find(m => `${m.name} · ${m.sub}` === v || m.name === v);
+                                        const mat = materialOptions.find(m => m.fullLabel === v || m.name === v);
                                         setFormData({...formData, materialName: mat?.name || v, materialId: mat?.id || ''});
                                     }}
                                     onAdd={async () => {}}

@@ -686,7 +686,18 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                                 <label className="text-[10px] font-bold uppercase tracking-widest text-[#8A8574] block mb-1.5">Дата загрузки</label>
                                 <DatePicker
                                     value={form.loadingDate || ''}
-                                    onChange={v => setForm({...form, loadingDate: v})}
+                                    onChange={v => {
+                                        // Автоматически подставляем дату выгрузки = загрузка + 1 день —
+                                        // просто разумное значение по умолчанию, само поле выгрузки
+                                        // остаётся полностью редактируемым и дальше (можно поправить).
+                                        const patch: Partial<Shipment> = { loadingDate: v };
+                                        if (v) {
+                                            const d = new Date(v);
+                                            d.setDate(d.getDate() + 1);
+                                            patch.unloadingDate = d.toISOString().split('T')[0];
+                                        }
+                                        setForm({ ...form, ...patch });
+                                    }}
                                     variant="compact"
                                 />
                             </div>
