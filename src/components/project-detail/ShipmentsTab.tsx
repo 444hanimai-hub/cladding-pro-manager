@@ -444,11 +444,17 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 unloadingDate: form.unloadingDate || '',
                 carrierUPD: form.carrierUPD || '',
                 createdAt: editingShipment?.createdAt || new Date().toISOString(),
-                // Наследуем метку по умолчанию — если расход для этой отгрузки уже был
-                // создан раньше (в т.ч. задним числом — через правку доверенности), не
-                // теряем эту информацию при обычном пересохранении других полей формы.
-                transportExpenseId: editingShipment?.transportExpenseId,
             };
+
+            // Наследуем метку по умолчанию — если расход для этой отгрузки уже был
+            // создан раньше (в т.ч. задним числом — через правку доверенности), не
+            // теряем эту информацию при обычном пересохранении других полей формы.
+            // Ключ добавляем, ТОЛЬКО если значение реально есть — Firestore не
+            // допускает явный undefined ни в одном поле документа (ровно это и
+            // роняло сохранение отгрузки чуть раньше).
+            if (editingShipment?.transportExpenseId) {
+                newShipment.transportExpenseId = editingShipment.transportExpenseId;
+            }
 
             let updated;
             if (editingId) {
@@ -487,9 +493,15 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                         type: 'actual',
                         operationType: 'expense',
                         materialId: planned?.materialId || resolvedMaterial.id,
-                        plannedExpenseId: planned?.id,
                         amount: deedCarryingCost,
                     };
+                    // Ключ добавляем, ТОЛЬКО если плановый расход реально нашёлся — иначе
+                    // (ваш случай: планового "Транспорта" по материалу не было) получили
+                    // бы ровно такой же explicit-undefined, который уже один раз уронил
+                    // сохранение отгрузки.
+                    if (planned?.id) {
+                        newExpense.plannedExpenseId = planned.id;
+                    }
                     updatePayload['finance.expenses'] = [...(project.finance?.expenses || []), newExpense];
                     // newShipment уже лежит внутри updated (по ссылке) — эта мутация
                     // попадёт в payload без необходимости пересобирать updated заново.
