@@ -7,7 +7,9 @@ import { doc, setDoc, collection, onSnapshot, query, where, getDocFromServer, up
 import {
   Briefcase,
   Settings as SettingsIcon,
-  XCircle
+  XCircle,
+  LayoutGrid,
+  List as ListIcon,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -38,6 +40,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'projects' | 'directories' | 'settings'>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  // Переключатель вида (сетка/список) для страницы «Проекты» — поднят сюда из
+  // ProjectList, потому что теперь им управляют кнопки в шапке (Topbar), а шапка
+  // рендерится здесь, в App.tsx, не внутри самой страницы.
+  const [projectsViewMode, setProjectsViewMode] = useState<'grid' | 'list'>('grid');
 
   const handleSelectTask = (projectId: string, taskId: string) => {
     setSelectedTaskId(taskId);
@@ -45,7 +51,6 @@ export default function App() {
   };
   const [accessDenied, setAccessDenied] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
   const { theme, toggleTheme } = useTheme();
 
   const isMobile = typeof window !== 'undefined' ? window.innerWidth < 1024 : false;
@@ -267,6 +272,33 @@ export default function App() {
     );
   }
 
+  // Переключатель вида (сетка/список) — виден только на странице «Проекты», когда
+  // нет открытого конкретного проекта (иначе на ProjectDetail он был бы неуместен).
+  const topbarExtraActions = (!selectedProjectId && activeTab === 'projects') ? (
+      <div className="flex items-center bg-surface-2 rounded-lg p-0.5">
+        <button
+            onClick={() => setProjectsViewMode('grid')}
+            aria-label="Отображение сеткой"
+            className={cn(
+                "w-8 h-8 flex items-center justify-center rounded-md transition-all",
+                projectsViewMode === 'grid' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40"
+            )}
+        >
+          <LayoutGrid size={15} />
+        </button>
+        <button
+            onClick={() => setProjectsViewMode('list')}
+            aria-label="Отображение списком"
+            className={cn(
+                "w-8 h-8 flex items-center justify-center rounded-md transition-all",
+                projectsViewMode === 'list' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40"
+            )}
+        >
+          <ListIcon size={15} />
+        </button>
+      </div>
+  ) : undefined;
+
   return (
       <div className="flex bg-bg transition-colors duration-base overflow-hidden" style={{ minHeight: '100svh' }}>
         <AnimatePresence>
@@ -285,8 +317,7 @@ export default function App() {
               title={selectedProjectId ? '' : activeTab === 'dashboard' ? 'Дашборд' : activeTab === 'projects' ? 'Проекты' : activeTab === 'directories' ? 'Справочники' : 'Настройки'}
               onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
               isSidebarOpen={isSidebarOpen}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
+              extraActions={topbarExtraActions}
           />
           <main className="flex-1 overflow-y-auto p-4 scroll-smooth">
             <AnimatePresence mode="wait">
@@ -302,7 +333,8 @@ export default function App() {
                     <Dashboard onSelectProject={id => { setSelectedProjectId(id); setActiveTab('projects'); }}
                                onSelectTask={handleSelectTask} onViewAllProjects={() => setActiveTab('projects')} appUser={appUser} />
                 ) : activeTab === 'projects' ? (
-                    <ProjectList onSelectProject={setSelectedProjectId} appUser={appUser} />
+                    <ProjectList onSelectProject={setSelectedProjectId} appUser={appUser}
+                                 viewMode={projectsViewMode} onViewModeChange={setProjectsViewMode} />
                 ) : activeTab === 'directories' ? (
                     <DirectoryManager appUser={appUser} />
                 ) : (

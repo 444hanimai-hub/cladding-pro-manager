@@ -16,11 +16,11 @@ import {
   Flag,
   ChevronDown,
   Check,
-  Circle,
-  Download
+  Circle
 } from 'lucide-react';
 import { formatCurrency, cn, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
-import { getManagerBonus, getMarginColor, getMarginPercent, getNetProfitAfterAll, getTotalExpenses } from '../lib/financeCalculations';
+import { getMarginColor, getActualExpensesTotal, getExpensesTotalByTypeAndCategory, getNetProfitActual } from '../lib/financeCalculations';
+import { EXPENSE_CATEGORY_TAX } from '../lib/plannedExpenses';
 import { FinanceCodeGate } from './CodeProtection';
 import { useFinanceAccess } from '../hooks/useFinanceAccess';
 import UserAvatar from './UserAvatar';
@@ -28,7 +28,6 @@ import StatusPill from './StatusPill';
 import { Card } from './ui/Card';
 import { Pill } from './ui/Pill';
 import { Progress } from './ui/Progress';
-import { Button } from './ui/Button';
 import {
   PeriodSelector,
   DateTypeSelector,
@@ -191,26 +190,30 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     });
   }, [accessibleProjects, previousRange, filterManagerId, filterLegalEntityId, filterStatuses, dateFilterType]);
 
+  // ── Итоги по ВСЕМ отфильтрованным проектам — та же модель, что и на вкладке
+  // «Финансы» внутри проекта: расходы БЕЗ налога (он своей отдельной карточкой),
+  // чистая прибыль — фактическая (поступления минус фактические расходы, см.
+  // lib/financeCalculations.ts — там же объяснение, почему именно так). ──
   const totals = useMemo(() => {
     return filteredProjects.reduce((acc, p) => {
       const f = p.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-      acc.contractSum += f.contractSum;
-      acc.expenses += getTotalExpenses(f);
-      acc.netProfit += getNetProfitAfterAll(f);
-      acc.bonuses += getManagerBonus(f);
+      acc.contractSum += f.contractSum || 0;
+      acc.expenses += getActualExpensesTotal(f);
+      acc.tax += getExpensesTotalByTypeAndCategory(f, 'actual', EXPENSE_CATEGORY_TAX);
+      acc.netProfit += getNetProfitActual(f);
       return acc;
-    }, { contractSum: 0, expenses: 0, netProfit: 0, bonuses: 0 });
+    }, { contractSum: 0, expenses: 0, tax: 0, netProfit: 0 });
   }, [filteredProjects]);
 
   const previousTotals = useMemo(() => {
     return previousProjects.reduce((acc, p) => {
       const f = p.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-      acc.contractSum += f.contractSum;
-      acc.expenses += getTotalExpenses(f);
-      acc.netProfit += getNetProfitAfterAll(f);
-      acc.bonuses += getManagerBonus(f);
+      acc.contractSum += f.contractSum || 0;
+      acc.expenses += getActualExpensesTotal(f);
+      acc.tax += getExpensesTotalByTypeAndCategory(f, 'actual', EXPENSE_CATEGORY_TAX);
+      acc.netProfit += getNetProfitActual(f);
       return acc;
-    }, { contractSum: 0, expenses: 0, netProfit: 0, bonuses: 0 });
+    }, { contractSum: 0, expenses: 0, tax: 0, netProfit: 0 });
   }, [previousProjects]);
 
   const previousAvgMargin = useMemo(() => {
@@ -231,7 +234,7 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     contract: calculateTrend(totals.contractSum, previousTotals.contractSum),
     profit: calculateTrend(totals.netProfit, previousTotals.netProfit),
     expenses: calculateTrend(totals.expenses, previousTotals.expenses),
-    bonuses: calculateTrend(totals.bonuses, previousTotals.bonuses),
+    tax: calculateTrend(totals.tax, previousTotals.tax),
     margin: {
       diff: avgMargin - previousAvgMargin,
       val: Math.abs(avgMargin - previousAvgMargin).toFixed(0),
@@ -485,14 +488,14 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
             <ManagerSelector value={filterManagerId} onChange={setFilterManagerId} users={users} />
             <LegalEntitySelector value={filterLegalEntityId} onChange={setFilterLegalEntityId} />
           </div>
-          <Button variant="soft" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Download size={14} />} onClick={() => {}}>Экспорт</Button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1.5fr_1fr_1fr_1fr] gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <SummaryCard title="СУММА КОНТРАКТОВ" value={totals.contractSum} isDark trendVal={trends.contract.val} isPositive={trends.contract.isPositive} customPath="M0,25 L15,22 L32,25 L45,18 L58,20 L70,12 L82,15 L92,5 L100,5" />
-          <SummaryCard title="ЧИСТАЯ ПРИБЫЛЬ" value={totals.netProfit} trendVal={trends.profit.val} isPositive={trends.profit.isPositive} color="#2f5e3f" customPath="M0,24 L10,22 L20,26 L35,22 L50,18 L65,20 L80,12 L90,14 L100,8" />
           <SummaryCard title="РАСХОДЫ" value={totals.expenses} trendVal={trends.expenses.val} isPositive={trends.expenses.isPositive} color="#8a3f47" customPath="M0,18 L12,22 L25,16 L38,20 L50,14 L62,18 L75,12 L88,16 L100,10" />
-          <SummaryCard title="СРЕДНЯЯ МАРЖА" value={avgMargin} isPercentage trendVal={trends.margin.val} isPositive={trends.margin.isPositive} color="#1f1c14" customPath="M0,22 L15,18 L35,24 L55,20 L75,22 L90,12 L100,8" />
+          <SummaryCard title="НАЛОГ К УПЛАТЕ" value={totals.tax} trendVal={trends.tax.val} isPositive={trends.tax.isPositive} color="#8a3f47" customPath="M0,20 L14,16 L28,22 L42,14 L56,18 L70,10 L84,14 L100,6" />
+          <SummaryCard title="ЧИСТАЯ ПРИБЫЛЬ" value={totals.netProfit} trendVal={trends.profit.val} isPositive={trends.profit.isPositive} color="#2f5e3f" customPath="M0,24 L10,22 L20,26 L35,22 L50,18 L65,20 L80,12 L90,14 L100,8" />
+          <SummaryCard title="РЕНТАБЕЛЬНОСТЬ" value={avgMargin} isPercentage trendVal={trends.margin.val} isPositive={trends.margin.isPositive} color="#1f1c14" customPath="M0,22 L15,18 L35,24 L55,20 L75,22 L90,12 L100,8" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -831,7 +834,11 @@ function ProjectFinancialBlock({ project, trustDeeds, onClick, isFirst }: {
   isFirst?: boolean;
 }) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-  const profitability = getMarginPercent(f);
+  // Рентабельность по карточке проекта — тоже фактическая (поступления минус
+  // фактические расходы, та же формула, что и в общих карточках сверху и на
+  // вкладке «Финансы» внутри проекта).
+  const netProfitActual = getNetProfitActual(f);
+  const profitability = f.contractSum ? (netProfitActual / f.contractSum) * 100 : 0;
   const shippingProgress = getShippingProgress(project, trustDeeds);
 
   const isOverdue = (() => {

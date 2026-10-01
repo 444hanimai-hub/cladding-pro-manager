@@ -3,7 +3,7 @@ import { collection, query, where, onSnapshot, addDoc, serverTimestamp, orderBy,
 import { db, auth } from '../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  Plus, MapPin, User as UserIcon, LayoutGrid, List as ListIcon,
+  Plus, MapPin, User as UserIcon,
   X, Briefcase, Trash2, Users, ChevronRight, ChevronDown,
   Clock, Calendar, ListFilter, Search, CheckCircle2, Circle, TrendingDown
 } from 'lucide-react';
@@ -51,16 +51,19 @@ function formatDateRange(period: PeriodType, start: Date | null, end: Date | nul
 interface ProjectListProps {
   onSelectProject: (id: string) => void;
   appUser: AppUser | null;
+  /** Переключатель вида (сетка/список) — теперь контролируется снаружи (из App.tsx),
+   * потому что сами кнопки переехали в верхнюю шапку (Topbar). */
+  viewMode: 'grid' | 'list';
+  onViewModeChange: (mode: 'grid' | 'list') => void;
 }
 
-export default function ProjectList({ onSelectProject, appUser }: ProjectListProps) {
+export default function ProjectList({ onSelectProject, appUser, viewMode, onViewModeChange }: ProjectListProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [allTasks, setAllTasks] = useState<ProjectTask[]>([]);
   const [allEvents, setAllEvents] = useState<ProjectEvent[]>([]);
   const [allTrustDeeds, setAllTrustDeeds] = useState<TrustDeed[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [users, setUsers] = useState<AppUser[]>([]);
 
   const [dateFilterType, setDateFilterType] = useState<'createdAt' | 'deadline'>('createdAt');
@@ -300,10 +303,6 @@ export default function ProjectList({ onSelectProject, appUser }: ProjectListPro
               <Button onClick={() => setShowAddForm(true)} variant="ochre" size="sm" className="h-9 px-4 text-[13px] font-semibold shrink-0" icon={<Plus size={14} />}>
                 Новый проект
               </Button>
-              <div className="flex items-center bg-surface-2 rounded-lg p-0.5">
-                <button onClick={() => setViewMode('grid')} className={cn("w-8 h-8 flex items-center justify-center rounded-md transition-all", viewMode === 'grid' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40")}><LayoutGrid size={15} /></button>
-                <button onClick={() => setViewMode('list')} className={cn("w-8 h-8 flex items-center justify-center rounded-md transition-all", viewMode === 'list' ? "bg-surface text-ink shadow-sm" : "text-ink-4 hover:text-ink-2 hover:bg-white/40")}><ListIcon size={15} /></button>
-              </div>
             </div>
           </div>
         </div>
