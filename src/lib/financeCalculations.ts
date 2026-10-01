@@ -1,4 +1,5 @@
 import type { FinanceData } from '../types';
+import { EXPENSE_CATEGORY_TAX } from './plannedExpenses';
 
 export type FinanceLike = Pick<FinanceData, 'contractSum' | 'managerPercentage' | 'expenses'>;
 
@@ -7,6 +8,14 @@ export type FinanceLike = Pick<FinanceData, 'contractSum' | 'managerPercentage' 
  * это единственное место здесь, где сравнение по категории вообще нужно). */
 function isSameCategory(a?: string, b?: string): boolean {
   return (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+}
+
+/** Налог — отдельная плановая категория (как и закуп/транспорт/дизайнер/ГП), но
+ * показывается своей ОТДЕЛЬНОЙ карточкой, а не внутри "Расходов" — иначе выглядело
+ * бы так, будто при подсчёте "Чистая прибыль = контракт − расходы" налог нигде не
+ * учитывается, хотя на самом деле он просто молча сидел внутри расходов. */
+function isTaxCategory(e: { category: string }): boolean {
+  return isSameCategory(e.category, EXPENSE_CATEGORY_TAX);
 }
 
 export function getTotalExpenses(finance: FinanceLike): number {
@@ -56,16 +65,16 @@ function isExpenseOperation(e: { operationType?: 'expense' | 'income' }): boolea
  * попадают. */
 export function getPlannedExpensesTotal(finance: FinanceLike): number {
   return (finance.expenses || [])
-      .filter(e => (e.type || 'actual') === 'planned' && isExpenseOperation(e))
+      .filter(e => (e.type || 'actual') === 'planned' && isExpenseOperation(e) && !isTaxCategory(e))
       .reduce((acc, e) => acc + (e.amount || 0), 0);
 }
 
-/** Сумма ВСЕХ фактических РАСХОДОВ (не поступлений) — включая те, что не
- * привязаны ни к какому плановому (свободные расходы, как и раньше: логистика,
- * мокапы и т.п.). */
+/** Сумма ВСЕХ фактических РАСХОДОВ (не поступлений, БЕЗ налога — у него своя
+ * отдельная карточка) — включая те, что не привязаны ни к какому плановому
+ * (свободные расходы, как и раньше: логистика, мокапы и т.п.). */
 export function getActualExpensesTotal(finance: FinanceLike): number {
   return (finance.expenses || [])
-      .filter(e => (e.type || 'actual') === 'actual' && isExpenseOperation(e))
+      .filter(e => (e.type || 'actual') === 'actual' && isExpenseOperation(e) && !isTaxCategory(e))
       .reduce((acc, e) => acc + (e.amount || 0), 0);
 }
 
@@ -90,22 +99,32 @@ export function getExpensesTotalByTypeAndCategory(
       .reduce((acc, e) => acc + (e.amount || 0), 0);
 }
 
-/** Чистая прибыль (план) = Сумма контракта (плановая) − Расходы (план).
+/**
+ * Чистая прибыль (план) = Сумма контракта (плановая) − Расходы (план) − Налог
+ * (план). Налог вычитается ОТДЕЛЬНЫМ слагаемым (не через getPlannedExpensesTotal,
+ * который теперь его намеренно исключает — см. комментарий у isTaxCategory) —
+ * итоговое число от этого не меняется, налог по-прежнему учитывается ровно один
+ * раз, просто явно, а не молча спрятанным внутри суммы расходов.
+ *
  * Специально НЕ учитывает бонус менеджера — бонус считается уже от фактической
- * прибыли, у плана такого понятия нет. */
+ * прибыли, у плана такого понятия нет.
+ */
 export function getNetProfitPlanned(finance: FinanceLike): number {
-  return (finance.contractSum || 0) - getPlannedExpensesTotal(finance);
+  const taxPlanned = getExpensesTotalByTypeAndCategory(finance, 'planned', EXPENSE_CATEGORY_TAX);
+  return (finance.contractSum || 0) - getPlannedExpensesTotal(finance) - taxPlanned;
 }
 
 /**
  * Чистая прибыль (факт) = фактические ПОСТУПЛЕНИЯ от заказчика − фактические
- * расходы. Намеренно НЕ от плановой суммы контракта — факт должен отражать
- * реально осевшие деньги, а не то, что теоретически причитается по контракту.
- * Пока заказчик не оплатил всё целиком, эта цифра будет ниже "плана" — это
- * осознанное, ожидаемое поведение, а не ошибка расчёта.
+ * расходы (без налога) − фактический налог отдельным слагаемым (та же причина,
+ * что и в плановой формуле выше). Намеренно НЕ от плановой суммы контракта —
+ * факт должен отражать реально осевшие деньги, а не то, что теоретически
+ * причитается по контракту. Пока заказчик не оплатил всё целиком, эта цифра
+ * будет ниже "плана" — это осознанное, ожидаемое поведение, а не ошибка расчёта.
  */
 export function getNetProfitActual(finance: FinanceLike): number {
-  return getActualIncomeTotal(finance) - getActualExpensesTotal(finance);
+  const taxActual = getExpensesTotalByTypeAndCategory(finance, 'actual', EXPENSE_CATEGORY_TAX);
+  return getActualIncomeTotal(finance) - getActualExpensesTotal(finance) - taxActual;
 }
 
 export function getMarginPercentPlanned(finance: FinanceLike): number {

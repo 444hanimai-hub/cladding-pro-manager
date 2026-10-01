@@ -458,14 +458,21 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                 updatedAt: serverTimestamp(),
             };
 
-            // Фактический расход "Транспорт" создаём ТОЛЬКО при создании НОВОЙ отгрузки
-            // (не при редактировании существующей — иначе при каждом сохранении
-            // плодились бы дублирующиеся записи). Материал — тот же, что в доверенности,
-            // по которой идёт отгрузка; плановый расход для ссылки ищем среди уже
-            // существующих плановых по этому материалу и виду "Транспорт" — если такого
-            // плана нет (например, у материала транспорт был 0 и плановую запись не
-            // создали), расход всё равно фиксируем, просто без ссылки на план.
-            if (!editingId && selectedDeed) {
+            // Фактический расход "Транспорт" создаём РОВНО в момент, когда у отгрузки
+            // ВПЕРВЫЕ появляется номер входящего УПД/акта — то есть когда "заготовка"
+            // (созданная вместе с доверенностью) становится фактической отгрузкой
+            // (тот же признак, что использует getShippingProgress для бегунка). Если
+            // номер уже был заполнен раньше и просто пересохраняют другие поля —
+            // новый расход не создаём повторно, иначе он плодился бы при каждом
+            // сохранении. Материал — тот же, что в доверенности, по которой идёт
+            // отгрузка; плановый расход для ссылки ищем среди уже существующих
+            // плановых по этому материалу и виду "Транспорт" — если такого плана нет
+            // (например, у материала транспорт был 0 и плановую запись не создали),
+            // расход всё равно фиксируем, просто без ссылки на план и с материалом,
+            // взятым напрямую из доверенности (а не из плана, которого нет).
+            const hadIncomingNumberBefore = !!(editingShipment?.incomingUPD && editingShipment.incomingUPD.trim() !== '');
+            const hasIncomingNumberNow = !!(newShipment.incomingUPD && String(newShipment.incomingUPD).trim() !== '');
+            if (hasIncomingNumberNow && !hadIncomingNumberBefore && selectedDeed) {
                 const resolvedMaterial = project.materials?.find(
                     m => m.id === selectedDeed.materialId || m.materialName === selectedDeed.materialName
                 );
@@ -477,7 +484,7 @@ function ShipmentModal({ project, editingId, onClose, directories, trustDeeds = 
                         category: planned?.category || EXPENSE_CATEGORY_TRANSPORT,
                         type: 'actual',
                         operationType: 'expense',
-                        materialId: resolvedMaterial.id,
+                        materialId: planned?.materialId || resolvedMaterial.id,
                         plannedExpenseId: planned?.id,
                         amount: deedCarryingCost,
                     };
