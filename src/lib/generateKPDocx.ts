@@ -1,8 +1,16 @@
 /**
  * generateKPDocx.ts
  *
- * Генерация коммерческого предложения по шаблону template_kp.docx — шаблон специально
- * под материалы вида товара "кирпич" (имя файла и структура таблицы заточены под это).
+ * Генерация коммерческого предложения. Два шаблона:
+ * — template_kp.docx — под материалы вида товара "кирпич" (структура таблицы и
+ *   часть плейсхолдеров заточены именно под него: расчёт по м², по поддонам);
+ * — template_kp_other.docx — универсальный, для любых остальных материалов
+ *   (меньше плейсхолдеров — нет "кол-во поддонов"/"цена за м²", зато есть явная
+ *   единица измерения {{ROW_UNIT}}).
+ * Выбор между ними делает вызывающий код (MaterialsTab.tsx) по тому же принципу,
+ * что и раньше решалось "подходит/не подходит" — если среди отмеченных материалов
+ * есть хотя бы один "кирпич", печатаем кирпичным шаблоном, иначе — универсальным.
+ *
  * Технически похоже на generateTrustDeedDocx.ts (JSZip, прямая работа с XML внутри
  * архива docx), но с добавленными сложностями:
  *
@@ -24,6 +32,10 @@
  *    фото не расшарена на аккаунт того, кто формирует КП, конкретно эта фотография
  *    просто не вставится (ячейка останется пустой) — остальной документ всё равно
  *    сформируется корректно.
+ *
+ * 4. Колонка с фото в таблице убирается ЦЕЛИКОМ (не просто пустые ячейки), если ни
+ *    у одного из выбранных материалов нет фото — см. removePhotoColumnIfNoPhotos.
+ *    Освободившаяся ширина отдаётся колонке "Наименование материалов".
  */
 
 import JSZip from 'jszip';
@@ -89,11 +101,25 @@ export function calcTransferValidUntil(base: Date = new Date(), daysAhead = 14):
     return endOfMonth(raw.getFullYear(), raw.getMonth());
 }
 
+// ───────────────────────── шаблоны ─────────────────────────
+
+export type KPTemplateType = 'brick' | 'other';
+
+const TEMPLATE_FILE_BY_TYPE: Record<KPTemplateType, string> = {
+    brick: 'template_kp.docx',
+    other: 'template_kp_other.docx',
+};
+
+const FILENAME_LABEL_BY_TYPE: Record<KPTemplateType, string> = {
+    brick: 'кирпич',
+    other: 'материалы',
+};
+
 // ───────────────────────── имя файла ─────────────────────────
 
-/** КП_кирпич_{название проекта}_{название застройщика}_{дата формирования} */
-export function buildKPFileName(projectName: string, clientName: string, date: Date = new Date()): string {
-    const parts = ['КП', 'кирпич', projectName, clientName, formatDateRu(date)]
+/** КП_{кирпич|материалы}_{название проекта}_{название застройщика}_{дата формирования} */
+export function buildKPFileName(projectName: string, clientName: string, templateType: KPTemplateType = 'brick', date: Date = new Date()): string {
+    const parts = ['КП', FILENAME_LABEL_BY_TYPE[templateType], projectName, clientName, formatDateRu(date)]
         .map(p => (p || '').trim())
         .filter(Boolean);
     return parts.join('_').replace(/[/\\:*?"<>|]/g, '') + '.docx';
@@ -105,6 +131,9 @@ export interface KPMaterialInput {
     materialName: string;
     characteristics: string;
     manufacturerName?: string;
+    /** Единица измерения (шт/кг/л/м² и т.п.) — для универсального шаблона ({{ROW_UNIT}});
+     * кирпичный шаблон такого плейсхолдера не содержит, поле там просто игнорируется. */
+    unit?: string;
     /** Кол-во шт в 1 м² (из справочника материала) — используется и для "в 1 м2 – N шт.", и для расчёта цены за м². */
     qtyPerM2?: number;
     /** Кол-во шт в поддоне (из справочника материала) — используется для "N шт. в поддоне". */
@@ -124,6 +153,11 @@ export interface KPMaterialInput {
 }
 
 export interface KPDocxInput {
+    /** Какой шаблон использовать — определяется вызывающим кодом (см. MaterialsTab.tsx):
+     * "brick", если среди выбранных материалов есть хотя бы один вида товара "кирпич",
+     * иначе "other". По умолчанию "brick" — для обратной совместимости вызовов, где
+     * этот параметр ещё не передаётся. */
+    templateType?: KPTemplateType;
     clientName: string;
     projectName: string;
     sellerLegalEntity: string;
@@ -134,20 +168,25 @@ export interface KPDocxInput {
     accessToken: string;
 }
 
-// ───────────────────────── работа с XML ─────────────────────────
+// ───────────────────────── работа с XML: строки/ячейки ─────────────────────────
 
-/** Находит границы <w:tr>...</w:tr>, в которые попадает первое вхождение marker. */
-function findRowBounds(xml: string, marker: string): { start: number; end: number } {
-    // Используем регулярное выражение для поиска marker, дабы не зависеть от разбиения тегов
+/** Строит "гибкую" регулярку для {{MARKER}}, устойчивую к разрывам тегов Word
+ * между буквами (между символами маркера могут затесаться служебные теги). */
+function buildPlaceholderRegex(marker: string): RegExp {
     const pattern = marker
         .split('')
         .map(char => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
         .join('(?:<[^>]+>)*');
-    const markerRegex = new RegExp(`\\{\\{(?:<[^>]+>)*${pattern}(?:<[^>]+>)*\\}\\}`, 'i');
+    return new RegExp(`\\{\\{(?:<[^>]+>)*${pattern}(?:<[^>]+>)*\\}\\}`, 'i');
+}
+
+/** Находит границы <w:tr>...</w:tr>, в которые попадает первое вхождение marker. */
+function findRowBounds(xml: string, marker: string): { start: number; end: number } {
+    const markerRegex = buildPlaceholderRegex(marker);
     const match = markerRegex.exec(xml);
 
     if (!match) {
-        throw new Error(`В шаблоне КП не найден плейсхолдер ${marker}. Проверьте файл шаблона (public/template_kp.docx).`);
+        throw new Error(`В шаблоне КП не найден плейсхолдер ${marker}. Проверьте файл шаблона.`);
     }
     const markerIdx = match.index;
 
@@ -169,6 +208,164 @@ function findRowBounds(xml: string, marker: string): { start: number; end: numbe
     throw new Error('Не удалось определить границы строки-образца в таблице шаблона КП — проверьте структуру таблицы.');
 }
 
+/** Находит границы <w:tbl>...</w:tbl>, целиком содержащей заданный диапазон
+ * (используется, чтобы найти всю таблицу материалов вокруг строки-образца). */
+function findTableBounds(xml: string, innerStart: number, innerEnd: number): { start: number; end: number } {
+    const tblOpen = '<w:tbl>';
+    const tblClose = '</w:tbl>';
+    let searchFrom = 0;
+    while (true) {
+        const openIdx = xml.indexOf(tblOpen, searchFrom);
+        if (openIdx === -1 || openIdx > innerStart) break;
+        const closeIdx = xml.indexOf(tblClose, openIdx);
+        if (closeIdx === -1) break;
+        const tblEnd = closeIdx + tblClose.length;
+        if (innerEnd <= tblEnd) return { start: openIdx, end: tblEnd };
+        searchFrom = tblEnd;
+    }
+    throw new Error('Не удалось определить границы таблицы материалов в шаблоне КП.');
+}
+
+/** Границы ВСЕХ строк <w:tr>...</w:tr> внутри переданного фрагмента XML, по порядку. */
+function getRowBoundsList(xml: string): Array<{ start: number; end: number }> {
+    const trOpen = '<w:tr';
+    const trClose = '</w:tr>';
+    const bounds: Array<{ start: number; end: number }> = [];
+    let searchFrom = 0;
+    while (true) {
+        const openIdx = xml.indexOf(trOpen, searchFrom);
+        if (openIdx === -1) break;
+        const tagEnd = xml.indexOf('>', openIdx) + 1;
+        const closeIdx = xml.indexOf(trClose, tagEnd);
+        if (closeIdx === -1) break;
+        const rowEnd = closeIdx + trClose.length;
+        bounds.push({ start: openIdx, end: rowEnd });
+        searchFrom = rowEnd;
+    }
+    return bounds;
+}
+
+/** Границы ВСЕХ ячеек <w:tc>...</w:tc> внутри переданной строки, по порядку. */
+function getCellBoundsList(rowXml: string): Array<{ start: number; end: number }> {
+    const tcOpen = '<w:tc';
+    const tcClose = '</w:tc>';
+    const bounds: Array<{ start: number; end: number }> = [];
+    let searchFrom = 0;
+    while (true) {
+        const openIdx = rowXml.indexOf(tcOpen, searchFrom);
+        if (openIdx === -1) break;
+        const tagEnd = rowXml.indexOf('>', openIdx) + 1;
+        const closeIdx = rowXml.indexOf(tcClose, tagEnd);
+        if (closeIdx === -1) break;
+        const cellEnd = closeIdx + tcClose.length;
+        bounds.push({ start: openIdx, end: cellEnd });
+        searchFrom = cellEnd;
+    }
+    return bounds;
+}
+
+/** Индекс (0-based) ячейки, в которую попадает markerIndex, внутри ОДНОЙ строки. */
+function findCellIndexAtPosition(rowXml: string, markerIndex: number): number | null {
+    const bounds = getCellBoundsList(rowXml);
+    for (let i = 0; i < bounds.length; i++) {
+        if (markerIndex < bounds[i].end) return i;
+    }
+    return null;
+}
+
+/** Убирает ячейку по индексу из строки, возвращает новую строку (без изменений,
+ * если индекс не найден — защитный случай на нестандартную структуру таблицы). */
+function removeCellByIndex(rowXml: string, colIndex: number): string {
+    const bounds = getCellBoundsList(rowXml);
+    if (colIndex < 0 || colIndex >= bounds.length) return rowXml;
+    const { start, end } = bounds[colIndex];
+    return rowXml.slice(0, start) + rowXml.slice(end);
+}
+
+/** Увеличивает ширину ячейки (её <w:tcW w:w="...">) по индексу на addDxa твипов. */
+function widenCellByIndex(rowXml: string, colIndex: number, addDxa: number): string {
+    const bounds = getCellBoundsList(rowXml);
+    if (colIndex < 0 || colIndex >= bounds.length) return rowXml;
+    const { start, end } = bounds[colIndex];
+    const cellXml = rowXml.slice(start, end);
+    const newCellXml = cellXml.replace(
+        /(<w:tcW\b[^>]*\bw:w=")(\d+)(")/,
+        (_m, p1, p2, p3) => `${p1}${parseInt(p2, 10) + addDxa}${p3}`
+    );
+    return rowXml.slice(0, start) + newCellXml + rowXml.slice(end);
+}
+
+/** Убирает <w:gridCol> по индексу из <w:tblGrid> этой таблицы, возвращает новую XML
+ * таблицы и реально убранную ширину (0, если колонка не найдена или ширина не задана). */
+function removeGridColByIndex(tableXml: string, colIndex: number): { xml: string; removedWidth: number } {
+    const gridMatch = tableXml.match(/<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/);
+    if (!gridMatch) return { xml: tableXml, removedWidth: 0 };
+    const cols = gridMatch[1].match(/<w:gridCol\b[^>]*\/>/g) || [];
+    if (colIndex < 0 || colIndex >= cols.length) return { xml: tableXml, removedWidth: 0 };
+    const wMatch = cols[colIndex].match(/w:w="(\d+)"/);
+    const removedWidth = wMatch ? parseInt(wMatch[1], 10) : 0;
+    const newCols = cols.filter((_, i) => i !== colIndex).join('');
+    const newGridXml = `<w:tblGrid>${newCols}</w:tblGrid>`;
+    return { xml: tableXml.replace(gridMatch[0], newGridXml), removedWidth };
+}
+
+/** Увеличивает ширину <w:gridCol> по индексу в <w:tblGrid> этой таблицы на addDxa. */
+function widenGridColByIndex(tableXml: string, colIndex: number, addDxa: number): string {
+    const gridMatch = tableXml.match(/<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/);
+    if (!gridMatch) return tableXml;
+    const cols = gridMatch[1].match(/<w:gridCol\b[^>]*\/>/g) || [];
+    if (colIndex < 0 || colIndex >= cols.length) return tableXml;
+    const newCols = cols.map((col, i) => {
+        if (i !== colIndex) return col;
+        return col.replace(/(w:w=")(\d+)(")/, (_m, p1, p2, p3) => `${p1}${parseInt(p2, 10) + addDxa}${p3}`);
+    }).join('');
+    const newGridXml = `<w:tblGrid>${newCols}</w:tblGrid>`;
+    return tableXml.replace(gridMatch[0], newGridXml);
+}
+
+/**
+ * Если ни у одного из выбранных материалов нет фото — убирает колонку с фото
+ * ЦЕЛИКОМ из таблицы материалов: из определения ширин колонок (tblGrid), из
+ * заголовка таблицы, из строки-образца и из итоговой строки — то есть из КАЖДОЙ
+ * строки таблицы разом, а не только из той, что размножается на материалы.
+ * Освободившуюся ширину отдаёт первой колонке ("Наименование материалов") — это
+ * и есть "таблица перестраивается пошире" из требования.
+ *
+ * Если в шаблоне колонки с фото нет вообще (плейсхолдера {{MATERIAL_PHOTO}} не
+ * нашлось в строке-образце) — ничего не делает, разбираться нечего.
+ */
+function removePhotoColumnIfNoPhotos(documentXml: string, sampleRowStart: number, sampleRowEnd: number): string {
+    const sampleRowXml = documentXml.slice(sampleRowStart, sampleRowEnd);
+    const photoMatch = buildPlaceholderRegex('MATERIAL_PHOTO').exec(sampleRowXml);
+    if (!photoMatch) return documentXml;
+
+    const colIndex = findCellIndexAtPosition(sampleRowXml, photoMatch.index);
+    if (colIndex === null || colIndex === 0) return documentXml;
+
+    const table = findTableBounds(documentXml, sampleRowStart, sampleRowEnd);
+    let tableXml = documentXml.slice(table.start, table.end);
+
+    const { xml: gridRemovedXml, removedWidth } = removeGridColByIndex(tableXml, colIndex);
+    tableXml = gridRemovedXml;
+
+    // Идём по строкам с конца — так вырезание ячейки в одной строке не сдвигает
+    // ещё не обработанные индексы предыдущих строк.
+    const rows = getRowBoundsList(tableXml);
+    for (let i = rows.length - 1; i >= 0; i--) {
+        const { start, end } = rows[i];
+        let rowXml = tableXml.slice(start, end);
+        rowXml = removeCellByIndex(rowXml, colIndex);
+        if (removedWidth > 0) rowXml = widenCellByIndex(rowXml, 0, removedWidth);
+        tableXml = tableXml.slice(0, start) + rowXml + tableXml.slice(end);
+    }
+
+    if (removedWidth > 0) {
+        tableXml = widenGridColByIndex(tableXml, 0, removedWidth);
+    }
+
+    return documentXml.slice(0, table.start) + tableXml + documentXml.slice(table.end);
+}
+
 /** Убирает целиком те параграфы, в которых сидит "опциональный" плейсхолдер,
  * значение которого для этой позиции пустое (чтобы в ячейке не осталась пустая строка). */
 function stripEmptyOptionalParagraphs(rowXml: string, replacements: Record<string, string>, optionalKeys: string[]): string {
@@ -184,13 +381,14 @@ function stripEmptyOptionalParagraphs(rowXml: string, replacements: Record<strin
 }
 
 /**
- * Замена плейсхолдеров {{KEY}}, устойчивая к разрывам тегов MS Word.
+ * Замена плейсхолдеров {{KEY}}, устойчивая к разрывам тегов MS Word. Ключи,
+ * которых в конкретном шаблоне нет (например, {{ROW_UNIT}} в кирпичном шаблоне,
+ * или {{QUANTITY_PER_PALLET}} в универсальном), просто не находят совпадений —
+ * безопасно передавать один и тот же набор замен для обоих шаблонов.
  */
 function substitutePlaceholders(xml: string, replacements: Record<string, string>): string {
     let result = xml;
     for (const [key, value] of Object.entries(replacements)) {
-        // Экранируем спецсимволы ключа и строим гибкий Regex для поиска {{KEY}},
-        // даже если между буквами есть служебные теги Word (<w:r>, <w:t>, <w:proofErr> и т.д.)
         const pattern = key
             .split('')
             .map(char => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -273,7 +471,8 @@ function getImageDimensions(bytes: ArrayBuffer, mime: string): { width: number; 
  * (<w:tcW w:w="..." w:type="dxa"/> внутри охватывающей <w:tc>) — так итоговый размер
  * фото автоматически подстраивается под колонку конкретного шаблона, а не живёт
  * отдельным, никак не связанным с таблицей числом. 1 twip (dxa) = 635 EMU.
- * Возвращает null, если ширина не задана явно в твипах (например, автоширина/проценты) —
+ * Возвращает null, если ширина не задана явно в твипах (например, автоширина/проценты),
+ * либо если колонки с фото в этом шаблоне вообще нет (см. removePhotoColumnIfNoPhotos) —
  * тогда используется запасной фиксированный размер.
  */
 function findPhotoCellWidthEmu(rowXml: string, markerIndex: number): number | null {
@@ -313,20 +512,10 @@ function extFromMime(mime: string): string {
 
 /**
  * Вставляет фото материала в ячейку вместо {{MATERIAL_PHOTO}} (или просто убирает
- * плейсхолдер, если фото нет или его не удалось скачать). Добавляет байты картинки
- * в архив, релс и при необходимости Content_Types.xml — своя, отдельная связка на
- * каждую строку.
+ * плейсхолдер, если фото нет или его не удалось скачать). Если колонки с фото в
+ * этой строке вообще нет (её убрали в removePhotoColumnIfNoPhotos) — ничего не
+ * делает вовсе: маркер просто не находится, функция тихо возвращает строку как есть.
  */
-/** Строит "гибкую" регулярку для {{MARKER}}, устойчивую к разрывам тегов Word
- * между буквами (та же логика, что и в substitutePlaceholders/findRowBounds). */
-function buildPlaceholderRegex(marker: string): RegExp {
-    const pattern = marker
-        .split('')
-        .map(char => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('(?:<[^>]+>)*');
-    return new RegExp(`\\{\\{(?:<[^>]+>)*${pattern}(?:<[^>]+>)*\\}\\}`, 'i');
-}
-
 async function embedPhoto(rowXml: string, driveFileId: string | undefined, accessToken: string, index: number, zip: JSZip, maxWidthEmu: number): Promise<string> {
     const markerRegex = buildPlaceholderRegex('MATERIAL_PHOTO');
 
@@ -423,10 +612,13 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
         throw new Error('Не выбрано ни одного материала для КП.');
     }
 
+    const templateType: KPTemplateType = data.templateType ?? 'brick';
+    const templateFile = TEMPLATE_FILE_BY_TYPE[templateType];
+
     const baseUrl = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) || '/';
-    const response = await fetch(`${baseUrl}template_kp.docx?v=${Date.now()}`, { cache: 'no-store' });
+    const response = await fetch(`${baseUrl}${templateFile}?v=${Date.now()}`, { cache: 'no-store' });
     if (!response.ok) {
-        throw new Error('Не удалось загрузить шаблон КП (template_kp.docx). Убедитесь, что файл лежит в папке public проекта.');
+        throw new Error(`Не удалось загрузить шаблон КП (${templateFile}). Убедитесь, что файл лежит в папке public проекта.`);
     }
     const templateArrayBuffer = await response.arrayBuffer();
     const zip = await JSZip.loadAsync(templateArrayBuffer);
@@ -435,6 +627,18 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
     if (!documentFile) throw new Error('В шаблоне КП не найден word/document.xml — файл повреждён.');
     let documentXml = await documentFile.async('text');
 
+    // Если ни у одного выбранного материала нет фото — убираем колонку с фото
+    // целиком из таблицы (заголовок + строка-образец + итоговая строка разом),
+    // остальные колонки (в первую очередь "Наименование материалов") расширяются
+    // на освободившееся место. См. removePhotoColumnIfNoPhotos.
+    const hasAnyPhoto = data.materials.some(m => !!m.photoDriveFileId);
+    if (!hasAnyPhoto) {
+        const probe = findRowBounds(documentXml, 'ROW_MATERIAL_NAME');
+        documentXml = removePhotoColumnIfNoPhotos(documentXml, probe.start, probe.end);
+    }
+
+    // Строку-образец ищем заново (а не переиспользуем найденную для probe выше) —
+    // после возможного удаления колонки позиции внутри documentXml сдвинулись.
     const { start, end } = findRowBounds(documentXml, 'ROW_MATERIAL_NAME');
     const sampleRow = documentXml.slice(start, end);
     const before = documentXml.slice(0, start);
@@ -442,7 +646,9 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
 
     // Ширину ячейки под фото определяем ОДИН раз из образца строки (структура
     // ячеек одинакова для всех размноженных копий) — а не пересчитываем на
-    // каждую позицию заново.
+    // каждую позицию заново. Если колонки с фото в этой строке больше нет (или
+    // не было изначально в этом шаблоне) — photoMarkerMatch будет null, и дальше
+    // embedPhoto молча ничего не сделает для каждой позиции (см. её комментарий).
     const photoMarkerMatch = buildPlaceholderRegex('MATERIAL_PHOTO').exec(sampleRow);
     const photoCellWidthEmu = photoMarkerMatch ? findPhotoCellWidthEmu(sampleRow, photoMarkerMatch.index) : null;
     // Небольшой отступ от найденной ширины ячейки, чтобы фото не упиралось точно
@@ -468,6 +674,7 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
             METER_QUANTITY: meterQuantityText,
             QUANTITY_PER_PALLET: quantityPerPalletText,
             MAUFACTURER: manufacturerText,
+            ROW_UNIT: m.unit || '',
             ROW_PRICE: formatMoney(m.price),
             ROW_PRICE_METER: m.qtyPerM2 ? formatMoney(priceMeter) : '',
             ROW_QUANTITY_METER: m.quantityM2 ? formatQty(m.quantityM2) : '',

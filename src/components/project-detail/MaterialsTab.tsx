@@ -21,7 +21,7 @@ import {
 } from '../../lib/materialFinance';
 import { ensureProjectDocsFolder, findOrCreateSubfolder } from '../../lib/googleDriveFolders';
 import { uploadFileToDrive } from '../../lib/googleDriveFiles';
-import { generateKPDocx, buildKPFileName } from '../../lib/generateKPDocx';
+import { generateKPDocx, buildKPFileName, KPTemplateType } from '../../lib/generateKPDocx';
 import { syncPlannedExpensesForMaterials, getMaterialIdsWithActualExpenses } from '../../lib/plannedExpenses';
 
 const KP_SUBFOLDER_NAME = 'Коммерческие предложения';
@@ -33,8 +33,11 @@ const KP_SUBFOLDER_NAME = 'Коммерческие предложения';
  * регистронезависимое (см. isBrickProductType ниже) — "кирпич"/"Кирпич"/"КИРПИЧ "
  * должны считаться одним и тем же значением, а не разными.
  *
- * Этот же признак используется и для определения, подходит ли текущий шаблон КП
- * (template_kp.docx) к отмеченным материалам — он заточен именно под кирпич.
+ * Этот же признак используется и для выбора шаблона КП: если среди отмеченных
+ * материалов есть хотя бы один "кирпич" — печатаем кирпичным шаблоном
+ * (template_kp.docx, заточен под расчёт по м²/поддонам), иначе — универсальным
+ * (template_kp_other.docx). Выбор делается по "есть хотя бы один", а не "все" —
+ * так было и раньше, когда это условие просто блокировало печать совсем.
  */
 const BRICK_PRODUCT_TYPE_NAME = 'Кирпич';
 
@@ -205,10 +208,12 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
     };
 
     /**
-     * Формирует КП из отмеченных пользователем материалов. Текущий шаблон
-     * (template_kp.docx) подходит только когда среди отмеченных позиций есть хотя бы
-     * один материал с видом товара "кирпич" — для остальных случаев отдельный шаблон
-     * будет добавлен позже, пока просто ничего не печатаем и объясняем почему.
+     * Формирует КП из отмеченных пользователем материалов — шаблон выбирается
+     * автоматически: кирпичный (template_kp.docx), если среди отмеченных позиций
+     * есть хотя бы один материал с видом товара "Кирпич", иначе универсальный
+     * (template_kp_other.docx). Колонка с фото в самом шаблоне тоже решается
+     * автоматически — внутри generateKPDocx.ts, по наличию/отсутствию фото у
+     * отмеченных материалов.
      *
      * Дальше: гарантирует наличие папки документов проекта и подпапки "Коммерческие
      * предложения" внутри неё (создаёт при необходимости, переиспользует дальше),
@@ -223,10 +228,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
             const productTypeName = (directories.productTypes || []).find((pt: any) => pt.id === dir?.productTypeId)?.name;
             return isBrickProductType(productTypeName);
         });
-        if (!hasBrickSelected) {
-            alert('Этот шаблон КП подходит только если среди выбранных материалов есть хотя бы один с видом товара «Кирпич». Печатная форма для остальных случаев появится позже.');
-            return;
-        }
+        const templateType: KPTemplateType = hasBrickSelected ? 'brick' : 'other';
 
         setIsGeneratingKP(true);
         try {
@@ -260,6 +262,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                     materialName: m.materialName,
                     characteristics: dir?.characteristics || '',
                     manufacturerName: manufacturerName || '',
+                    unit: m.unitName || '',
                     qtyPerM2: dir?.qtyPerM2,
                     qtyPerPallet: dir?.qtyPerPallet,
                     photoDriveFileId: dir?.photoDriveFileId,
@@ -272,6 +275,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
             });
 
             const blob = await generateKPDocx({
+                templateType,
                 clientName: project.client,
                 projectName: project.name,
                 sellerLegalEntity: (project as any).sellerLegalEntityName || '',
@@ -281,7 +285,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                 accessToken,
             });
 
-            const filename = buildKPFileName(project.name, project.client);
+            const filename = buildKPFileName(project.name, project.client, templateType);
             const { link } = await uploadFileToDrive(blob, filename, kpFolder.id, accessToken);
             window.open(link, '_blank');
             setIsKPModalOpen(false);
