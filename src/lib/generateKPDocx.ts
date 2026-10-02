@@ -366,13 +366,20 @@ function removePhotoColumnIfNoPhotos(documentXml: string, sampleRowStart: number
     return documentXml.slice(0, table.start) + tableXml + documentXml.slice(table.end);
 }
 
-/** Убирает целиком те параграфы, в которых сидит "опциональный" плейсхолдер,
- * значение которого для этой позиции пустое (чтобы в ячейке не осталась пустая строка). */
+/**
+ * Убирает целиком те параграфы, в которых сидит "опциональный" плейсхолдер,
+ * значение которого для этой позиции пустое (чтобы в ячейке не осталась пустая
+ * строка). Поиск — ТОЙ ЖЕ гибкой регуляркой, что и везде в этом файле (см.
+ * buildPlaceholderRegex), а не буквальным поиском подстроки "{{KEY}}" — Word
+ * нередко разбивает текст внутри фигурных скобок служебными тегами форматирования
+ * (например, если плейсхолдер хоть немного переформатировали в самом шаблоне),
+ * и буквальный поиск такое совпадение просто не находит — тогда пустая строка не
+ * убирается, а сам плейсхолдер к тому же остаётся видимым как есть (не подставляется).
+ */
 function stripEmptyOptionalParagraphs(rowXml: string, replacements: Record<string, string>, optionalKeys: string[]): string {
     return rowXml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paragraph) => {
         for (const key of optionalKeys) {
-            const token = `{{${key}}}`;
-            if (paragraph.includes(token) && !replacements[key]) {
+            if (buildPlaceholderRegex(key).test(paragraph) && !replacements[key]) {
                 return '';
             }
         }
@@ -682,7 +689,7 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
             ROW_SUM: formatMoney(m.sum),
         };
 
-        let rowCopy = stripEmptyOptionalParagraphs(sampleRow, rowReplacements, ['METER_QUANTITY', 'QUANTITY_PER_PALLET', 'MAUFACTURER']);
+        let rowCopy = stripEmptyOptionalParagraphs(sampleRow, rowReplacements, ['ROW_CHARACTERISTICS', 'METER_QUANTITY', 'QUANTITY_PER_PALLET', 'MAUFACTURER']);
         photoIndex += 1;
         rowCopy = await embedPhoto(rowCopy, m.photoDriveFileId, data.accessToken, photoIndex, zip, photoMaxWidthEmu);
         rowCopy = substitutePlaceholders(rowCopy, rowReplacements);
