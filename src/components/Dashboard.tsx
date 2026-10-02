@@ -789,11 +789,11 @@ function ProjectFinancialBlock({ project, trustDeeds, onClick, isFirst }: {
   isFirst?: boolean;
 }) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-  // Рентабельность по карточке проекта — фактическая (поступления минус
-  // фактические расходы, та же формула, что и в общих карточках сверху и на
-  // вкладке «Финансы» внутри проекта).
-  const netProfitActual = getNetProfitActual(f);
-  const profitability = f.contractSum ? (netProfitActual / f.contractSum) * 100 : 0;
+  // Рентабельность по карточке проекта — ПЛАНОВАЯ (контракт минус плановые
+  // расходы и налог), та же формула, что и в шапке самого проекта
+  // (ProjectDetail.tsx) и карточка "Рентабельность (план)" на вкладке «Финансы».
+  const netProfitPlanned = getNetProfitPlanned(f);
+  const profitability = f.contractSum ? (netProfitPlanned / f.contractSum) * 100 : 0;
   const shippingProgress = getShippingProgress(project, trustDeeds);
 
   const isOverdue = (() => {
@@ -850,7 +850,7 @@ function ProjectFinancialBlock({ project, trustDeeds, onClick, isFirst }: {
           </div>
         </div>
         <div className="text-right">
-          <p className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-ink-3">Маржа</p>
+          <p className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-ink-3">РЕНТ</p>
           <p className="font-display text-[20px] leading-none mt-0.5 tabular-nums" style={{ color: marginColor }}>{profitability.toFixed(0)}%</p>
         </div>
         <UserAvatar uid={project.leadManagerId || ''} name={project.leadManagerName || '—'} size="sm" />
