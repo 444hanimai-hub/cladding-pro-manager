@@ -11,15 +11,14 @@ import {
   ChevronRight,
   ArrowRight,
   TrendingDown,
-  ArrowUpRight,
   Plus,
   Flag,
   ChevronDown,
   Check,
   Circle
 } from 'lucide-react';
-import { formatCurrency, cn, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
-import { getMarginColor, getActualExpensesTotal, getExpensesTotalByTypeAndCategory, getNetProfitActual } from '../lib/financeCalculations';
+import { formatCurrency, cn, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR, formatAmountGrouped } from '../lib/utils';
+import { getMarginColor, getActualExpensesTotal, getPlannedExpensesTotal, getExpensesTotalByTypeAndCategory, getNetProfitActual, getNetProfitPlanned, getActualIncomeTotal } from '../lib/financeCalculations';
 import { EXPENSE_CATEGORY_TAX } from '../lib/plannedExpenses';
 import { FinanceCodeGate } from './CodeProtection';
 import { useFinanceAccess } from '../hooks/useFinanceAccess';
@@ -61,22 +60,6 @@ function getPeriodRange(type: PeriodType) {
     return { start: yStart, end: yEnd };
   }
   return { start: null, end: null };
-}
-
-function getPreviousPeriodRange(type: PeriodType) {
-  const current = getPeriodRange(type);
-  if (!current.start || !current.end) return { start: null, end: null };
-  const start = new Date(current.start);
-  const end = new Date(current.end);
-  if (type === 'year') {
-    start.setFullYear(start.getFullYear() - 1);
-    end.setFullYear(end.getFullYear() - 1);
-  } else if (type === 'quarter') {
-    const prevEnd = new Date(current.start.getTime() - 86400000);
-    const prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth() - 2, 1);
-    return { start: prevStart, end: prevEnd };
-  }
-  return { start, end };
 }
 
 function formatDateRange(period: PeriodType, start: Date | null, end: Date | null) {
@@ -132,7 +115,6 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
   }, [dateFilterType, selectedPeriod, filterManagerId, filterStatuses, filterLegalEntityId, appUser?.uid]);
 
   const activeRange = useMemo(() => getPeriodRange(selectedPeriod), [selectedPeriod]);
-  const previousRange = useMemo(() => getPreviousPeriodRange(selectedPeriod), [selectedPeriod]);
 
   // Явная клиентская фильтрация по правам доступа — независимо от того что вернул Firebase
   const accessibleProjects = useMemo(() => {
@@ -169,78 +151,37 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
     });
   }, [accessibleProjects, filterManagerId, filterLegalEntityId, filterStatuses, activeRange, dateFilterType]);
 
-  const previousProjects = useMemo(() => {
-    if (!previousRange.start || !previousRange.end) return [];
-    return accessibleProjects.filter(p => {
-      if (filterManagerId && p.leadManagerId !== filterManagerId) return false;
-      if (filterLegalEntityId && p.sellerLegalEntityId !== filterLegalEntityId) return false;
-      if (filterStatuses.length > 0) {
-        const normalized = getNormalizedStatus(p.status as string);
-        if (!filterStatuses.includes(normalized)) return false;
-      }
-      if (dateFilterType === 'createdAt') {
-        if (!p.createdAt) return false;
-        const d = p.createdAt.toDate();
-        return d >= previousRange.start! && d <= new Date(previousRange.end!.getTime() + 86400000);
-      } else {
-        if (!p.deadline) return false;
-        const d = p.deadline.toDate ? p.deadline.toDate() : new Date(p.deadline);
-        return d >= previousRange.start! && d <= previousRange.end!;
-      }
-    });
-  }, [accessibleProjects, previousRange, filterManagerId, filterLegalEntityId, filterStatuses, dateFilterType]);
-
-  // ── Итоги по ВСЕМ отфильтрованным проектам — та же модель, что и на вкладке
-  // «Финансы» внутри проекта: расходы БЕЗ налога (он своей отдельной карточкой),
-  // чистая прибыль — фактическая (поступления минус фактические расходы, см.
-  // lib/financeCalculations.ts — там же объяснение, почему именно так). ──
+  // ── Итоги по ВСЕМ отфильтрованным проектам — ПЛАН и ФАКТ по каждой метрике,
+  // та же модель и те же формулы, что и на вкладке «Финансы» внутри проекта:
+  // расходы БЕЗ налога (он своей отдельной карточкой), факт прибыли — поступления
+  // минус фактические расходы (см. lib/financeCalculations.ts). ──
   const totals = useMemo(() => {
     return filteredProjects.reduce((acc, p) => {
       const f = p.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
       acc.contractSum += f.contractSum || 0;
-      acc.expenses += getActualExpensesTotal(f);
-      acc.tax += getExpensesTotalByTypeAndCategory(f, 'actual', EXPENSE_CATEGORY_TAX);
-      acc.netProfit += getNetProfitActual(f);
+      acc.incomeActual += getActualIncomeTotal(f);
+      acc.expensesPlanned += getPlannedExpensesTotal(f);
+      acc.expensesActual += getActualExpensesTotal(f);
+      acc.taxPlanned += getExpensesTotalByTypeAndCategory(f, 'planned', EXPENSE_CATEGORY_TAX);
+      acc.taxActual += getExpensesTotalByTypeAndCategory(f, 'actual', EXPENSE_CATEGORY_TAX);
+      acc.netProfitPlanned += getNetProfitPlanned(f);
+      acc.netProfitActual += getNetProfitActual(f);
       return acc;
-    }, { contractSum: 0, expenses: 0, tax: 0, netProfit: 0 });
+    }, {
+      contractSum: 0, incomeActual: 0,
+      expensesPlanned: 0, expensesActual: 0,
+      taxPlanned: 0, taxActual: 0,
+      netProfitPlanned: 0, netProfitActual: 0,
+    });
   }, [filteredProjects]);
 
-  const previousTotals = useMemo(() => {
-    return previousProjects.reduce((acc, p) => {
-      const f = p.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-      acc.contractSum += f.contractSum || 0;
-      acc.expenses += getActualExpensesTotal(f);
-      acc.tax += getExpensesTotalByTypeAndCategory(f, 'actual', EXPENSE_CATEGORY_TAX);
-      acc.netProfit += getNetProfitActual(f);
-      return acc;
-    }, { contractSum: 0, expenses: 0, tax: 0, netProfit: 0 });
-  }, [previousProjects]);
+  const marginPlanned = useMemo(() => {
+    return totals.contractSum > 0 ? (totals.netProfitPlanned / totals.contractSum) * 100 : 0;
+  }, [totals.contractSum, totals.netProfitPlanned]);
 
-  const previousAvgMargin = useMemo(() => {
-    return previousTotals.contractSum > 0 ? (previousTotals.netProfit / previousTotals.contractSum) * 100 : 0;
-  }, [previousTotals.contractSum, previousTotals.netProfit]);
-
-  const calculateTrend = (curr: number, prev: number) => {
-    if (prev === 0) return { val: curr > 0 ? '100' : '0', isPositive: true };
-    const diff = ((curr - prev) / prev) * 100;
-    return { val: Math.abs(diff).toFixed(1), isPositive: diff >= 0 };
-  };
-
-  const avgMargin = useMemo(() => {
-    return totals.contractSum > 0 ? (totals.netProfit / totals.contractSum) * 100 : 0;
-  }, [totals.contractSum, totals.netProfit]);
-
-  const trends = useMemo(() => ({
-    contract: calculateTrend(totals.contractSum, previousTotals.contractSum),
-    profit: calculateTrend(totals.netProfit, previousTotals.netProfit),
-    expenses: calculateTrend(totals.expenses, previousTotals.expenses),
-    tax: calculateTrend(totals.tax, previousTotals.tax),
-    margin: {
-      diff: avgMargin - previousAvgMargin,
-      val: Math.abs(avgMargin - previousAvgMargin).toFixed(0),
-      isPositive: (avgMargin - previousAvgMargin) >= 0
-    }
-  }), [totals, previousTotals, avgMargin, previousAvgMargin]);
+  const marginActual = useMemo(() => {
+    return totals.contractSum > 0 ? (totals.netProfitActual / totals.contractSum) * 100 : 0;
+  }, [totals.contractSum, totals.netProfitActual]);
 
   const upcomingItems = useMemo(() => {
     const now = new Date();
@@ -491,11 +432,29 @@ export default function Dashboard({ onSelectProject, onSelectTask, onViewAllProj
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-          <SummaryCard title="СУММА КОНТРАКТОВ" value={totals.contractSum} isDark trendVal={trends.contract.val} isPositive={trends.contract.isPositive} customPath="M0,25 L15,22 L32,25 L45,18 L58,20 L70,12 L82,15 L92,5 L100,5" />
-          <SummaryCard title="РАСХОДЫ" value={totals.expenses} trendVal={trends.expenses.val} isPositive={trends.expenses.isPositive} color="#8a3f47" customPath="M0,18 L12,22 L25,16 L38,20 L50,14 L62,18 L75,12 L88,16 L100,10" />
-          <SummaryCard title="НАЛОГ К УПЛАТЕ" value={totals.tax} trendVal={trends.tax.val} isPositive={trends.tax.isPositive} color="#8a3f47" customPath="M0,20 L14,16 L28,22 L42,14 L56,18 L70,10 L84,14 L100,6" />
-          <SummaryCard title="ЧИСТАЯ ПРИБЫЛЬ" value={totals.netProfit} trendVal={trends.profit.val} isPositive={trends.profit.isPositive} color="#2f5e3f" customPath="M0,24 L10,22 L20,26 L35,22 L50,18 L65,20 L80,12 L90,14 L100,8" />
-          <SummaryCard title="РЕНТАБЕЛЬНОСТЬ" value={avgMargin} isPercentage trendVal={trends.margin.val} isPositive={trends.margin.isPositive} color="#1f1c14" customPath="M0,22 L15,18 L35,24 L55,20 L75,22 L90,12 L100,8" />
+          <div
+              className="flex min-h-[108px] flex-col gap-1.5 rounded-2xl p-[18px_20px] relative overflow-hidden"
+              style={{ background: 'linear-gradient(135deg, var(--ink) 0%, #2a2618 100%)', border: '1px solid #2a2618' }}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em]" style={{ color: 'rgba(245,233,204,0.6)' }}>СУММА КОНТРАКТОВ</p>
+              <span className="shrink-0 px-2 py-0.5 rounded-full text-[10.5px] font-semibold tabular-nums whitespace-nowrap" style={{ background: 'rgba(245,233,204,0.12)', color: 'rgba(245,233,204,0.85)' }}>
+                {formatRatioBadge(totals.contractSum, totals.incomeActual)}
+              </span>
+            </div>
+            <div className="flex items-baseline gap-1.5 min-w-0">
+              <span className="font-display text-[34px] leading-[1.05] tabular-nums text-bg">{formatAmountGrouped(totals.contractSum)}</span>
+              <span className="font-display text-[14px] opacity-70 shrink-0 text-bg">₽</span>
+            </div>
+            <p className="text-[13px] font-semibold tabular-nums" style={{ color: '#7fc98f' }}>
+              {formatAmountGrouped(totals.incomeActual)} ₽
+            </p>
+          </div>
+
+          <DashPlanFactCard label="РАСХОДЫ" plannedValue={totals.expensesPlanned} actualValue={totals.expensesActual} colorCategory="expense" />
+          <DashPlanFactCard label="НАЛОГ К УПЛАТЕ" plannedValue={totals.taxPlanned} actualValue={totals.taxActual} colorCategory="expense" />
+          <DashPlanFactCard label="ЧИСТАЯ ПРИБЫЛЬ" plannedValue={totals.netProfitPlanned} actualValue={totals.netProfitActual} colorCategory="profit" />
+          <DashPlanFactCard label="РЕНТАБЕЛЬНОСТЬ" plannedValue={marginPlanned} actualValue={marginActual} colorCategory="profit" isPercentage badgeMode="diffPP" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -761,67 +720,63 @@ function ProjectFunnel({ projects }: { projects: Project[] }) {
   );
 }
 
-function SummaryCard({ title, value, isDark, isPercentage, trendVal, isPositive, color, customPath }: any) {
-  const formatVal = (v: number) => {
-    if (isPercentage) return { num: `${v.toFixed(0)}%`, unit: '' };
-    if (v >= 1000000) return { num: (v / 1000000).toFixed(1).replace('.0', ''), unit: 'млн\u00a0₽' };
-    if (v >= 1000) return { num: (v / 1000).toFixed(0), unit: 'тыс\u00a0₽' };
-    return { num: `${v.toFixed(0)}`, unit: '₽' };
-  };
-  const { num, unit } = formatVal(value);
-  const defaultPath = customPath || "M0,25 L15,22 L30,26 L45,18 L60,20 L75,12 L90,15 L100,5";
-  const areaPath = `${defaultPath} L100,30 L0,30 Z`;
-  const gradId = React.useMemo(() => `grad-${Math.random().toString(36).slice(2, 10)}`, []);
+// ── Карточка план/факт (как на вкладке «Финансы»): план крупно и нейтрально
+// сверху, факт мелкой цветной строкой снизу, плашка справа — соотношение факт/план
+// (или разница в п.п. для рентабельности). ──
+const DASH_PLAN_FACT_COLORS = {
+  profit: '#2f5e3f',
+  expense: '#8a3f47',
+  negative: '#a04930',
+} as const;
 
-  if (isDark) {
-    return (
-        <div className="rounded-2xl flex flex-col gap-3 h-full p-[20px_22px] relative overflow-hidden"
-             style={{ background: 'linear-gradient(135deg, var(--ink) 0%, #2a2618 100%)', color: 'var(--bg)', border: '1px solid #2a2618' }}>
-          <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em]" style={{ color: 'rgba(245,233,204,0.6)' }}>{title}</p>
-          <div className="flex items-baseline gap-2">
-            <span className="font-display text-[38px] leading-[1.05] tabular-nums">{num}</span>
-            {unit && <span className="font-display text-[15px] opacity-70">{unit}</span>}
-          </div>
-          <div className="flex items-end justify-between mt-auto gap-3">
-            <div className="inline-flex items-baseline gap-1.5 text-[12px] font-semibold flex-wrap" style={{ color: '#e9d6ad' }}>
-              {isPositive ? <ArrowUpRight size={13} className="self-center" /> : <TrendingDown size={13} className="self-center" />}
-              <span>{isPositive ? '+' : '-'}{trendVal}%</span>
-              <span className="opacity-70 font-normal text-[11.5px]">к прошлому периоду</span>
-            </div>
-            <div className="w-[110px] h-8 shrink-0">
-              <svg className="w-full h-full" viewBox="0 0 100 30" preserveAspectRatio="none">
-                <defs><linearGradient id={gradId} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#d39a4d" stopOpacity="0.4" /><stop offset="100%" stopColor="#d39a4d" stopOpacity="0" /></linearGradient></defs>
-                <path d={areaPath} fill={`url(#${gradId})`} />
-                <path d={defaultPath} fill="none" stroke="#d39a4d" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-              </svg>
-            </div>
-          </div>
-        </div>
-    );
-  }
+function formatRatioBadge(planned: number, actual: number): string {
+  if (!planned) return '—';
+  return `${Math.round((actual / planned) * 100)}%`;
+}
 
-  const trendColor = isPositive ? '#2f5e3f' : 'var(--terracotta)';
+function formatPercentPointsDiff(planned: number, actual: number): string {
+  const diff = Math.round((actual - planned) * 10) / 10;
+  const sign = diff > 0 ? '+' : diff < 0 ? '−' : '';
+  const abs = Math.abs(diff).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return `${sign}${abs} п.п.`;
+}
+
+function DashPlanFactCard({
+                            label,
+                            plannedValue,
+                            actualValue,
+                            colorCategory,
+                            isPercentage = false,
+                            badgeMode = 'ratio',
+                          }: {
+  label: string;
+  plannedValue: number;
+  actualValue: number;
+  colorCategory: 'profit' | 'expense';
+  isPercentage?: boolean;
+  badgeMode?: 'ratio' | 'diffPP';
+}) {
+  const formatValue = (v: number) => isPercentage
+      ? `${v.toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`
+      : `${formatAmountGrouped(v)} ₽`;
+
+  const factColor = actualValue < 0 ? DASH_PLAN_FACT_COLORS.negative : DASH_PLAN_FACT_COLORS[colorCategory];
+  const badgeText = badgeMode === 'diffPP'
+      ? formatPercentPointsDiff(plannedValue, actualValue)
+      : formatRatioBadge(plannedValue, actualValue);
+
   return (
-      <div className="bg-surface border border-line rounded-2xl flex flex-col gap-2.5 h-full p-[18px_20px] shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
-        <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3">{title}</p>
-        <div className="flex items-end justify-between gap-2">
-          <div className="flex items-baseline gap-1.5 min-w-0">
-            <span className="font-display text-[34px] leading-[1.05] tabular-nums truncate" style={{ color }}>{num}</span>
-            {unit && <span className="font-display text-[14px] opacity-70 shrink-0" style={{ color }}>{unit}</span>}
-          </div>
-          <div className="inline-flex items-center gap-1 text-[12px] font-semibold shrink-0" style={{ color: trendColor }}>
-            {isPositive ? <ArrowUpRight size={13} /> : <TrendingDown size={13} />}
-            <span>{isPositive ? '+' : '-'}{trendVal}%</span>
-          </div>
+      <div className="flex min-h-[108px] flex-col gap-1.5 rounded-2xl border border-line bg-surface p-[18px_20px] shadow-[0_1px_0_rgba(48,42,28,0.04),0_1px_2px_rgba(48,42,28,0.06)]">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-3">{label}</p>
+          <span className="shrink-0 px-2 py-0.5 rounded-full bg-surface-2 text-[10.5px] font-semibold text-ink-3 tabular-nums whitespace-nowrap">
+            {badgeText}
+          </span>
         </div>
-        <div className="h-8 w-full">
-          <svg className="w-full h-full" viewBox="0 0 100 30" preserveAspectRatio="none">
-            <defs><linearGradient id={gradId} x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor={color} stopOpacity="0.18" /><stop offset="100%" stopColor={color} stopOpacity="0" /></linearGradient></defs>
-            <path d={areaPath} fill={`url(#${gradId})`} />
-            <path d={defaultPath} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-          </svg>
-        </div>
-        <p className="text-[11.5px] text-ink-3 mt-0.5">к прошлому периоду</p>
+        <p className="font-display text-[34px] leading-[1.05] tabular-nums text-ink">{formatValue(plannedValue)}</p>
+        <p className="text-[13px] font-semibold tabular-nums" style={{ color: factColor }}>
+          {formatValue(actualValue)}
+        </p>
       </div>
   );
 }
@@ -834,7 +789,7 @@ function ProjectFinancialBlock({ project, trustDeeds, onClick, isFirst }: {
   isFirst?: boolean;
 }) {
   const f = project.finance || { contractSum: 0, managerPercentage: 0, expenses: [] };
-  // Рентабельность по карточке проекта — тоже фактическая (поступления минус
+  // Рентабельность по карточке проекта — фактическая (поступления минус
   // фактические расходы, та же формула, что и в общих карточках сверху и на
   // вкладке «Финансы» внутри проекта).
   const netProfitActual = getNetProfitActual(f);
