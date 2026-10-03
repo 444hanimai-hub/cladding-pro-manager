@@ -993,7 +993,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                     </div>
 
                     {/* КП В ВАЛЮТЕ */}
-                    <div className="flex flex-wrap items-center gap-4 px-4 py-3 rounded-xl border border-line bg-surface-2/30">
+                    <div className="flex flex-wrap items-center gap-4">
                         <button
                             type="button"
                             role="switch"
@@ -1022,21 +1022,16 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                             <span className="text-[12.5px] font-medium text-ink">КП в валюте</span>
                         </button>
                         {m.kpInCurrency && (
-                            <>
-                                <div className="w-52">
-                                    <select
-                                        value={m.currencyId || ''}
-                                        onChange={e => set({ currencyId: e.target.value })}
-                                        className={cn(inputClass, "appearance-none cursor-pointer")}
-                                    >
-                                        <option value="">Выберите валюту...</option>
-                                        {currencies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                    </select>
-                                </div>
-                                {currencies.length === 0 && (
-                                    <p className="text-[10.5px] text-ink-4">Справочник валют пуст — добавьте валюту в разделе «Справочники»</p>
-                                )}
-                            </>
+                            <div className="w-52">
+                                <select
+                                    value={m.currencyId || ''}
+                                    onChange={e => set({ currencyId: e.target.value })}
+                                    className={cn(inputClass, "appearance-none cursor-pointer")}
+                                >
+                                    <option value="">Выберите валюту...</option>
+                                    {currencies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                </select>
+                            </div>
                         )}
                     </div>
 
@@ -1074,7 +1069,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                 </div>
                             )}
                             <div className="grid grid-cols-[1fr_70px_110px] gap-2 items-end mt-3">
-                                <label className={cn(labelClass, "mb-0 self-center")}>НДС от закупа</label>
+                                <label className={cn(labelClass, "mb-0 self-center")}>НДС от закупа, ₽</label>
                                 <VatPercentInput value={m.purchaseVatPercent} onCommit={n => set({ purchaseVatPercent: n })} className={inputClass} />
                                 <div className={readonlyClass}>{formatMoney(calc.purchaseVatAmount)}</div>
                             </div>
@@ -1134,7 +1129,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                 </div>
                             )}
                             <div className="grid grid-cols-[1fr_70px_110px] gap-2 items-end mt-3">
-                                <label className={cn(labelClass, "mb-0 self-center")}>НДС от продажи</label>
+                                <label className={cn(labelClass, "mb-0 self-center")}>НДС от продажи, ₽</label>
                                 <VatPercentInput value={m.saleVatPercent} onCommit={n => set({ saleVatPercent: n })} className={inputClass} />
                                 <div className={readonlyClass}>{formatMoney(calc.saleVatAmount)}</div>
                             </div>
