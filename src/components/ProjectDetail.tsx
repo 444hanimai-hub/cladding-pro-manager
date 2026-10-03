@@ -3,11 +3,12 @@ import { doc, onSnapshot, collection, query, where, updateDoc } from 'firebase/f
 import { db } from '../lib/firebase';
 import { Project, ProjectTask, TrustDeed, AppUser } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Calendar, CheckCircle, ChevronRight, MapPin, FileText, Truck, Check, DollarSign } from 'lucide-react';
+import { Calendar, CheckCircle, ChevronRight, MapPin, FileText, Truck, Check, DollarSign, Trash2, Loader2 } from 'lucide-react';
 import { cn, formatDateToDisplay, getShippingProgress, formatShippingProgressLabel, SHIPPING_PROGRESS_COMPLETE_COLOR } from '../lib/utils';
 import { getMarginColor, getMarginPercentPlanned } from '../lib/financeCalculations';
 import { OperationType, handleFirestoreError } from '../lib/firestore-errors';
 import { useFinanceAccess } from '../hooks/useFinanceAccess';
+import { deleteProjectCompletely } from '../lib/deleteProject';
 import StatusPill from './StatusPill';
 
 import PersonalInfoTab from './project-detail/PersonalInfoTab';
@@ -98,6 +99,8 @@ export default function ProjectDetail({
         initialTaskId ? 'activity' : 'info'
     );
     const [users, setUsers] = useState<AppUser[]>([]);
+    const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
     const [directories, setDirectories] = useState<{
         materials: any[],
         productTypes: any[],
@@ -274,6 +277,38 @@ export default function ProjectDetail({
         name: project.leadManagerName || '—'
     };
 
+    // Удалять проект может любой, кому доступно его редактирование (то же условие, что и
+    // canEdit выше: полный доступ к проектам, права "edit" на этот проект или ведущий
+    // менеджер). То же условие должно стоять в правилах Firestore (allow delete у projects) —
+    // иначе кнопка будет видна, а сервер откажет на последнем шаге.
+    const canDeleteProject = canEdit;
+
+    const handleDeleteProject = async () => {
+        if (isDeleting) return;
+        setIsDeleting(true);
+        try {
+            await deleteProjectCompletely(db, projectId);
+            setIsDeleteModalOpen(false);
+            // Проекта больше нет — возвращаемся в список.
+            onBack();
+        } catch (error) {
+            console.error('Не удалось удалить проект:', error);
+            // Сам проект удаляется последним — при сбое он остаётся в списке, а повторное
+            // нажатие дочистит то, что не успело удалиться.
+            alert('Не удалось удалить проект полностью. Часть данных могла уже удалиться — нажмите «Удалить проект» ещё раз, чтобы довести удаление до конца. Если ошибка повторяется, проверьте, что правила Firestore для удаления проекта опубликованы.');
+        } finally {
+            setIsDeleting(false);
+        }
+    };
+
+    const deleteSummary = [
+        { label: 'материалов', count: project.materials?.length || 0 },
+        { label: 'доверенностей', count: trustDeeds.length },
+        { label: 'отгрузок', count: project.shipments?.length || 0 },
+        { label: 'финансовых операций', count: (project.finance?.expenses || []).length },
+        { label: 'задач', count: tasks.length },
+    ].filter(item => item.count > 0);
+
     return (
         <motion.div
             initial={{ opacity: 0, x: 20 }}
@@ -282,10 +317,21 @@ export default function ProjectDetail({
             className="space-y-8"
         >
             {/* Breadcrumbs */}
-            <div className="flex items-center gap-2 text-[12px] text-ink-3 mb-4">
-                <button onClick={onBack} className="hover:text-ink transition-colors">Проекты</button>
-                <ChevronRight size={12} className="text-ink-4" />
-                <span className="text-ink-2 truncate">{project.name}</span>
+            <div className="flex items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-2 text-[12px] text-ink-3 min-w-0">
+                    <button onClick={onBack} className="hover:text-ink transition-colors">Проекты</button>
+                    <ChevronRight size={12} className="text-ink-4 shrink-0" />
+                    <span className="text-ink-2 truncate">{project.name}</span>
+                </div>
+                {canDeleteProject && (
+                    <button
+                        type="button"
+                        onClick={() => setIsDeleteModalOpen(true)}
+                        className="shrink-0 inline-flex items-center gap-1.5 text-[11.5px] text-ink-4 hover:text-terracotta transition-colors"
+                    >
+                        <Trash2 size={12} /> Удалить проект
+                    </button>
+                )}
             </div>
 
             {/* Header Card */}
@@ -431,7 +477,94 @@ export default function ProjectDetail({
                     {activeSegment === 'activity' && <motion.div key="activity"><ActivityTab tasks={tasks} projectId={projectId} canEdit={canEdit} project={project} accessToken={accessToken} onConnectCalendar={onConnectCalendar} onClearCalendarToken={onClearCalendarToken} /></motion.div>}
                 </AnimatePresence>
             </div>
+
+            <AnimatePresence>
+                {isDeleteModalOpen && (
+                    <DeleteProjectModal
+                        projectName={project.name}
+                        summary={deleteSummary}
+                        isDeleting={isDeleting}
+                        onCancel={() => setIsDeleteModalOpen(false)}
+                        onConfirm={handleDeleteProject}
+                    />
+                )}
+            </AnimatePresence>
         </motion.div>
+    );
+}
+
+/**
+ * Окно подтверждения удаления проекта. Намеренно отдельное окно (а не window.confirm):
+ * перечисляет, ЧТО будет удалено (с количеством), и явно говорит, что документы на Google
+ * Диске остаются. Пока идёт удаление, окно нельзя закрыть и кнопка заблокирована — чтобы
+ * повторное нажатие не запускало второе удаление параллельно.
+ */
+function DeleteProjectModal({ projectName, summary, isDeleting, onCancel, onConfirm }: {
+    projectName: string;
+    summary: { label: string; count: number }[];
+    isDeleting: boolean;
+    onCancel: () => void;
+    onConfirm: () => void;
+}) {
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+            <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={isDeleting ? undefined : onCancel}
+                className="fixed inset-0 bg-ink/40 backdrop-blur-sm"
+            />
+            <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12 }}
+                className="relative w-full max-w-md bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto overflow-hidden"
+            >
+                <div className="px-6 py-4 border-b border-line">
+                    <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">Удалить проект?</h2>
+                </div>
+
+                <div className="px-6 py-5 space-y-4">
+                    <p className="text-[13px] text-ink leading-snug">
+                        Проект <span className="font-semibold">«{projectName}»</span> будет удалён из системы безвозвратно, вместе со всеми данными:
+                    </p>
+                    {summary.length > 0 && (
+                        <ul className="space-y-1">
+                            {summary.map(item => (
+                                <li key={item.label} className="text-[12.5px] text-ink-2 flex items-center gap-2">
+                                    <span className="w-1 h-1 rounded-full bg-ink-4 shrink-0" />
+                                    {item.label}: <span className="font-semibold tabular-nums text-ink">{item.count}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                    <p className="text-[12px] text-ink-3 leading-snug">
+                        Документы на Google Диске не удаляются — они останутся на диске.
+                    </p>
+                </div>
+
+                <div className="px-6 py-4 border-t border-line flex items-center justify-end gap-2 bg-surface-2/30">
+                    <button
+                        type="button"
+                        onClick={onCancel}
+                        disabled={isDeleting}
+                        className="px-4 py-2 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        Отмена
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onConfirm}
+                        disabled={isDeleting}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-[13px] font-semibold bg-[#a04930] text-white hover:bg-[#8c3f27] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                    >
+                        {isDeleting && <Loader2 size={14} className="animate-spin" />}
+                        {isDeleting ? 'Удаляем…' : 'Удалить проект'}
+                    </button>
+                </div>
+            </motion.div>
+        </div>
     );
 }
 
