@@ -103,6 +103,10 @@ export function calcTransferValidUntil(base: Date = new Date(), daysAhead = 14):
 
 // ───────────────────────── шаблоны ─────────────────────────
 
+/** Фраза, которая печатается ТОЛЬКО в КП в валюте (плейсхолдер {{CURRENCY_NOTE}} в
+ * шаблоне). В рублёвом КП значение пустое — абзац с плейсхолдером убирается целиком. */
+const CURRENCY_PAYMENT_NOTE = 'Оплата в рублях по курсу ЦБ на дату платежа.';
+
 export type KPTemplateType = 'brick' | 'other';
 
 const TEMPLATE_FILE_BY_TYPE: Record<KPTemplateType, string> = {
@@ -153,6 +157,12 @@ export interface KPMaterialInput {
 }
 
 export interface KPDocxInput {
+    /** Название валюты (из справочника «Валюты»), если КП печатается в валюте. Тогда
+     * price/sum у материалов УЖЕ должны быть в этой валюте (их подставляет вызывающий
+     * код — см. MaterialsTab.tsx), а в шаблоне {{CURRENCY}} заменяется на это название,
+     * и печатается фраза {{CURRENCY_NOTE}}. Пусто/не задано — обычный рублёвый КП:
+     * {{CURRENCY}} → "руб.", {{CURRENCY_NOTE}} убирается. */
+    currencyName?: string;
     /** Какой шаблон использовать — определяется вызывающим кодом (см. MaterialsTab.tsx):
      * "brick", если среди выбранных материалов есть хотя бы один вида товара "кирпич",
      * иначе "other". По умолчанию "brick" — для обратной совместимости вызовов, где
@@ -709,8 +719,13 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
         MANAGER_NAME: data.managerName,
         KP_SELLER_LEGAL_ENTITY: data.sellerLegalEntity,
         KP_SELLER_LEGAL_ENTITY_ADDRESS: data.sellerLegalEntityAddress,
+        CURRENCY: data.currencyName || 'руб.',
+        CURRENCY_NOTE: data.currencyName ? CURRENCY_PAYMENT_NOTE : '',
     };
 
+    // Фраза про курс есть только в валютном КП — в рублёвом абзац с {{CURRENCY_NOTE}}
+    // убираем целиком (не оставляем пустую строку).
+    documentXml = stripEmptyOptionalParagraphs(documentXml, topLevelReplacements, ['CURRENCY_NOTE']);
     documentXml = substitutePlaceholders(documentXml, topLevelReplacements);
     zip.file('word/document.xml', documentXml);
 
@@ -719,6 +734,7 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
         const footerFile = zip.file(footerPath);
         if (!footerFile) continue;
         let footerXml = await footerFile.async('text');
+        footerXml = stripEmptyOptionalParagraphs(footerXml, topLevelReplacements, ['CURRENCY_NOTE']);
         footerXml = substitutePlaceholders(footerXml, topLevelReplacements);
         zip.file(footerPath, footerXml);
     }

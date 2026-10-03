@@ -105,8 +105,9 @@ export default function ProjectDetail({
         drivers: any[],
         carriers: any[],
         companies: any[],
-        contacts: any[]
-    }>({ materials: [], productTypes: [], units: [], drivers: [], carriers: [], companies: [], contacts: [] });
+        contacts: any[],
+        currencies: any[]
+    }>({ materials: [], productTypes: [], units: [], drivers: [], carriers: [], companies: [], contacts: [], currencies: [] });
 
     useEffect(() => {
         const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -126,6 +127,7 @@ export default function ProjectDetail({
             carriers: 'carriers',
             companies: 'companies',
             contacts: 'contacts',
+            currencies: 'currencies',
         };
         const unsubs = Object.entries(collectionToKey).map(([col, key]) =>
             onSnapshot(collection(db, col), (snap) => {

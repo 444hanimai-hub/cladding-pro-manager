@@ -5,7 +5,7 @@ import { db, auth } from '../lib/firebase';
 import { Company, Contact, ExpenseCategory, AppUser, DirectoryItem, Material, Carrier, ProductType } from '../types';
 import {
     User, Plus, Trash2, Edit2, Save, X, Users, Layers, Maximize,
-    Truck, Wallet, Search, Briefcase, Pencil, ChevronDown, Tag,
+    Truck, Wallet, Search, Briefcase, Pencil, ChevronDown, Tag, Coins,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
@@ -47,13 +47,14 @@ const COMPANY_ALL_TYPES = ['Заказчик', 'Генподрядчик', 'По
 const isBrickProductTypeName = (name?: string) => (name || '').trim().toLowerCase() === 'кирпич';
 
 export default function DirectoryManager({ appUser }: { appUser: AppUser | null }) {
-    const [activeTab, setActiveTab] = useState<'companies'|'contacts'|'expense_categories'|'materials'|'product_types'|'units'|'drivers'|'carriers'>('companies');
+    const [activeTab, setActiveTab] = useState<'companies'|'contacts'|'expense_categories'|'materials'|'product_types'|'units'|'currencies'|'drivers'|'carriers'>('companies');
     const [companies, setCompanies] = useState<Company[]>([]);
     const [contacts, setContacts] = useState<Contact[]>([]);
     const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
     const [materials, setMaterials] = useState<Material[]>([]);
     const [productTypes, setProductTypes] = useState<ProductType[]>([]);
     const [units, setUnits] = useState<DirectoryItem[]>([]);
+    const [currencies, setCurrencies] = useState<DirectoryItem[]>([]);
     const [drivers, setDrivers] = useState<DirectoryItem[]>([]);
     const [carriers, setCarriers] = useState<Carrier[]>([]);
     const [searchTerm, setSearchTerm] = useState('');
@@ -77,6 +78,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
             onSnapshot(query(collection(db, 'materials'), orderBy('name')), s => setMaterials(s.docs.map(d => ({ id: d.id, ...d.data() } as Material)))),
             onSnapshot(query(collection(db, 'product_types'), orderBy('name')), s => setProductTypes(s.docs.map(d => ({ id: d.id, ...d.data() } as ProductType)))),
             onSnapshot(query(collection(db, 'units'), orderBy('name')), s => setUnits(s.docs.map(d => ({ id: d.id, ...d.data() } as DirectoryItem)))),
+            onSnapshot(query(collection(db, 'currencies'), orderBy('name')), s => setCurrencies(s.docs.map(d => ({ id: d.id, ...d.data() } as DirectoryItem)))),
             onSnapshot(query(collection(db, 'drivers'), orderBy('name')), s => setDrivers(s.docs.map(d => ({ id: d.id, ...d.data() } as DirectoryItem)))),
             onSnapshot(query(collection(db, 'carriers'), orderBy('name')), s => setCarriers(s.docs.map(d => ({ id: d.id, ...d.data() } as Carrier)))),
         ];
@@ -89,6 +91,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
         { id: 'materials' as const,          label: 'Материалы',     icon: <Layers size={14} />,    count: materials.length },
         { id: 'product_types' as const,      label: 'Виды товара',   icon: <Tag size={14} />,       count: productTypes.length },
         { id: 'units' as const,              label: 'Ед. измерения', icon: <Maximize size={14} />,  count: units.length },
+        { id: 'currencies' as const,         label: 'Валюты',        icon: <Coins size={14} />,     count: currencies.length },
         { id: 'drivers' as const,            label: 'Водители',      icon: <User size={14} />,      count: drivers.length },
         { id: 'carriers' as const,           label: 'Перевозчики',   icon: <Truck size={14} />,     count: carriers.length },
         { id: 'expense_categories' as const, label: 'Виды расходов', icon: <Wallet size={14} />,    count: expenseCategories.length },
@@ -102,6 +105,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
         materials:          materials.filter(c => c.name.toLowerCase().includes(s)),
         product_types:      productTypes.filter(c => c.name.toLowerCase().includes(s)),
         units:              units.filter(c => c.name.toLowerCase().includes(s)),
+        currencies:         currencies.filter(c => c.name.toLowerCase().includes(s)),
         drivers:            drivers.filter(c => c.name.toLowerCase().includes(s)),
         carriers:           carriers.filter(c => c.name.toLowerCase().includes(s)),
     };
@@ -148,6 +152,9 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                 setNewDirectoryItemName('');
             } else if (activeTab === 'units' && newDirectoryItemName) {
                 await addDoc(collection(db, 'units'), { name: newDirectoryItemName, createdAt: serverTimestamp() });
+                setNewDirectoryItemName('');
+            } else if (activeTab === 'currencies' && newDirectoryItemName) {
+                await addDoc(collection(db, 'currencies'), { name: newDirectoryItemName.trim(), createdAt: serverTimestamp() });
                 setNewDirectoryItemName('');
             } else if (activeTab === 'drivers' && newDirectoryItemName) {
                 await addDoc(collection(db, 'drivers'), { name: newDirectoryItemName, ...newDriverDetails, createdAt: serverTimestamp() });
@@ -215,6 +222,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                     {activeTab === 'materials'          && <MaterialsTable         items={filtered.materials} productTypes={productTypes} companies={companies} onEdit={handleOpenEditMaterial} />}
                     {activeTab === 'product_types'      && <SimpleTable            items={filtered.product_types} collectionName="product_types" icon={<Tag size={13} />} />}
                     {activeTab === 'units'              && <SimpleTable            items={filtered.units}    collectionName="units"    icon={<Maximize size={13} />} />}
+                    {activeTab === 'currencies'         && <SimpleTable            items={filtered.currencies} collectionName="currencies" icon={<Coins size={13} />} />}
                     {activeTab === 'drivers'            && <DriversTable           items={filtered.drivers} />}
                     {activeTab === 'carriers'           && <CarriersTable          items={filtered.carriers as Carrier[]} />}
                     {activeTab === 'expense_categories' && <ExpenseCategoriesTable categories={filtered.expense_categories} />}
@@ -233,17 +241,20 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                                     {activeTab === 'contacts' ? 'Новый контакт' :
                                         activeTab === 'expense_categories' ? 'Новый вид расхода' :
                                             activeTab === 'product_types' ? 'Новый вид товара' :
-                                                activeTab === 'units' ? 'Новая ед. измерения' : activeTab === 'drivers' ? 'Новый водитель' : 'Новый перевозчик'}
+                                                activeTab === 'units' ? 'Новая ед. измерения' : activeTab === 'currencies' ? 'Новая валюта' : activeTab === 'drivers' ? 'Новый водитель' : 'Новый перевозчик'}
                                 </h3>
                                 <button onClick={() => setShowAddModal(false)} className="w-8 h-8 flex items-center justify-center rounded-full text-ink-3 hover:bg-surface-2 transition-colors"><X size={16} /></button>
                             </div>
                             <div className="px-6 py-5 space-y-4">
-                                {['expense_categories','product_types','units','drivers','carriers'].includes(activeTab) && (
+                                {['expense_categories','product_types','units','currencies','drivers','carriers'].includes(activeTab) && (
                                     <div>
                                         <label className={labelCls}>Название</label>
                                         <input value={activeTab === 'expense_categories' ? newExpCategoryName : newDirectoryItemName}
                                                onChange={e => { if (activeTab === 'expense_categories') setNewExpCategoryName(e.target.value); else setNewDirectoryItemName(e.target.value); }}
                                                placeholder="Введите название..." className={inputCls} autoFocus />
+                                        {activeTab === 'currencies' && (
+                                            <p className="text-[10.5px] text-ink-4 mt-1">Это название будет напечатано в КП как обозначение валюты — например: USD, EUR или «долл. США»</p>
+                                        )}
                                     </div>
                                 )}
                                 {activeTab === 'drivers' && (

@@ -23,6 +23,7 @@ import { ensureProjectDocsFolder, findOrCreateSubfolder } from '../../lib/google
 import { uploadFileToDrive } from '../../lib/googleDriveFiles';
 import { generateKPDocx, buildKPFileName, KPTemplateType } from '../../lib/generateKPDocx';
 import { syncPlannedExpensesForMaterials, getMaterialIdsWithActualExpenses } from '../../lib/plannedExpenses';
+import { calcMaterialCurrency, autoSalePriceCurrency } from '../../lib/materialCurrency';
 
 const KP_SUBFOLDER_NAME = 'Коммерческие предложения';
 
@@ -73,6 +74,11 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
 
     const materials = project.materials || [];
     const selected = materials.find(m => m.id === selectedId) || null;
+
+    // Название валюты КП материала — только если это НЕ рубль (режим "КП в валюте"
+    // включён); для рублёвых материалов пусто, чтобы валютные записи было видно сразу.
+    const currencyNameOf = (m: ProjectMaterial): string =>
+        m.kpInCurrency ? ((directories.currencies || []).find((c: any) => c.id === m.currencyId)?.name || '') : '';
     const totals = calcProjectMaterialsTotals(materials);
 
     useEffect(() => {
@@ -223,6 +229,36 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
     const handleGenerateKP = async (selected: ProjectMaterial[]) => {
         if (!accessToken || selected.length === 0) return;
 
+        // ── Валюта КП: один КП — одна валюта. Если у ВСЕХ отмеченных материалов включён
+        // "КП в валюте" и валюта одна и та же — печатаем в валюте (цены/суммы берутся из
+        // валютных полей, в шапке — название валюты, плюс фраза про курс). Если тумблер
+        // не включён ни у одного — обычный рублёвый КП, как раньше. Любая смесь (часть
+        // в валюте, часть в рублях; или разные валюты) — не печатаем, просим разделить. ──
+        let kpCurrencyName: string | undefined;
+        const currencyModeCount = selected.filter(m => m.kpInCurrency).length;
+        if (currencyModeCount > 0) {
+            if (currencyModeCount !== selected.length) {
+                alert('В одном КП нельзя смешивать материалы «в валюте» и «в рублях». Отметьте либо только материалы с включённым «КП в валюте» (с одной валютой), либо только рублёвые.');
+                return;
+            }
+            const currencyIds = Array.from(new Set(selected.map(m => m.currencyId || '')));
+            if (currencyIds.length > 1) {
+                alert('В одном КП должна быть одна валюта, а у отмеченных материалов валюты разные. Отметьте материалы с одной валютой.');
+                return;
+            }
+            const currency = (directories.currencies || []).find((c: any) => c.id === currencyIds[0]);
+            if (!currency) {
+                alert('Не удалось определить валюту КП — проверьте, что в материалах выбрана валюта и она есть в справочнике «Валюты».');
+                return;
+            }
+            const incomplete = selected.filter(m => !m.salePriceCurrency || !calcMaterialCurrency(m).saleSumCurrency);
+            if (incomplete.length > 0) {
+                alert(`Не заполнены цена и сумма в валюте у материалов: ${incomplete.map(m => m.materialName).join(', ')}. Откройте материал и заполните их.`);
+                return;
+            }
+            kpCurrencyName = currency.name;
+        }
+
         const hasBrickSelected = selected.some(m => {
             const dir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
             const productTypeName = (directories.productTypes || []).find((pt: any) => pt.id === dir?.productTypeId)?.name;
@@ -266,16 +302,17 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                     qtyPerM2: dir?.qtyPerM2,
                     qtyPerPallet: dir?.qtyPerPallet,
                     photoDriveFileId: dir?.photoDriveFileId,
-                    price: m.salePrice,
+                    price: kpCurrencyName ? (m.salePriceCurrency as number) : m.salePrice,
                     quantityM2: m.quantityM2,
                     quantity: m.quantity,
-                    sum: calc.saleSum,
+                    sum: kpCurrencyName ? (calcMaterialCurrency(m).saleSumCurrency as number) : calc.saleSum,
                     saleVatPercent: m.saleVatPercent,
                 };
             });
 
             const blob = await generateKPDocx({
                 templateType,
+                currencyName: kpCurrencyName,
                 clientName: project.client,
                 projectName: project.name,
                 sellerLegalEntity: (project as any).sellerLegalEntityName || '',
@@ -369,6 +406,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                                 <thead>
                                 <tr className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] border-b border-[#E1D8C5]">
                                     <th className="px-4 py-3 font-bold">Материал / поставщик</th>
+                                    <th className="px-4 py-3 font-bold">Валюта</th>
                                     <th className="px-4 py-3 font-bold">Кол-во</th>
                                     <th className="px-4 py-3 font-bold">Цена прод.</th>
                                     <th className="px-4 py-3 font-bold">Сумма прод.</th>
@@ -395,6 +433,11 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                                                 <p className="text-[11px] text-ink-3 truncate max-w-[220px]">{m.supplierName || '—'}</p>
                                             </td>
                                             <td className="px-4 py-3.5">
+                                                {currencyNameOf(m) && (
+                                                    <span className="inline-flex px-1.5 py-0.5 rounded-md bg-ochre-bg text-ochre text-[10.5px] font-semibold whitespace-nowrap">{currencyNameOf(m)}</span>
+                                                )}
+                                            </td>
+                                            <td className="px-4 py-3.5">
                                                 <span className="text-[12px] font-mono text-ink whitespace-nowrap">{formatMoney(m.quantity)} {m.unitName}</span>
                                             </td>
                                             <td className="px-4 py-3.5">
@@ -419,6 +462,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                                     <td className="px-4 py-3.5">
                                         <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-ink-3">Итого по проекту</span>
                                     </td>
+                                    <td className="px-4 py-3.5" />
                                     <td className="px-4 py-3.5" />
                                     <td className="px-4 py-3.5">
                                         <p className="text-[10px] uppercase tracking-wide text-ink-4">закуп</p>
@@ -691,6 +735,24 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
     const m = { ...createEmptyProjectMaterial(), ...formData } as ProjectMaterial;
     const calc = calcMaterial(m);
 
+    // ── КП в валюте: информационные поля только для печатной формы КП (смета и все
+    // расчёты остаются в рублях). Валюта выбирается строго из справочника currencies. ──
+    const currencyCalc = calcMaterialCurrency(m);
+    const currencies: { id: string; name: string }[] = directories.currencies || [];
+    const selectedCurrencyName = currencies.find(c => c.id === m.currencyId)?.name || '';
+
+    // Авто-цена продажи в валюте. Подставляется ТОЛЬКО если режим включён и выполнены оба
+    // условия: цена закупа в валюте заполнена И % накрутки определён. Иначе пустой патч —
+    // поле не трогаем (его вводят вручную). Если пользователь правил цену продажи в валюте
+    // руками, а потом снова меняет одно из исходных полей (цену закупа в валюте, рублёвые
+    // цены, накрутку) — цена пересчитается заново от них. Сама ручная правка % накрутки
+    // не меняет.
+    const salePriceCurrencyPatch = (purchasePriceCurrency: number | undefined, markupPercent: number | null): Partial<ProjectMaterial> => {
+        if (!m.kpInCurrency) return {};
+        const auto = autoSalePriceCurrency(purchasePriceCurrency, markupPercent);
+        return auto !== null ? { salePriceCurrency: auto } : {};
+    };
+
     const set = (patch: Partial<ProjectMaterial>) => setFormData({ ...formData, ...patch });
 
     // ── Вид товара выбранного материала (из справочника) — определяет, нужна ли особая
@@ -779,23 +841,25 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
     const commitMarkup = () => {
         const pct = parseDecimal(markupText);
         const newSalePrice = priceFromMarkup(m.purchasePrice || 0, pct);
-        set({ salePrice: newSalePrice });
+        // Пустое поле накрутки не считаем "заполненным" (иначе пустое поле давало бы 0%).
+        const markupFilled = markupText.trim() !== '';
+        set({ salePrice: newSalePrice, ...salePriceCurrencyPatch(m.purchasePriceCurrency, markupFilled ? pct : null) });
         setSalePriceText(formatMoney(newSalePrice));
         setMarkupText(formatPercent(pct));
     };
 
     const commitSalePrice = () => {
         const price = parseDecimal(salePriceText);
-        set({ salePrice: price });
         const pct = getMarkupPercent(m.purchasePrice || 0, price);
+        set({ salePrice: price, ...salePriceCurrencyPatch(m.purchasePriceCurrency, pct) });
         setMarkupText(pct !== null ? formatPercent(pct) : '');
         setSalePriceText(price ? formatMoney(price) : '');
     };
 
     const handlePurchasePriceCommit = (newPrice: number) => {
-        set({ purchasePrice: newPrice });
         // % накрутки — производное значение, просто пересчитаем отображение
         const pct = getMarkupPercent(newPrice, m.salePrice || 0);
+        set({ purchasePrice: newPrice, ...salePriceCurrencyPatch(m.purchasePriceCurrency, pct) });
         setMarkupText(pct !== null ? formatPercent(pct) : '');
     };
 
@@ -928,6 +992,54 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                         </div>
                     </div>
 
+                    {/* КП В ВАЛЮТЕ */}
+                    <div className="flex flex-wrap items-center gap-4 px-4 py-3 rounded-xl border border-line bg-surface-2/30">
+                        <button
+                            type="button"
+                            role="switch"
+                            aria-checked={!!m.kpInCurrency}
+                            onClick={() => {
+                                if (m.kpInCurrency) {
+                                    set({ kpInCurrency: false });
+                                    return;
+                                }
+                                // При включении — если цена продажи в валюте ещё пуста, а условия
+                                // авто-расчёта уже выполнены, заполняем её сразу.
+                                const auto = !m.salePriceCurrency ? autoSalePriceCurrency(m.purchasePriceCurrency, calc.markupPercent) : null;
+                                set({ kpInCurrency: true, ...(auto !== null ? { salePriceCurrency: auto } : {}) });
+                            }}
+                            className="inline-flex items-center gap-2.5 select-none"
+                        >
+                            <span className={cn(
+                                "relative inline-block w-9 h-5 rounded-full transition-colors shrink-0",
+                                m.kpInCurrency ? "bg-ochre" : "bg-line"
+                            )}>
+                                <span className={cn(
+                                    "absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform",
+                                    m.kpInCurrency && "translate-x-4"
+                                )} />
+                            </span>
+                            <span className="text-[12.5px] font-medium text-ink">КП в валюте</span>
+                        </button>
+                        {m.kpInCurrency && (
+                            <>
+                                <div className="w-52">
+                                    <select
+                                        value={m.currencyId || ''}
+                                        onChange={e => set({ currencyId: e.target.value })}
+                                        className={cn(inputClass, "appearance-none cursor-pointer")}
+                                    >
+                                        <option value="">Выберите валюту...</option>
+                                        {currencies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                    </select>
+                                </div>
+                                {currencies.length === 0 && (
+                                    <p className="text-[10.5px] text-ink-4">Справочник валют пуст — добавьте валюту в разделе «Справочники»</p>
+                                )}
+                            </>
+                        )}
+                    </div>
+
                     {/* ЗАКУП / ПРОДАЖА */}
                     <div className="grid grid-cols-2 gap-4">
                         <div className="p-4 rounded-xl border border-line bg-surface-2/30">
@@ -942,6 +1054,25 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                     <div className={readonlyClass}>{formatMoney(calc.purchaseSum)}</div>
                                 </div>
                             </div>
+                            {m.kpInCurrency && (
+                                <div className="grid grid-cols-2 gap-3 mt-3">
+                                    <div>
+                                        <label className={labelClass}>Цена с НДС в валюте</label>
+                                        <AmountInput
+                                            value={m.purchasePriceCurrency || 0}
+                                            onCommit={n => set({ purchasePriceCurrency: n, ...salePriceCurrencyPatch(n, calc.markupPercent) })}
+                                            placeholder={selectedCurrencyName || '0'}
+                                            className={inputClass}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className={labelClass}>Сумма с НДС в валюте</label>
+                                        <div className={readonlyClass}>
+                                            {currencyCalc.purchaseSumCurrency !== null ? `${formatMoney(currencyCalc.purchaseSumCurrency)} ${selectedCurrencyName}`.trim() : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                             <div className="grid grid-cols-[1fr_70px_110px] gap-2 items-end mt-3">
                                 <label className={cn(labelClass, "mb-0 self-center")}>НДС от закупа</label>
                                 <VatPercentInput value={m.purchaseVatPercent} onCommit={n => set({ purchaseVatPercent: n })} className={inputClass} />
@@ -983,6 +1114,25 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                     <div className={readonlyClass}>{formatMoney(calc.saleSum)}</div>
                                 </div>
                             </div>
+                            {m.kpInCurrency && (
+                                <div className="grid grid-cols-2 gap-3 mt-3">
+                                    <div>
+                                        <label className={labelClass}>Цена с НДС в валюте</label>
+                                        <AmountInput
+                                            value={m.salePriceCurrency || 0}
+                                            onCommit={n => set({ salePriceCurrency: n })}
+                                            placeholder={selectedCurrencyName || '0'}
+                                            className={inputClass}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className={labelClass}>Сумма с НДС в валюте</label>
+                                        <div className={readonlyClass}>
+                                            {currencyCalc.saleSumCurrency !== null ? `${formatMoney(currencyCalc.saleSumCurrency)} ${selectedCurrencyName}`.trim() : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                             <div className="grid grid-cols-[1fr_70px_110px] gap-2 items-end mt-3">
                                 <label className={cn(labelClass, "mb-0 self-center")}>НДС от продажи</label>
                                 <VatPercentInput value={m.saleVatPercent} onCommit={n => set({ saleVatPercent: n })} className={inputClass} />
@@ -1063,6 +1213,23 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                 if (isBrick && !m.quantity) {
                                     alert('Поле «Кол-во, шт» обязательно для заполнения.');
                                     return;
+                                }
+                                if (m.kpInCurrency) {
+                                    // При включённом "КП в валюте" обязательны: валюта, а также цена и сумма
+                                    // с НДС в валюте в блоке "Продажа". В "Закупе" валютные поля необязательны
+                                    // (закупить могут в рублях, а продавать в валюте).
+                                    if (!m.currencyId) {
+                                        alert('Включён режим «КП в валюте» — выберите валюту.');
+                                        return;
+                                    }
+                                    if (!m.salePriceCurrency) {
+                                        alert('Режим «КП в валюте»: заполните «Цену с НДС в валюте» в блоке «Продажа».');
+                                        return;
+                                    }
+                                    if (!currencyCalc.saleSumCurrency) {
+                                        alert('Режим «КП в валюте»: «Сумма с НДС в валюте» в блоке «Продажа» не рассчитана — укажите количество.');
+                                        return;
+                                    }
                                 }
                                 onSave();
                             }}
@@ -1157,6 +1324,11 @@ function KPMaterialsSelectionModal({ materials, directories, isGenerating, onClo
                     {materials.map(m => {
                         const calc = calcMaterial(m);
                         const isChecked = selectedIds.has(m.id);
+                        // Валюта КП материала — только если не рубль, чтобы при выборе сразу
+                        // было видно, какие материалы можно печатать в одном КП.
+                        const currencyName = m.kpInCurrency
+                            ? ((directories.currencies || []).find((c: any) => c.id === m.currencyId)?.name || '')
+                            : '';
                         return (
                             <button
                                 key={m.id}
@@ -1174,6 +1346,9 @@ function KPMaterialsSelectionModal({ materials, directories, isGenerating, onClo
                                     {isChecked && <Check size={11} strokeWidth={3} />}
                                 </span>
                                 <span className="flex-1 min-w-0 text-[13px] text-ink leading-snug">{getFullLabel(m)}</span>
+                                {currencyName && (
+                                    <span className="shrink-0 px-1.5 py-0.5 rounded-md bg-ochre-bg text-ochre text-[10.5px] font-semibold whitespace-nowrap">{currencyName}</span>
+                                )}
                                 <span className="shrink-0 text-[13px] font-mono font-semibold text-ink tabular-nums">{formatCurrency(calc.saleSum)}</span>
                             </button>
                         );
