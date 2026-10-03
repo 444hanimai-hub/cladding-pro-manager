@@ -406,7 +406,6 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                                 <thead>
                                 <tr className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] border-b border-[#E1D8C5]">
                                     <th className="px-4 py-3 font-bold">Материал / поставщик</th>
-                                    <th className="px-4 py-3 font-bold">Валюта</th>
                                     <th className="px-4 py-3 font-bold">Кол-во</th>
                                     <th className="px-4 py-3 font-bold">Цена прод.</th>
                                     <th className="px-4 py-3 font-bold">Сумма прод.</th>
@@ -429,13 +428,15 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                                             )}
                                         >
                                             <td className="px-4 py-3.5">
-                                                <p className="text-[13px] font-bold text-ink truncate max-w-[220px]">{m.materialName || '—'}</p>
+                                                {/* Метка валюты — рядом с названием, только если КП в валюте (не рубль).
+                                                    Общая ширина ячейки прежняя (220px): длинное название обрезается, метка — нет. */}
+                                                <div className="flex items-center gap-1.5 max-w-[220px]">
+                                                    <p className="text-[13px] font-bold text-ink truncate min-w-0">{m.materialName || '—'}</p>
+                                                    {currencyNameOf(m) && (
+                                                        <span className="shrink-0 inline-flex px-1.5 py-0.5 rounded-md bg-ochre-bg text-ochre text-[10.5px] font-semibold whitespace-nowrap">{currencyNameOf(m)}</span>
+                                                    )}
+                                                </div>
                                                 <p className="text-[11px] text-ink-3 truncate max-w-[220px]">{m.supplierName || '—'}</p>
-                                            </td>
-                                            <td className="px-4 py-3.5">
-                                                {currencyNameOf(m) && (
-                                                    <span className="inline-flex px-1.5 py-0.5 rounded-md bg-ochre-bg text-ochre text-[10.5px] font-semibold whitespace-nowrap">{currencyNameOf(m)}</span>
-                                                )}
                                             </td>
                                             <td className="px-4 py-3.5">
                                                 <span className="text-[12px] font-mono text-ink whitespace-nowrap">{formatMoney(m.quantity)} {m.unitName}</span>
@@ -462,7 +463,6 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                                     <td className="px-4 py-3.5">
                                         <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-ink-3">Итого по проекту</span>
                                     </td>
-                                    <td className="px-4 py-3.5" />
                                     <td className="px-4 py-3.5" />
                                     <td className="px-4 py-3.5">
                                         <p className="text-[10px] uppercase tracking-wide text-ink-4">закуп</p>
