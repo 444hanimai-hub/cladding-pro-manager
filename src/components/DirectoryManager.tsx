@@ -59,6 +59,9 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
     const [carriers, setCarriers] = useState<Carrier[]>([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddModal, setShowAddModal] = useState(false);
+    // Идёт сохранение новой записи — блокирует кнопку "Сохранить", чтобы повторное
+    // нажатие (пока запись ещё уходит на сервер) не создавало дубликат.
+    const [isAddingItem, setIsAddingItem] = useState(false);
     const [newExpCategoryName, setNewExpCategoryName] = useState('');
     const [newDirectoryItemName, setNewDirectoryItemName] = useState('');
     const [newDriverDetails, setNewDriverDetails] = useState({ phone: '', passportSeries: '', passportNumber: '', passportIssuedBy: '', passportIssuedDate: '' });
@@ -139,10 +142,13 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
             handleOpenAddCompany();
             return;
         }
+        setIsAddingItem(false);
         setShowAddModal(true);
     };
 
     const handleAdd = async () => {
+        if (isAddingItem) return;
+        setIsAddingItem(true);
         try {
             if (activeTab === 'expense_categories' && newExpCategoryName) {
                 await addDoc(collection(db, 'expense_categories'), { name: newExpCategoryName, createdAt: serverTimestamp() });
@@ -168,7 +174,13 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
             }
             setShowAddModal(false);
         } catch (error) {
+            // Окно НЕ закрываем — запись не сохранилась. Частая причина: у коллекции нет прав
+            // на запись в правилах Firestore (или пропала связь). Запись при этом могла на
+            // мгновение появиться в списке — это локальная копия, после отказа сервера она исчезнет.
+            alert('Не удалось сохранить запись — возможно, нет прав на запись в эту коллекцию (правила Firestore) или пропала связь. Обновите страницу и проверьте, не появилась ли запись.');
             handleFirestoreError(error, OperationType.WRITE, activeTab);
+        } finally {
+            setIsAddingItem(false);
         }
     };
 
@@ -296,7 +308,7 @@ export default function DirectoryManager({ appUser }: { appUser: AppUser | null 
                             </div>
                             <div className="px-6 py-4 border-t border-line bg-surface-2/30 flex justify-end gap-2">
                                 <button onClick={() => setShowAddModal(false)} className="h-9 px-4 rounded-md text-[13px] font-medium text-ink-2 border border-line bg-surface hover:bg-surface-2 transition-colors">Отмена</button>
-                                <button onClick={handleAdd} className="h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 transition-colors">Сохранить</button>
+                                <button onClick={handleAdd} disabled={isAddingItem} className="h-9 px-5 rounded-md text-[13px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">{isAddingItem ? 'Сохранение…' : 'Сохранить'}</button>
                             </div>
                         </motion.div>
                     </div>
@@ -699,6 +711,11 @@ function CompanyDirectoryModal({ editingCompany, onClose }: {
     const [name, setName] = useState(editingCompany?.name || '');
     const [companyType, setCompanyType] = useState(editingCompany?.companyType || '');
     const [address, setAddress] = useState(editingCompany?.address || '');
+    const [innKpp, setInnKpp] = useState(editingCompany?.innKpp || '');
+    const [ogrnOkpo, setOgrnOkpo] = useState(editingCompany?.ogrnOkpo || '');
+    const [bankDetails, setBankDetails] = useState(editingCompany?.bankDetails || '');
+    const [directorName, setDirectorName] = useState(editingCompany?.directorName || '');
+    const [directorPhone, setDirectorPhone] = useState(editingCompany?.directorPhone || '');
     const [isSaving, setIsSaving] = useState(false);
 
     const handleSave = async () => {
@@ -709,6 +726,11 @@ function CompanyDirectoryModal({ editingCompany, onClose }: {
                 name: name.trim(),
                 companyType: companyType || '',
                 address: address.trim(),
+                innKpp: innKpp.trim(),
+                ogrnOkpo: ogrnOkpo.trim(),
+                bankDetails: bankDetails.trim(),
+                directorName: directorName.trim(),
+                directorPhone: directorPhone.trim(),
             };
             if (isEditing && editingCompany) {
                 await updateDoc(doc(db, 'companies', editingCompany.id), payload);
@@ -730,7 +752,7 @@ function CompanyDirectoryModal({ editingCompany, onClose }: {
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
-                className="relative w-full max-w-md bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
+                className="relative w-full max-w-xl bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
             >
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
                     <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
@@ -756,6 +778,36 @@ function CompanyDirectoryModal({ editingCompany, onClose }: {
                     <div>
                         <label className={labelCls}>Адрес</label>
                         <input value={address} onChange={e => setAddress(e.target.value)} placeholder="Юридический адрес..." className={inputCls} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                        <div>
+                            <label className={labelCls}>ИНН / КПП</label>
+                            <input value={innKpp} onChange={e => setInnKpp(e.target.value)} placeholder="ИНН 0000000000, КПП 000000000" className={inputCls} />
+                        </div>
+                        <div>
+                            <label className={labelCls}>ОГРН / ОКПО</label>
+                            <input value={ogrnOkpo} onChange={e => setOgrnOkpo(e.target.value)} placeholder="ОГРН 0000000000000, ОКПО 00000000" className={inputCls} />
+                        </div>
+                    </div>
+                    <div>
+                        <label className={labelCls}>Счёт</label>
+                        <textarea
+                            value={bankDetails}
+                            onChange={e => setBankDetails(e.target.value)}
+                            rows={2}
+                            placeholder="Расчётный счёт, банк, к/с, БИК..."
+                            className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 resize-none"
+                        />
+                    </div>
+                    <div className="grid grid-cols-[1fr_190px] gap-3">
+                        <div>
+                            <label className={labelCls}>Генеральный директор</label>
+                            <input value={directorName} onChange={e => setDirectorName(e.target.value)} placeholder="Фамилия Имя Отчество" className={inputCls} />
+                        </div>
+                        <div>
+                            <label className={labelCls}>Телефон директора</label>
+                            <input value={directorPhone} onChange={e => setDirectorPhone(e.target.value)} placeholder="+7 000 000 00 00" className={inputCls} />
+                        </div>
                     </div>
                 </div>
 

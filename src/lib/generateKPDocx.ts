@@ -51,6 +51,13 @@ function escapeXml(s: string): string {
 
 // ───────────────────────── форматирование ─────────────────────────
 
+/** Значение реквизита одной строкой: перевод строки внутри обычного текста Word
+ * (<w:t>) не является переносом, поэтому многострочное поле (например "Счёт")
+ * склеиваем в одну строку через пробел. */
+function singleLine(value?: string): string {
+    return (value || '').replace(/\s*\r?\n\s*/g, ' ').trim();
+}
+
 function formatMoney(n: number): string {
     return new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
 }
@@ -172,6 +179,13 @@ export interface KPDocxInput {
     projectName: string;
     sellerLegalEntity: string;
     sellerLegalEntityAddress: string;
+    /** Остальные реквизиты юр. лица для продажи (из карточки компании в справочнике).
+     * Необязательные: если у компании не заполнены — подставляется пустая строка. */
+    sellerLegalEntityInnKpp?: string;
+    sellerLegalEntityOgrnOkpo?: string;
+    sellerLegalEntityBankDetails?: string;
+    sellerLegalEntityDirector?: string;
+    sellerLegalEntityDirectorPhone?: string;
     managerName: string;
     materials: KPMaterialInput[];
     /** Google-токен того, кто формирует КП — нужен, чтобы скачать байты фото с Диска. */
@@ -719,6 +733,11 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
         MANAGER_NAME: data.managerName,
         KP_SELLER_LEGAL_ENTITY: data.sellerLegalEntity,
         KP_SELLER_LEGAL_ENTITY_ADDRESS: data.sellerLegalEntityAddress,
+        KP_SELLER_LEGAL_ENTITY_INN_KPP: singleLine(data.sellerLegalEntityInnKpp),
+        KP_SELLER_LEGAL_ENTITY_OGRN_OKPO: singleLine(data.sellerLegalEntityOgrnOkpo),
+        KP_SELLER_LEGAL_ENTITY_BANK_DETAILS: singleLine(data.sellerLegalEntityBankDetails),
+        KP_SELLER_LEGAL_ENTITY_DIRECTOR: singleLine(data.sellerLegalEntityDirector),
+        KP_SELLER_LEGAL_ENTITY_DIRECTOR_PHONE: singleLine(data.sellerLegalEntityDirectorPhone),
         CURRENCY: data.currencyName || 'руб.',
         CURRENCY_NOTE: data.currencyName ? CURRENCY_PAYMENT_NOTE : '',
     };
