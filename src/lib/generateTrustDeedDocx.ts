@@ -5,6 +5,11 @@
  * обозначены плейсхолдерами вида {{NUMBER}}, {{DRIVER_NAME}} и т.п.,
  * заменяет их реальными данными прямо в XML и либо загружает результат
  * в Google Drive, либо отдаёт на скачивание.
+ *
+ * Реквизиты организации (юр. лица проекта — "Юр. лицо для продажи") подставляются
+ * плейсхолдерами COMPANY_NAME, COMPANY_ADDRESS, COMPANY_INN_KPP, COMPANY_OGRN_OKPO,
+ * COMPANY_BANK_DETAILS, COMPANY_DIRECTOR, COMPANY_DIRECTOR_SHORT ("Фамилия И.О.") и
+ * COMPANY_DIRECTOR_PHONE. Файл самодостаточный: от генератора КП не зависит.
  */
 
 import JSZip from 'jszip';
@@ -31,6 +36,19 @@ export interface TrustDeedDocxData {
   organization?: string;
   bankAccount?: string;
   bankName?: string;
+
+  // ── Реквизиты юр. лица проекта (из карточки компании в справочнике) ──
+  // Все необязательные: если не заполнены — на месте плейсхолдера будет пусто.
+  companyName?: string;
+  companyAddress?: string;
+  companyInnKpp?: string;
+  companyOgrnOkpo?: string;
+  /** Расчётный счёт, банк, к/с, БИК — одной строкой (многострочное поле склеивается). */
+  companyBankDetails?: string;
+  /** ФИО генерального директора целиком ("Фамилия Имя Отчество"); сокращённая форма
+   * "Фамилия И.О." для плейсхолдера COMPANY_DIRECTOR_SHORT вычисляется автоматически. */
+  companyDirector?: string;
+  companyDirectorPhone?: string;
 }
 
 // ID папки в Google Drive куда сохраняются все доверенности
@@ -46,13 +64,59 @@ function escapeXml(s: string): string {
 }
 
 /**
+ * Значение реквизита одной строкой. Перевод строки внутри обычного текста Word не является
+ * переносом, поэтому если в карточке компании в многострочном поле (например, "Счёт") нажали
+ * Enter — переводы строк заменяем на пробел. У однострочных значений ничего не меняется.
+ */
+function singleLine(value?: string): string {
+  return (value || '').replace(/\s*\r?\n\s*/g, ' ').trim();
+}
+
+/**
  * Заменяет все вхождения плейсхолдера {{KEY}} на значение в XML документа.
- * Плейсхолдер в шаблоне лежит одним целым текстовым узлом <w:t>, поэтому
- * достаточно простой строковой замены — без учёта форматирования/разбитых runs.
+ *
+ * Поиск устойчив к разрывам: Word нередко разбивает набранный плейсхолдер служебными
+ * тегами (<w:proofErr>, смена форматирования и т.п.) — тогда простой поиск строки
+ * "{{KEY}}" его не находит. Поэтому между любыми двумя символами допускаем XML-теги
+ * (та же логика, что и в КП). Если плейсхолдер лежит целым куском — работает как раньше.
+ * Значение подставляем функцией, а не строкой — иначе символы вроде "$&" в значении
+ * (например, в названии компании) трактовались бы как спецпоследовательности замены.
  */
 function replacePlaceholder(xml: string, key: string, value: string): string {
-  const placeholder = `{{${key}}}`;
-  return xml.split(placeholder).join(value);
+  const pattern = key
+      .split('')
+      .map(char => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('(?:<[^>]+>)*');
+  const regex = new RegExp(`\\{\\{(?:<[^>]+>)*${pattern}(?:<[^>]+>)*\\}\\}`, 'g');
+  return xml.replace(regex, () => value);
+}
+
+/**
+ * Сокращает ФИО до формы для подписи: "Семенова Диляра Файзиевна" → "Семенова Д.Ф.".
+ * Ожидается запись "Фамилия Имя Отчество" в именительном падеже. Без отчества получится
+ * "Фамилия И."; одно слово возвращается как есть. Двойные имена/фамилии через дефис
+ * обрабатываются ("Анна-Мария" → "А.-М."). Уже сокращённая запись ("Семенова Д.Ф.",
+ * "Семенова Д. Ф.") остаётся как есть, без потери инициалов.
+ * Не склоняет по падежам и не понимает отчества из двух слов ("Ахмед оглы") — для таких
+ * случаев нужно отдельное поле с готовой записью.
+ */
+export function shortenPersonName(fullName?: string): string {
+  const tokens = (fullName || '').trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return '';
+  if (tokens.length === 1) return tokens[0];
+  const [surname, ...rest] = tokens;
+  const initials = rest
+      .map(token => {
+        // уже инициал(ы) с точкой ("Д." или "Д.Ф.") — оставляем как есть
+        if (token.includes('.')) return token;
+        return token
+            .split('-')
+            .filter(Boolean)
+            .map(part => part.charAt(0).toUpperCase() + '.')
+            .join('-');
+      })
+      .join('');
+  return `${surname} ${initials}`;
 }
 
 /**
@@ -106,6 +170,17 @@ export async function generateTrustDeedDocx(data: TrustDeedDocxData): Promise<Bl
     MATERIAL_NAME: escapeXml(data.materialName),
     MATERIAL_UNIT: escapeXml(data.materialUnit),
     QUANTITY: escapeXml(data.quantityText || data.quantity),
+
+    // Реквизиты юр. лица проекта. Многострочные значения (поле "Счёт") склеиваем в одну
+    // строку — перевод строки внутри обычного текста Word не является переносом.
+    COMPANY_NAME: escapeXml(singleLine(data.companyName)),
+    COMPANY_ADDRESS: escapeXml(singleLine(data.companyAddress)),
+    COMPANY_INN_KPP: escapeXml(singleLine(data.companyInnKpp)),
+    COMPANY_OGRN_OKPO: escapeXml(singleLine(data.companyOgrnOkpo)),
+    COMPANY_BANK_DETAILS: escapeXml(singleLine(data.companyBankDetails)),
+    COMPANY_DIRECTOR: escapeXml(singleLine(data.companyDirector)),
+    COMPANY_DIRECTOR_SHORT: escapeXml(shortenPersonName(singleLine(data.companyDirector))),
+    COMPANY_DIRECTOR_PHONE: escapeXml(singleLine(data.companyDirectorPhone)),
   };
 
   for (const [key, value] of Object.entries(replacements)) {
@@ -208,11 +283,9 @@ export async function uploadTrustDeedToDrive(
   const link = result.webViewLink as string;
   const fileId = result.id as string;
 
-  // Открытие документа сюда намеренно не входит: между кликом пользователя и этим
-  // местом обычно проходит несколько await и, возможно, диалог confirm() — открытие
-  // вкладки в такой момент браузер может молча заблокировать как попап. Открытие
-  // вкладки — ответственность вызывающего кода, который должен был открыть её ЗАРАНЕЕ
-  // (пустой, сразу на клик) и сейчас просто перенаправить на готовый link.
+  // Открываем документ в новой вкладке
+  window.open(link, '_blank');
+
   return { link, fileId };
 }
 

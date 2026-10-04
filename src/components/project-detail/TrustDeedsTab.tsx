@@ -67,6 +67,10 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
         // supplierName отдельно (раньше это приводило к рассинхронизации данных).
         const materialSupplier = (mat as any)?.supplierName || '';
 
+        // Реквизиты юр. лица проекта ("Юр. лицо для продажи") — живьём из карточки компании в
+        // справочнике, по ID. Название — запасной вариант из проекта, если компанию не нашли.
+        const sellerCompany = (directories.companies || []).find((c: any) => c.id === (project as any).sellerLegalEntityId);
+
         const data: TrustDeedDocxData = {
             number: deed.number,
             issueDate: formatDateToDisplay(deed.issueDate),
@@ -89,6 +93,13 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
             quantityText: '',
             headName: 'Аухадуллина Д.Н.',
             chiefAccountantName: 'Аухадуллина Д.Н.',
+            companyName: sellerCompany?.name || (project as any).sellerLegalEntityName || '',
+            companyAddress: sellerCompany?.address || '',
+            companyInnKpp: sellerCompany?.innKpp || '',
+            companyOgrnOkpo: sellerCompany?.ogrnOkpo || '',
+            companyBankDetails: sellerCompany?.bankDetails || '',
+            companyDirector: sellerCompany?.directorName || '',
+            companyDirectorPhone: sellerCompany?.directorPhone || '',
         };
 
         // Формируем имя файла: номер_Поставщик_ставка_Фамилия_Перевозчик
