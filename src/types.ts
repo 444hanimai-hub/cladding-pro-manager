@@ -16,6 +16,12 @@ export interface Company {
     directorName?: string;
     /** Телефон директора */
     directorPhone?: string;
+    /**
+     * Логотип компании (для юр. лица для продажи — печатается в шапке КП по плейсхолдеру
+     * {{COMPANY_LOGO}}). Хранится ТОЛЬКО ID файла на Google Диске, как у фото материала;
+     * сама картинка лежит на Диске. Формат — PNG или JPG.
+     */
+    logoDriveFileId?: string;
 }
 
 export interface Contact {

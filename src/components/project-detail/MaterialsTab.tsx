@@ -322,6 +322,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                 sellerLegalEntityBankDetails: sellerCompany?.bankDetails || '',
                 sellerLegalEntityDirector: sellerCompany?.directorName || '',
                 sellerLegalEntityDirectorPhone: sellerCompany?.directorPhone || '',
+                companyLogoDriveFileId: sellerCompany?.logoDriveFileId || '',
                 managerName: project.leadManagerName || '',
                 materials: kpMaterials,
                 accessToken,

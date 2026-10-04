@@ -716,7 +716,25 @@ function CompanyDirectoryModal({ editingCompany, onClose }: {
     const [bankDetails, setBankDetails] = useState(editingCompany?.bankDetails || '');
     const [directorName, setDirectorName] = useState(editingCompany?.directorName || '');
     const [directorPhone, setDirectorPhone] = useState(editingCompany?.directorPhone || '');
+    // Логотип: в карточке хранится только ID файла на Диске; в поле ввода можно вставить
+    // любую ссылку "Поделиться", ID распознаём при потере фокуса (как у фото материала).
+    const [logoDriveFileId, setLogoDriveFileId] = useState(editingCompany?.logoDriveFileId || '');
+    const [logoLinkText, setLogoLinkText] = useState(editingCompany?.logoDriveFileId || '');
     const [isSaving, setIsSaving] = useState(false);
+
+    const commitLogoLink = () => {
+        const id = parseDriveFileId(logoLinkText);
+        setLogoDriveFileId(id);
+        setLogoLinkText(id); // нормализуем поле к самому ID — видно, что ссылка распозналась
+        if (logoLinkText.trim() && !id) {
+            alert('Не удалось распознать ссылку на файл Google Диска. Проверьте, что скопировали именно ссылку "Поделиться" на файл.');
+        }
+    };
+
+    const handleRemoveLogo = () => {
+        setLogoDriveFileId('');
+        setLogoLinkText('');
+    };
 
     const handleSave = async () => {
         if (!name.trim()) return;
@@ -731,6 +749,7 @@ function CompanyDirectoryModal({ editingCompany, onClose }: {
                 bankDetails: bankDetails.trim(),
                 directorName: directorName.trim(),
                 directorPhone: directorPhone.trim(),
+                logoDriveFileId,
             };
             if (isEditing && editingCompany) {
                 await updateDoc(doc(db, 'companies', editingCompany.id), payload);
@@ -809,6 +828,50 @@ function CompanyDirectoryModal({ editingCompany, onClose }: {
                             <input value={directorPhone} onChange={e => setDirectorPhone(e.target.value)} placeholder="+7 000 000 00 00" className={inputCls} />
                         </div>
                     </div>
+                    {companyType === SELLER_LEGAL_ENTITY_COMPANY_TYPE && (
+                        <div>
+                            <label className={labelCls}>Логотип — ссылка на Google Диск</label>
+                            <p className="text-[10.5px] text-ink-4 mb-2">Вставьте ссылку «Поделиться» на файл логотипа (PNG или JPG) — он печатается в шапке КП вместо плейсхолдера {'{{COMPANY_LOGO}}'}</p>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="text"
+                                    value={logoLinkText}
+                                    onChange={e => setLogoLinkText(e.target.value)}
+                                    onBlur={commitLogoLink}
+                                    placeholder="https://drive.google.com/file/d/..."
+                                    className={inputCls}
+                                />
+                                {logoDriveFileId && (
+                                    <button
+                                        type="button"
+                                        onClick={handleRemoveLogo}
+                                        title="Убрать логотип"
+                                        className="shrink-0 w-9 h-9 flex items-center justify-center rounded-md border border-line text-terracotta hover:bg-terracotta/5 transition-colors"
+                                    >
+                                        <Trash2 size={14} />
+                                    </button>
+                                )}
+                            </div>
+                            {logoDriveFileId && (
+                                <div className="mt-2 flex items-center gap-3">
+                                    <img
+                                        src={`https://drive.google.com/thumbnail?id=${logoDriveFileId}&sz=w200`}
+                                        alt={name}
+                                        className="w-20 h-20 rounded-lg object-contain border border-line bg-surface-2"
+                                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                    />
+                                    <a
+                                        href={`https://drive.google.com/file/d/${logoDriveFileId}/view`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-[12px] text-ochre hover:underline"
+                                    >
+                                        Открыть на Диске
+                                    </a>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 <div className="px-6 py-4 border-t border-line flex justify-end gap-2 shrink-0 bg-surface-2/30">

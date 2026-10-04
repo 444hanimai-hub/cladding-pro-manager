@@ -114,6 +114,12 @@ export function calcTransferValidUntil(base: Date = new Date(), daysAhead = 14):
  * шаблоне). В рублёвом КП значение пустое — абзац с плейсхолдером убирается целиком. */
 const CURRENCY_PAYMENT_NOTE = 'Оплата в рублях по курсу ЦБ на дату платежа.';
 
+/** Рамка логотипа компании (плейсхолдер {{COMPANY_LOGO}}) — размер исходного логотипа в
+ * шаблоне: 3,11 × 2,92 см (1 см = 360000 EMU). Любой логотип вписывается в эту рамку
+ * с сохранением пропорций (не растягивается). */
+const COMPANY_LOGO_BOX_W_EMU = 1120140;
+const COMPANY_LOGO_BOX_H_EMU = 1051560;
+
 export type KPTemplateType = 'brick' | 'other';
 
 const TEMPLATE_FILE_BY_TYPE: Record<KPTemplateType, string> = {
@@ -164,6 +170,10 @@ export interface KPMaterialInput {
 }
 
 export interface KPDocxInput {
+    /** ID файла логотипа юр. лица на Google Диске (PNG/JPG) — печатается вместо
+     * плейсхолдера {{COMPANY_LOGO}} (обычно в шапке). Нет логотипа или файл не скачался —
+     * плейсхолдер просто убирается, картинки нет. */
+    companyLogoDriveFileId?: string;
     /** Название валюты (из справочника «Валюты»), если КП печатается в валюте. Тогда
      * price/sum у материалов УЖЕ должны быть в этой валюте (их подставляет вызывающий
      * код — см. MaterialsTab.tsx), а в шаблоне {{CURRENCY}} заменяется на это название,
@@ -636,6 +646,136 @@ async function embedPhoto(rowXml: string, driveFileId: string | undefined, acces
     return rowXml.replace(targetParagraph, newParagraph);
 }
 
+/** Регулярка абзаца <w:p>...</w:p>, НЕ захватывающая самозакрывающиеся <w:p/> (иначе пустой
+ * <w:p/> "склеился" бы со следующим абзацем в один фрагмент). */
+const PARAGRAPH_REGEX_SOURCE = '<w:p(?:>|\\s[^>]*[^/]>)[\\s\\S]*?<\\/w:p>';
+
+/** Выравнивает абзац по центру: правит/добавляет <w:jc w:val="center"/> в его <w:pPr> на
+ * ПРАВИЛЬНОМ месте (порядок элементов внутри pPr важен для Word: jc идёт до rPr/sectPr). */
+function setParagraphCentered(paragraph: string): string {
+    const jc = '<w:jc w:val="center"/>';
+    if (/<w:pPr\s*\/>/.test(paragraph)) {
+        return paragraph.replace(/<w:pPr\s*\/>/, `<w:pPr>${jc}</w:pPr>`);
+    }
+    const pPrMatch = paragraph.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+    if (pPrMatch) {
+        const pPr = pPrMatch[0];
+        let newPPr: string;
+        if (/<w:jc\b[^>]*\/>/.test(pPr)) {
+            newPPr = pPr.replace(/<w:jc\b[^>]*\/>/, jc);
+        } else {
+            const idx = pPr.search(/<w:(rPr|sectPr|pPrChange)\b/);
+            newPPr = idx >= 0 ? pPr.slice(0, idx) + jc + pPr.slice(idx) : pPr.replace('</w:pPr>', jc + '</w:pPr>');
+        }
+        return paragraph.replace(pPr, newPPr);
+    }
+    return paragraph.replace(/^(<w:p(?:>|\s[^>]*[^/]>))/, `$1<w:pPr>${jc}</w:pPr>`);
+}
+
+/**
+ * Подставляет логотип компании вместо {{COMPANY_LOGO}} в одной части документа (основной
+ * текст, верхний или нижний колонтитул — плейсхолдер можно поставить где угодно). Логика
+ * та же, что у фото материала (скачать с Диска, вписать с сохранением пропорций), но:
+ *  — картинка вписывается в рамку исходного логотипа (COMPANY_LOGO_BOX_*), абзац
+ *    выравнивается по центру;
+ *  — связь с картинкой кладётся в .rels ИМЕННО этой части (у колонтитула он свой —
+ *    word/_rels/header1.xml.rels, а не document.xml.rels, как у фото материала);
+ *  — остальной текст абзаца с плейсхолдером не теряется: плейсхолдер заменяется на
+ *    картинку "на месте", а не весь абзац целиком.
+ * Нет логотипа или файл не скачался — плейсхолдер просто убирается (пустой абзац
+ * остаётся: в колонтитуле должен быть хотя бы один абзац).
+ */
+async function embedCompanyLogoInPart(
+    partPath: string,
+    partXml: string,
+    driveFileId: string | undefined,
+    accessToken: string,
+    zip: JSZip,
+    index: number
+): Promise<string> {
+    const markerRegex = buildPlaceholderRegex('COMPANY_LOGO');
+    if (!markerRegex.test(partXml)) return partXml;
+
+    const removePlaceholder = () => substitutePlaceholders(partXml, { COMPANY_LOGO: '' });
+
+    if (!driveFileId) return removePlaceholder();
+
+    let bytes: ArrayBuffer;
+    let ext: string;
+    try {
+        const result = await fetchDriveFileBytes(driveFileId, accessToken);
+        bytes = result.bytes;
+        ext = extFromMime(result.mime);
+    } catch (error) {
+        console.error('Не удалось скачать логотип компании с Google Диска, оставляем без логотипа (проверьте, расшарен ли файл):', error);
+        return removePlaceholder();
+    }
+
+    const mediaName = `companyLogo${index}.${ext}`;
+    zip.file(`word/media/${mediaName}`, bytes);
+
+    // Связь с картинкой — в rels именно этой части документа.
+    const partFileName = partPath.split('/').pop() as string;
+    const relsPath = `word/_rels/${partFileName}.rels`;
+    const relId = `rIdCompanyLogo${index}`;
+    const relsFile = zip.file(relsPath);
+    let relsXml = relsFile
+        ? await relsFile.async('text')
+        : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    const relEntry = `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${mediaName}"/>`;
+    relsXml = relsXml.replace('</Relationships>', relEntry + '</Relationships>');
+    zip.file(relsPath, relsXml);
+
+    const contentTypesPath = '[Content_Types].xml';
+    const ctFile = zip.file(contentTypesPath);
+    if (ctFile) {
+        let ctXml = await ctFile.async('text');
+        if (!ctXml.includes(`Extension="${ext}"`)) {
+            const mime = ext === 'jpg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/png';
+            ctXml = ctXml.replace('</Types>', `<Default Extension="${ext}" ContentType="${mime}"/></Types>`);
+            zip.file(contentTypesPath, ctXml);
+        }
+    }
+
+    // Размер: вписываем в рамку исходного логотипа с сохранением пропорций.
+    const dims = getImageDimensions(bytes, ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
+    let cx = COMPANY_LOGO_BOX_W_EMU;
+    let cy = COMPANY_LOGO_BOX_H_EMU;
+    if (dims) {
+        const scale = Math.min(COMPANY_LOGO_BOX_W_EMU / dims.width, COMPANY_LOGO_BOX_H_EMU / dims.height);
+        cx = Math.max(1, Math.round(dims.width * scale));
+        cy = Math.max(1, Math.round(dims.height * scale));
+    }
+
+    const docPrId = 9500 + index;
+    const drawingRun =
+        `<w:r><w:drawing>` +
+        `<wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">` +
+        `<wp:extent cx="${cx}" cy="${cy}"/>` +
+        `<wp:effectExtent l="0" t="0" r="0" b="0"/>` +
+        `<wp:docPr id="${docPrId}" name="CompanyLogo${index}"/>` +
+        `<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>` +
+        `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +
+        `<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+        `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+        `<pic:nvPicPr><pic:cNvPr id="${docPrId}" name="CompanyLogo${index}"/><pic:cNvPicPr/></pic:nvPicPr>` +
+        `<pic:blipFill><a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
+        `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>` +
+        `</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+
+    // Плейсхолдер (в т.ч. разорванный тегами Word) заменяем картинкой "на месте": закрываем
+    // текущий текстовый узел и run, вставляем run с картинкой, открываем новый run — остальной
+    // текст абзаца остаётся как был. Абзац с логотипом выравниваем по центру.
+    const globalMarker = new RegExp(markerRegex.source, 'gi');
+    return partXml.replace(new RegExp(PARAGRAPH_REGEX_SOURCE, 'g'), (paragraph) => {
+        if (!markerRegex.test(paragraph)) return paragraph;
+        return setParagraphCentered(paragraph).replace(
+            globalMarker,
+            `</w:t></w:r>${drawingRun}<w:r><w:t xml:space="preserve">`
+        );
+    });
+}
+
 // ───────────────────────── основная функция ─────────────────────────
 
 export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
@@ -742,17 +882,35 @@ export async function generateKPDocx(data: KPDocxInput): Promise<Blob> {
         CURRENCY_NOTE: data.currencyName ? CURRENCY_PAYMENT_NOTE : '',
     };
 
+    // Логотип компании: счётчик нужен для уникальных имён файла/связи/id у каждой части.
+    let logoIndex = 1;
+    documentXml = await embedCompanyLogoInPart('word/document.xml', documentXml, data.companyLogoDriveFileId, data.accessToken, zip, logoIndex);
+
     // Фраза про курс есть только в валютном КП — в рублёвом абзац с {{CURRENCY_NOTE}}
     // убираем целиком (не оставляем пустую строку).
     documentXml = stripEmptyOptionalParagraphs(documentXml, topLevelReplacements, ['CURRENCY_NOTE']);
     documentXml = substitutePlaceholders(documentXml, topLevelReplacements);
     zip.file('word/document.xml', documentXml);
 
+    // Верхние колонтитулы: сейчас обрабатывается только логотип {{COMPANY_LOGO}} (раньше
+    // верхний колонтитул код не трогал вообще — логотип был просто картинкой в шаблоне).
+    const headerPaths = Object.keys(zip.files).filter(p => /^word\/header\d+\.xml$/.test(p));
+    for (const headerPath of headerPaths) {
+        const headerFile = zip.file(headerPath);
+        if (!headerFile) continue;
+        let headerXml = await headerFile.async('text');
+        logoIndex += 1;
+        headerXml = await embedCompanyLogoInPart(headerPath, headerXml, data.companyLogoDriveFileId, data.accessToken, zip, logoIndex);
+        zip.file(headerPath, headerXml);
+    }
+
     const footerPaths = Object.keys(zip.files).filter(p => /^word\/footer\d+\.xml$/.test(p));
     for (const footerPath of footerPaths) {
         const footerFile = zip.file(footerPath);
         if (!footerFile) continue;
         let footerXml = await footerFile.async('text');
+        logoIndex += 1;
+        footerXml = await embedCompanyLogoInPart(footerPath, footerXml, data.companyLogoDriveFileId, data.accessToken, zip, logoIndex);
         footerXml = stripEmptyOptionalParagraphs(footerXml, topLevelReplacements, ['CURRENCY_NOTE']);
         footerXml = substitutePlaceholders(footerXml, topLevelReplacements);
         zip.file(footerPath, footerXml);
