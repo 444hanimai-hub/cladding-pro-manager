@@ -7,7 +7,11 @@
  */
 
 // Родительская папка на Google Drive, внутри которой создаются папки проектов.
-const PARENT_FOLDER_ID = '1T2Yl4Slt1yr_Q6gbO-dICtShh0ReF4Q8';
+// Значение по умолчанию — боевая папка. Для локальной разработки (npm run dev) её можно
+// подменить своей тестовой папкой через VITE_DRIVE_PARENT_FOLDER_ID в .env.development.local
+// (см. env.example) — тогда тестовые файлы попадают на ваш Диск, а не на боевой.
+const PARENT_FOLDER_ID: string =
+    import.meta.env?.VITE_DRIVE_PARENT_FOLDER_ID || '1OwX873GZKqc8jeSxiPGzDGfOudDYH8Id';
 
 export interface DriveFolderResult {
     id: string;

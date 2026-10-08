@@ -51,8 +51,11 @@ export interface TrustDeedDocxData {
   companyDirectorPhone?: string;
 }
 
-// ID папки в Google Drive куда сохраняются все доверенности
-const DRIVE_FOLDER_ID = '13JZCVB9HPU_30InOBVCqbVxcZpk3nscW';
+// ID папки в Google Drive куда сохраняются все доверенности.
+// Значение по умолчанию — боевая папка. Для локальной разработки её можно подменить своей
+// тестовой через VITE_DRIVE_TRUST_DEEDS_FOLDER_ID в .env.development.local (см. env.example).
+const DRIVE_FOLDER_ID: string =
+    import.meta.env?.VITE_DRIVE_TRUST_DEEDS_FOLDER_ID || '1Qhy4yjDhq5dcGW4A-Ir4SMjE8C3MNapL';
 
 function escapeXml(s: string): string {
   return s
