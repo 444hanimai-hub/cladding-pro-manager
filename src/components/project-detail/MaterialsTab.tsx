@@ -278,9 +278,12 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                 }).catch(console.error);
             }
 
-            let kpFolder = { id: project.kpFolderId || '', link: project.kpFolderLink || '' };
-            if (!kpFolder.id) {
-                kpFolder = await findOrCreateSubfolder(docsFolder.id, KP_SUBFOLDER_NAME, accessToken);
+            // Папку КП ВСЕГДА ищем (или создаём) внутри ТЕКУЩЕЙ папки проекта, а не доверяем той,
+            // что запомнена в проекте: запомненная могла остаться от прежней папки проекта (например,
+            // на старом Диске, или после смены ссылки на папку) — и КП ушло бы не туда. Запомненные
+            // kpFolderId/Link обновляем, только если они изменились ("Открыть КП" берёт ссылку оттуда).
+            const kpFolder = await findOrCreateSubfolder(docsFolder.id, KP_SUBFOLDER_NAME, accessToken);
+            if (kpFolder.id !== project.kpFolderId || kpFolder.link !== project.kpFolderLink) {
                 await updateDoc(doc(db, 'projects', project.id), {
                     kpFolderId: kpFolder.id,
                     kpFolderLink: kpFolder.link,

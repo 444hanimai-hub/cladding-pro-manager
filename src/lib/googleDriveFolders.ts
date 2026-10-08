@@ -98,9 +98,21 @@ export async function findOrCreateSubfolder(parentFolderId: string, name: string
     return createSubfolder(parentFolderId, name, accessToken);
 }
 
+/** Достаёт ID папки из ссылки на папку Google Drive (в т.ч. вида .../drive/u/0/folders/ID?usp=sharing). */
+export function extractDriveFolderId(link: string): string {
+    const match = (link || '').match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    return match ? match[1] : '';
+}
+
 /**
- * Возвращает папку документов проекта — если она уже привязана (driveDocsFolderId/Link
- * заполнены), просто отдаёт её; если нет — создаёт новую по стандартной формуле имени.
+ * Возвращает папку документов проекта:
+ *  1. если привязаны и ID, и ссылка — отдаёт их;
+ *  2. если привязана только ССЫЛКА — именно так сохраняется ссылка, вставленная вручную в
+ *     «Информации о проекте» (ID при этом не записывается), — достаёт ID из ссылки и отдаёт ту же
+ *     папку. Раньше такая ссылка игнорировалась: создавалась новая папка по шаблону имени, и её
+ *     ссылка затирала ту, что ввёл пользователь;
+ *  3. если есть только ID — собирает ссылку по нему;
+ *  4. только если не привязано ничего — создаёт новую по стандартной формуле имени.
  * ВАЖНО: эта функция ничего не пишет в Firestore — если она создала новую папку,
  * сохранить driveDocsFolderId/Link в сам проект должен вызывающий код.
  */
@@ -110,6 +122,13 @@ export async function ensureProjectDocsFolder(
 ): Promise<DriveFolderResult> {
     if (project.driveDocsFolderId && project.driveDocsFolderLink) {
         return { id: project.driveDocsFolderId, link: project.driveDocsFolderLink };
+    }
+    const idFromLink = extractDriveFolderId(project.driveDocsFolderLink || '');
+    if (idFromLink) {
+        return { id: idFromLink, link: project.driveDocsFolderLink as string };
+    }
+    if (project.driveDocsFolderId) {
+        return { id: project.driveDocsFolderId, link: `https://drive.google.com/drive/folders/${project.driveDocsFolderId}` };
     }
     const dateYMD = formatDateYMD(project.createdAt);
     const folderName = buildProjectFolderName(dateYMD, project.name, project.leadManagerName || '');
