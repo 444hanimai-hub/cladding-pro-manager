@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { ensureGoogleToken } from '../../services/googleCalendarAuth';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
@@ -427,6 +428,7 @@ function ProjectDriveFolder({ project, canEdit, accessToken, onConnectCalendar }
     };
 
     const handleCreateFolder = async () => {
+        const accessToken = await ensureGoogleToken();
         if (!accessToken) return;
         setIsCreating(true);
         try {
@@ -522,7 +524,7 @@ function ProjectDriveFolder({ project, canEdit, accessToken, onConnectCalendar }
                         <button
                             type="button"
                             onClick={handleCreateFolder}
-                            disabled={!accessToken || isCreating}
+                            disabled={isCreating}
                             className="w-full inline-flex items-center justify-center gap-2 h-9 rounded-md text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         >
                             {isCreating ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { ensureGoogleToken } from '../../services/googleCalendarAuth';
 import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
@@ -113,9 +114,12 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
             .replace(/\s+/g, '_').replace(/[/\\:*?"<>|]/g, '');
 
         try {
+            // Доступ к Диску — первым действием (до генерации файла): если токен истёк, откроется
+            // короткое окно Google. Если его закрыли — доверенность просто скачается на компьютер.
+            const driveToken = await ensureGoogleToken();
             const blob = await generateTrustDeedDocx(data);
 
-            if (!accessToken) {
+            if (!driveToken) {
                 downloadBlob(blob, filename);
                 return;
             }
@@ -124,7 +128,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
             // на Google Диске (его могли удалить вручную), и только тогда спрашиваем,
             // заменять ли его. Если файла на Диске уже нет — вопрос не задаём, просто
             // создаём новый (existingFileId ниже станет undefined).
-            const existingFileId = deed.driveFileId && await driveFileExists(deed.driveFileId, accessToken)
+            const existingFileId = deed.driveFileId && await driveFileExists(deed.driveFileId, driveToken)
                 ? deed.driveFileId
                 : undefined;
 
@@ -140,7 +144,7 @@ function TrustDeedsTab({ project, canEdit, directories, trustDeeds, accessToken,
                 }
             }
 
-            const { fileId, link } = await uploadTrustDeedToDrive(blob, filename, accessToken, existingFileId);
+            const { fileId, link } = await uploadTrustDeedToDrive(blob, filename, driveToken, existingFileId);
             // Сохраняем/обновляем driveFileId и ссылку в самой доверенности — driveFileId
             // нужен, чтобы при следующей печати перезаписать этот же файл, а не плодить
             // новые; driveFileLink — чтобы показать постоянную кнопку "Открыть документ"

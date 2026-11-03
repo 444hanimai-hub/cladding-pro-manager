@@ -87,13 +87,18 @@ export function calcMaterial(m: Pick<ProjectMaterial,
     const saleSum = quantity * salePrice;
     const saleVatAmount = extractVat(saleSum, m.saleVatPercent);
 
-    const designerSum = ((m.designerPercent || 0) / 100) * saleSum;
+    const transportAmount = m.transportAmount || 0;
+
+    // База для % дизайнера = сумма продажи с НДС минус «Транспорт до ТК с НДС».
+    // Не уходит в минус: если транспорт больше суммы продажи, дизайнеру считаем от нуля.
+    const designerBase = Math.max(0, saleSum - transportAmount);
+    const designerSum = ((m.designerPercent || 0) / 100) * designerBase;
     const designerVatAmount = extractVat(designerSum, m.designerVatPercent);
 
+    // % ГП по-прежнему считается от полной суммы продажи (без вычета транспорта).
     const gcSum = ((m.gcPercent || 0) / 100) * saleSum;
     const gcVatAmount = extractVat(gcSum, m.gcVatPercent);
 
-    const transportAmount = m.transportAmount || 0;
     const transportVatAmount = extractVat(transportAmount, m.transportVatPercent);
 
     // Маржа без учёта НДС: НДС к уплате в этой строке ещё не участвует

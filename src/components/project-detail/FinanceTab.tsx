@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { ensureGoogleToken, getStoredGoogleToken } from '../../services/googleCalendarAuth';
 import { createPortal } from 'react-dom';
 import { collection, onSnapshot, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
@@ -1002,9 +1003,13 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
 
     const handleAttachFiles = async (fileList: FileList | null) => {
         if (!fileList || fileList.length === 0) return;
-        if (!accessToken) return;
         if (!category) {
             alert('Сначала выберите вид расхода — он используется в имени файла.');
+            return;
+        }
+        const accessToken = await ensureGoogleToken();
+        if (!accessToken) {
+            alert('Нет доступа к Google Диску. Нажмите «Добавить документ» ещё раз и подтвердите вход в окне Google.');
             return;
         }
         setIsUploading(true);
@@ -1042,9 +1047,10 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
 
     const handleRemoveReceipt = async (receipt: ExpenseReceiptFile) => {
         if (!window.confirm(`Удалить документ «${receipt.fileName}»? Файл будет удалён и с Google Диска — это действие нельзя отменить.`)) return;
-        if (accessToken) {
+        const deleteToken = await ensureGoogleToken();
+        if (deleteToken) {
             try {
-                await deleteDriveFile(receipt.driveFileId, accessToken);
+                await deleteDriveFile(receipt.driveFileId, deleteToken);
             } catch (error) {
                 console.error('Не удалось удалить файл на Google Drive:', error);
                 alert('Не удалось удалить файл на Google Диске. Попробуйте ещё раз.');
@@ -1277,8 +1283,16 @@ function ExpenseModal({ project, expenses, editingExpense, contractSum, accessTo
                         />
                         <button
                             type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={!accessToken || isUploading}
+                            onClick={async () => {
+                                // Если доступ к Диску истёк — сначала обновляем его (короткое окно Google),
+                                // и только потом открываем выбор файла.
+                                if (!getStoredGoogleToken()) {
+                                    const t = await ensureGoogleToken();
+                                    if (!t) return;
+                                }
+                                fileInputRef.current?.click();
+                            }}
+                            disabled={isUploading}
                             className="w-full inline-flex items-center justify-center gap-2 h-9 rounded-md text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         >
                             {isUploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
@@ -1345,7 +1359,11 @@ function IncomeModal({ project, editingExpense, accessToken, onConnectCalendar, 
 
     const handleAttachFiles = async (fileList: FileList | null) => {
         if (!fileList || fileList.length === 0) return;
-        if (!accessToken) return;
+        const accessToken = await ensureGoogleToken();
+        if (!accessToken) {
+            alert('Нет доступа к Google Диску. Нажмите «Добавить документ» ещё раз и подтвердите вход в окне Google.');
+            return;
+        }
         setIsUploading(true);
         try {
             const docsFolder = await ensureProjectDocsFolder(project, accessToken);
@@ -1380,9 +1398,10 @@ function IncomeModal({ project, editingExpense, accessToken, onConnectCalendar, 
 
     const handleRemoveReceipt = async (receipt: ExpenseReceiptFile) => {
         if (!window.confirm(`Удалить документ «${receipt.fileName}»? Файл будет удалён и с Google Диска — это действие нельзя отменить.`)) return;
-        if (accessToken) {
+        const deleteToken = await ensureGoogleToken();
+        if (deleteToken) {
             try {
-                await deleteDriveFile(receipt.driveFileId, accessToken);
+                await deleteDriveFile(receipt.driveFileId, deleteToken);
             } catch (error) {
                 console.error('Не удалось удалить файл на Google Drive:', error);
                 alert('Не удалось удалить файл на Google Диске. Попробуйте ещё раз.');
@@ -1543,8 +1562,16 @@ function IncomeModal({ project, editingExpense, accessToken, onConnectCalendar, 
                         />
                         <button
                             type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={!accessToken || isUploading}
+                            onClick={async () => {
+                                // Если доступ к Диску истёк — сначала обновляем его (короткое окно Google),
+                                // и только потом открываем выбор файла.
+                                if (!getStoredGoogleToken()) {
+                                    const t = await ensureGoogleToken();
+                                    if (!t) return;
+                                }
+                                fileInputRef.current?.click();
+                            }}
+                            disabled={isUploading}
                             className="w-full inline-flex items-center justify-center gap-2 h-9 rounded-md text-[12.5px] font-semibold border border-line bg-surface hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         >
                             {isUploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
