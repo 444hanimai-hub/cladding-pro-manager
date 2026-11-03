@@ -307,7 +307,12 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                 const calc = calcMaterial(m);
                 return {
                     materialName: m.materialName,
-                    characteristics: dir?.characteristics || '',
+                    // Порядок в КП: наименование → характеристики из справочника →
+                    // «Дополнительные характеристики» из карточки материала → производитель.
+                    characteristics: [dir?.characteristics, m.extraCharacteristics]
+                        .map(s => (s || '').trim())
+                        .filter(Boolean)
+                        .join(', '),
                     manufacturerName: manufacturerName || '',
                     unit: m.unitName || '',
                     qtyPerM2: dir?.qtyPerM2,
@@ -1393,7 +1398,12 @@ function KPMaterialsSelectionModal({ materials, directories, isGenerating, onClo
     const getFullLabel = (m: ProjectMaterial): string => {
         const dir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
         const manufacturerName = (directories.companies || []).find((c: any) => c.id === dir?.manufacturerId)?.name;
-        return [m.materialName, dir?.characteristics, manufacturerName].filter(Boolean).join(', ');
+        // Тот же порядок, что и в печатной форме КП: наименование → характеристики из справочника →
+        // «Дополнительные характеристики» из карточки → производитель.
+        return [m.materialName, dir?.characteristics, m.extraCharacteristics, manufacturerName]
+            .map(s => (s || '').trim())
+            .filter(Boolean)
+            .join(', ');
     };
 
     const handleConfirmClick = () => {
