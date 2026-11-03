@@ -923,6 +923,7 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
     );
     const [qtyPerM2, setQtyPerM2] = useState(editingMaterial?.qtyPerM2 ? String(editingMaterial.qtyPerM2) : '');
     const [qtyPerPallet, setQtyPerPallet] = useState(editingMaterial?.qtyPerPallet ? String(editingMaterial.qtyPerPallet) : '');
+    const [palletsPerTruck, setPalletsPerTruck] = useState(editingMaterial?.palletsPerTruck ? String(editingMaterial.palletsPerTruck) : '');
     const [photoDriveFileId, setPhotoDriveFileId] = useState(editingMaterial?.photoDriveFileId || '');
     // Буфер для самого поля ввода — пользователь может вставить туда любую ссылку
     // на Диск, а не только "чистый" ID; распознаём ID при потере фокуса (см. commitPhotoLink).
@@ -959,6 +960,7 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
                 manufacturerId: manufacturerId || '',
                 qtyPerM2: qtyPerM2 ? Number(qtyPerM2) : null,
                 qtyPerPallet: qtyPerPallet ? Number(qtyPerPallet) : null,
+                palletsPerTruck: palletsPerTruck ? Number(palletsPerTruck) : null,
                 photoDriveFileId: photoDriveFileId || null,
             };
             if (isEditing) {
@@ -1047,6 +1049,17 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, onCl
                                 inputMode="numeric"
                                 value={qtyPerPallet}
                                 onChange={e => setQtyPerPallet(e.target.value.replace(/\D/g, ''))}
+                                placeholder="—"
+                                className={inputClass}
+                            />
+                        </div>
+                        <div>
+                            <label className={labelCls}>Кол-во поддонов в машине</label>
+                            <input
+                                type="text"
+                                inputMode="numeric"
+                                value={palletsPerTruck}
+                                onChange={e => setPalletsPerTruck(e.target.value.replace(/\D/g, ''))}
                                 placeholder="—"
                                 className={inputClass}
                             />
