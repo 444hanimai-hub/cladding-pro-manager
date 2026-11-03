@@ -1,7 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db } from './lib/firebase';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
-import { connectGoogleCalendar } from './services/googleCalendarAuth';
+import {
+  connectGoogleCalendar,
+  signInWithGoogleBasic,
+  getStoredGoogleToken,
+  getStoredGoogleTokenSavedAt,
+  storeGoogleToken,
+  clearStoredGoogleToken,
+  GOOGLE_TOKEN_EVENT,
+  GOOGLE_TOKEN_TTL_MS,
+} from './services/googleCalendarAuth';
 import { verifyCalendarAccess } from './services/googleCalendarService';
 import { doc, setDoc, collection, onSnapshot, query, where, getDocFromServer, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import {
@@ -27,15 +36,13 @@ import Dashboard from './components/Dashboard';
 import DirectoryManager from './components/DirectoryManager';
 import Settings from './components/Settings';
 
-const ACCESS_TOKEN_KEY = 'google_calendar_access_token';
-
 // Единственный аккаунт которому всегда принудительно выставляется accessSettings: true
 const SETTINGS_ALWAYS_ON_EMAIL = '444hanimai@gmail.com';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [appUser, setAppUser] = useState<AppUser | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(localStorage.getItem(ACCESS_TOKEN_KEY));
+  const [accessToken, setAccessToken] = useState<string | null>(getStoredGoogleToken);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'projects' | 'directories' | 'settings'>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -91,7 +98,7 @@ export default function App() {
 
       if (!user) {
         setAccessToken(null);
-        localStorage.removeItem(ACCESS_TOKEN_KEY);
+        clearStoredGoogleToken();
       }
 
       if (userDocUnsubscribe) {
@@ -189,7 +196,46 @@ export default function App() {
 
   const onClearCalendarToken = () => {
     setAccessToken(null);
-    localStorage.removeItem(ACCESS_TOKEN_KEY);
+    clearStoredGoogleToken();
+  };
+
+  // Токен может обновиться изнутри разделов (кнопка «Сформировать КП», «Загрузить доверенность»
+  // и т. д. сами запрашивают новый, если старый истёк) — подхватываем его в состояние.
+  useEffect(() => {
+    const onTokenUpdated = (e: Event) => {
+      const token = (e as CustomEvent<string>).detail;
+      if (token) setAccessToken(token);
+    };
+    window.addEventListener(GOOGLE_TOKEN_EVENT, onTokenUpdated);
+    return () => window.removeEventListener(GOOGLE_TOKEN_EVENT, onTokenUpdated);
+  }, []);
+
+  // Когда токен истекает, убираем его сами: в разделах, где нужен Google, появится
+  // привычная плашка «Подключить Google» (одно нажатие, без экрана согласия), а не
+  // загадочная ошибка в момент печати КП или доверенности.
+  useEffect(() => {
+    if (!accessToken) return;
+    const savedAt = getStoredGoogleTokenSavedAt() || Date.now();
+    const timer = setTimeout(() => {
+      setAccessToken(null);
+      clearStoredGoogleToken();
+    }, Math.max(1000, GOOGLE_TOKEN_TTL_MS - (Date.now() - savedAt)));
+    return () => clearTimeout(timer);
+  }, [accessToken]);
+
+  // Обычный вход в систему: только имя и почта, без предупреждения Google и без
+  // запроса прав на Диск/календарь (они просятся отдельно, один раз, когда нужны).
+  const loginBasic = async () => {
+    try {
+      await signInWithGoogleBasic();
+    } catch (error: unknown) {
+      const code = error && typeof error === 'object' && 'code' in error
+          ? String((error as { code: string }).code) : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return;
+      console.error('Login failed', error);
+      const message = error instanceof Error ? error.message : 'Неизвестная ошибка';
+      alert('Не удалось войти: ' + message);
+    }
   };
 
   const loginWithCalendar = async (): Promise<boolean> => {
@@ -208,8 +254,8 @@ export default function App() {
         }
         return false;
       }
+      storeGoogleToken(token);
       setAccessToken(token);
-      localStorage.setItem(ACCESS_TOKEN_KEY, token);
       return true;
     } catch (error: unknown) {
       const code = error && typeof error === 'object' && 'code' in error
@@ -262,7 +308,7 @@ export default function App() {
             <p className={cn("mb-10 text-balance", theme === 'dark' ? "text-[#e5e5e0]/60" : "text-[#141414]/60")}>
               Войдите в систему для управления проектами по подбору и поставке облицовочного материала
             </p>
-            <button onClick={loginWithCalendar}
+            <button onClick={loginBasic}
                     className={cn("w-full flex items-center justify-center gap-3 py-4 px-6 rounded-full font-medium transition-all active:scale-95", theme === 'dark' ? "bg-[#e5e5e0] text-[#12120e] hover:bg-[#e5e5e0]/90" : "bg-[#141414] text-white hover:bg-[#141414]/90")}>
               <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5 bg-white rounded-full" alt="Google" />
               Войти через Google

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { ensureGoogleToken } from '../../services/googleCalendarAuth';
 import { collection, addDoc, serverTimestamp, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
@@ -151,15 +152,19 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
         e.preventDefault();
         if (!editingTaskId || !canEdit) return;
         setCalendarSyncError(null);
+        // Доступ к календарю запрашиваем САМЫМ первым действием по клику (браузер разрешает
+        // всплывающее окно Google только сразу после нажатия). Если окно закрыли — задача всё
+        // равно сохранится в CRM, просто не обновится в календаре.
+        const calToken = editingTaskData.date ? await ensureGoogleToken() : null;
         try {
             await updateDoc(doc(db, 'projects', projectId, 'tasks', editingTaskId), {
                 ...editingTaskData,
                 updatedAt: serverTimestamp()
             });
 
-            if (accessToken && project && editingTaskData.date) {
+            if (calToken && project && editingTaskData.date) {
                 try {
-                    await createCalendarEvent(accessToken, project, {
+                    await createCalendarEvent(calToken, project, {
                         ...editingTaskData,
                         id: editingTaskId
                     });
@@ -206,6 +211,8 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
         e.preventDefault();
         if (!newTaskTitle || !canEdit) return;
         setCalendarSyncError(null);
+        // См. комментарий в handleUpdateTask: доступ к календарю — первым действием по клику.
+        const calToken = newTaskDate ? await ensureGoogleToken() : null;
         try {
             const taskData: Partial<ProjectTask> & { projectId: string; createdAt: ReturnType<typeof serverTimestamp>; order: number } = {
                 projectId,
@@ -221,9 +228,9 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
 
             await addDoc(collection(db, 'projects', projectId, 'tasks'), taskData);
 
-            if (accessToken && project && newTaskDate) {
+            if (calToken && project && newTaskDate) {
                 try {
-                    await createCalendarEvent(accessToken, project, taskData);
+                    await createCalendarEvent(calToken, project, taskData);
                     setCalendarNeedsReconnect(false);
                     setCalendarSyncError(null);
                 } catch (calError: unknown) {
@@ -236,7 +243,7 @@ function ActivityTab({ tasks, projectId, canEdit, project, accessToken, onConnec
                         calError
                     );
                 }
-            } else if (newTaskDate && !accessToken) {
+            } else if (newTaskDate && !calToken) {
                 markCalendarDisconnected(
                     'Задача сохранена в CRM. Подключите Google Календарь, чтобы она попала в календарь.'
                 );

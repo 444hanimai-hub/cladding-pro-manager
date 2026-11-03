@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { ensureGoogleToken } from '../../services/googleCalendarAuth';
 import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { motion, AnimatePresence } from 'motion/react';
@@ -227,7 +228,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
      * "того самого" КП на проект больше нет, история формирований просто копится в папке.
      */
     const handleGenerateKP = async (selected: ProjectMaterial[]) => {
-        if (!accessToken || selected.length === 0) return;
+        if (selected.length === 0) return;
 
         // ── Валюта КП: один КП — одна валюта. Если у ВСЕХ отмеченных материалов включён
         // "КП в валюте" и валюта одна и та же — печатаем в валюте (цены/суммы берутся из
@@ -268,6 +269,13 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
 
         setIsGeneratingKP(true);
         try {
+            // Доступ к Google Диску — первым действием после нажатия «Сформировать»: если токен
+            // истёк, откроется короткое окно Google (без экрана согласия), затем КП формируется.
+            const accessToken = await ensureGoogleToken();
+            if (!accessToken) {
+                alert('Чтобы сформировать КП, нужно разрешить доступ к Google Диску. Нажмите «Сформировать» ещё раз и подтвердите вход в окне Google.');
+                return;
+            }
             let docsFolder = { id: project.driveDocsFolderId || '', link: project.driveDocsFolderLink || '' };
             if (!docsFolder.id) {
                 docsFolder = await ensureProjectDocsFolder(project, accessToken);
@@ -365,7 +373,7 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                 <button
                     type="button"
                     onClick={() => setIsKPModalOpen(true)}
-                    disabled={!accessToken || materials.length === 0}
+                    disabled={materials.length === 0}
                     className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-[12.5px] font-semibold bg-ink text-bg hover:bg-ink/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                     <FileText size={13} /> Сформировать КП
