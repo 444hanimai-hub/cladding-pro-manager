@@ -661,7 +661,7 @@ function MaterialDetailPanel({ material, canEdit, onEdit, onDelete, onClose }: {
                     <DetailRow
                         label="Транспорт до ТК с НДС"
                         value={`${formatMoney(material.transportAmount)} ₽`}
-                        sub={`НДС ${material.transportVatPercent}% ${formatMoney(calc.transportVatAmount)}`}
+                        sub={`${material.transportPerTruck ? `${formatMoney(material.transportPerTruck)} ₽ × ${material.trucksCount || 1} маш. · ` : ''}НДС ${material.transportVatPercent}% ${formatMoney(calc.transportVatAmount)}`}
                     />
                 </DetailSection>
 
@@ -705,6 +705,39 @@ function AmountInput({ value, onCommit, placeholder = '0', className }: {
             value={text}
             placeholder={placeholder}
             onChange={e => setText(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commit(); }}
+            className={className}
+        />
+    );
+}
+
+/** Целочисленное поле (например, «Количество машин»): локальный буфер строки, коммит по blur/Enter/Tab. */
+function CountInput({ value, onCommit, placeholder = '0', className }: {
+    value: number;
+    onCommit: (n: number) => void;
+    placeholder?: string;
+    className?: string;
+}) {
+    const [text, setText] = useState(value ? String(value) : '');
+
+    useEffect(() => {
+        setText(value ? String(value) : '');
+    }, [value]);
+
+    const commit = () => {
+        const n = Math.max(0, Math.round(parseDecimal(text)));
+        onCommit(n);
+        setText(n ? String(n) : '');
+    };
+
+    return (
+        <input
+            type="text"
+            inputMode="numeric"
+            value={text}
+            placeholder={placeholder}
+            onChange={e => setText(e.target.value.replace(/\D/g, ''))}
             onBlur={commit}
             onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commit(); }}
             className={className}
@@ -783,6 +816,40 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
     const qtyPerPallet = Number(selectedMaterialDir?.qtyPerPallet) || 0;
     const hasM2Ratio = qtyPerM2 > 0;
     const hasPalletRatio = qtyPerPallet > 0;
+    // Сколько поддонов влезает в одну машину (из справочника материала). Если указано —
+    // количество машин считается автоматически из количества поддонов.
+    const palletsPerTruck = Number(selectedMaterialDir?.palletsPerTruck) || 0;
+    const canAutoTrucks = palletsPerTruck > 0;
+
+    // ── Транспорт: стоимость за ОДНУ машину ↔ итого за все машины — взаимозависимые поля
+    // (итого = за машину × количество машин; если машин не указано — считаем 1). Пересчёт идёт
+    // от того поля, которое пользователь изменил последним. Итоговое поле — то самое
+    // transportAmount, на которое завязаны все формулы. ──
+    const roundMoney = (n: number) => Math.round(n * 100) / 100;
+    const commitTransportPerTruck = (n: number) => {
+        set({
+            transportPerTruck: n,
+            ...(n > 0 ? { transportAmount: roundMoney(n * (m.trucksCount || 1)) } : {}),
+        });
+    };
+    const commitTransportTotal = (n: number) => {
+        set({
+            transportAmount: n,
+            transportPerTruck: n > 0 ? roundMoney(n / (m.trucksCount || 1)) : 0,
+        });
+    };
+    const commitTrucksCount = (n: number) => {
+        const perTruck = m.transportPerTruck || 0;
+        const total = m.transportAmount || 0;
+        set({
+            trucksCount: n,
+            ...(perTruck > 0
+                ? { transportAmount: roundMoney(perTruck * (n || 1)) }
+                : total > 0
+                    ? { transportPerTruck: roundMoney(total / (n || 1)) }
+                    : {}),
+        });
+    };
 
     // Для кирпича единица измерения всегда "шт" (в наименованиях полей уже написано, что
     // считаем в м²/шт/поддонах) — скрываем поле и проставляем значение автоматически.
@@ -821,6 +888,16 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
             const roundedPcs = pallets * qtyPerPallet;
             patch.quantityPallets = pallets || undefined;
             patch.quantity = roundedPcs;
+            // Количество машин = поддоны ÷ поддонов в машине (вверх), если в справочнике указано.
+            // Вручную изменённое значение перезаписывается только при пересчёте поддонов.
+            if (canAutoTrucks && pallets > 0) {
+                const trucks = Math.ceil(pallets / palletsPerTruck);
+                patch.trucksCount = trucks;
+                const perTruck = m.transportPerTruck || 0;
+                const total = m.transportAmount || 0;
+                if (perTruck > 0) patch.transportAmount = roundMoney(perTruck * trucks);
+                else if (total > 0) patch.transportPerTruck = roundMoney(total / trucks);
+            }
         } else {
             // Нет данных о шт-в-поддоне в справочнике — автоматический расчёт по поддонам
             // не делаем, итоговое количество просто равно введённому "сырому" кол-ву шт.
@@ -927,8 +1004,8 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                             companyType="Поставщик"
                                         />
                                     </div>
-                                    {/* Кирпич: 4 количественных поля вместо простого "Кол-во" */}
-                                    <div className="grid grid-cols-4 gap-3">
+                                    {/* Кирпич: количественные поля вместо простого "Кол-во" */}
+                                    <div className="grid grid-cols-5 gap-3">
                                         <div>
                                             <label className={labelClass}>Кол-во, м²</label>
                                             {hasM2Ratio ? (
@@ -960,21 +1037,25 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                             />
                                         </div>
                                         <div>
-                                            <label className={labelClass}>Кол-во поддонов</label>
+                                            <label className={labelClass} title="Количество поддонов">Поддонов</label>
                                             <div className={readonlyClass} title={!hasPalletRatio ? 'Нет данных «шт в поддоне» в справочнике материала' : undefined}>
                                                 {hasPalletRatio ? (m.quantityPallets ?? '—') : '—'}
                                             </div>
                                         </div>
                                         <div>
-                                            <label className={labelClass}>Шт кратно поддону</label>
+                                            <label className={labelClass} title="Штук кратно поддону">Шт кратно подд.</label>
                                             <div className={readonlyClass} title={!hasPalletRatio ? 'Нет данных «шт в поддоне» — используется кол-во шт как есть' : undefined}>
                                                 {hasPalletRatio ? formatMoney(m.quantity) : (m.quantity ? formatMoney(m.quantity) : '—')}
                                             </div>
                                         </div>
+                                        <div>
+                                            <label className={labelClass}>Кол-во машин</label>
+                                            <CountInput value={m.trucksCount || 0} onCommit={commitTrucksCount} placeholder="1" className={inputClass} />
+                                        </div>
                                     </div>
                                 </>
                             ) : (
-                                <div className="grid grid-cols-[100px_120px_1fr] gap-3">
+                                <div className="grid grid-cols-[100px_120px_110px_1fr] gap-3">
                                     <div>
                                         <label className={labelClass}>Кол-во</label>
                                         <AmountInput value={m.quantity} onCommit={n => set({ quantity: n })} className={inputClass} />
@@ -994,6 +1075,10 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                             iconType="unit"
                                             inputHeight="h-9"
                                         />
+                                    </div>
+                                    <div>
+                                        <label className={labelClass}>Кол-во машин</label>
+                                        <CountInput value={m.trucksCount || 0} onCommit={commitTrucksCount} placeholder="1" className={inputClass} />
                                     </div>
                                     <div>
                                         <label className={labelClass}>Поставщик</label>
@@ -1182,8 +1267,12 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
 
                         <div className="grid grid-cols-[1fr_90px_110px_70px_110px] gap-2 items-center py-1.5">
                             <span className="text-[12.5px] text-ink">Транспорт до ТК с НДС</span>
-                            <span />
-                            <AmountInput value={m.transportAmount} onCommit={n => set({ transportAmount: n })} className={inputClass} />
+                            <div title="Стоимость транспорта одной машины">
+                                <AmountInput value={m.transportPerTruck || 0} onCommit={commitTransportPerTruck} className={inputClass} />
+                            </div>
+                            <div title="Итоговая стоимость транспорта всех машин">
+                                <AmountInput value={m.transportAmount} onCommit={commitTransportTotal} className={inputClass} />
+                            </div>
                             <VatPercentInput value={m.transportVatPercent} onCommit={n => set({ transportVatPercent: n })} className={inputClass} />
                             <div className={readonlyClass}>{formatMoney(calc.transportVatAmount)}</div>
                         </div>
