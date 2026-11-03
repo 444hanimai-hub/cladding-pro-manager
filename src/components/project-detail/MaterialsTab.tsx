@@ -454,6 +454,9 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                                                     )}
                                                 </div>
                                                 <p className="text-[11px] text-ink-3 truncate max-w-[220px]">{m.supplierName || '—'}</p>
+                                                {m.extraCharacteristics && (
+                                                    <p className="text-[11px] text-ink-3 max-w-[220px] line-clamp-2" title={m.extraCharacteristics}>{m.extraCharacteristics}</p>
+                                                )}
                                             </td>
                                             <td className="px-4 py-3.5">
                                                 <span className="text-[12px] font-mono text-ink whitespace-nowrap">{formatMoney(m.quantity)} {m.unitName}</span>
@@ -613,6 +616,9 @@ function MaterialDetailPanel({ material, canEdit, onEdit, onDelete, onClose }: {
                         <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] mb-0.5">Материал</p>
                         <h4 className="font-serif text-[18px] font-normal text-[#2C2922] leading-[1.15] truncate">{material.materialName || '—'}</h4>
                         <p className="text-[11.5px] text-ink-3 mt-0.5 truncate">{formatMoney(material.quantity)} {material.unitName} · {material.supplierName || '—'}</p>
+                        {material.extraCharacteristics && (
+                            <p className="text-[11.5px] text-ink-3 mt-0.5 whitespace-pre-line">{material.extraCharacteristics}</p>
+                        )}
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                         {canEdit && (
@@ -990,6 +996,15 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                     materialId={m.materialId}
                                     onChange={(name, id) => set({ materialName: name, materialId: id })}
                                     placeholder="Из справочника..."
+                                />
+                            </div>
+                            <div>
+                                <label className={labelClass}>Дополнительные характеристики</label>
+                                <textarea
+                                    rows={2}
+                                    value={m.extraCharacteristics || ''}
+                                    onChange={e => set({ extraCharacteristics: e.target.value })}
+                                    className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 resize-none"
                                 />
                             </div>
                             {isBrick ? (
