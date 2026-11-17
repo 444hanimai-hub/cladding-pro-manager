@@ -48,6 +48,23 @@ function isBrickProductType(name?: string): boolean {
 }
 
 /**
+ * Вид товара «Плитка»: в форме материала в проекте — «Кол-во, м²» и «Кол-во, шт» со связкой через
+ * «шт в 1 м²» из справочника (как у кирпича), но БЕЗ поддонов и их расчёта. Шаблон КП — универсальный
+ * (как и у всех видов, кроме кирпича), единица измерения не фиксируется (можно «м²» или «шт»).
+ * Сравнение регистронезависимое, как и у кирпича.
+ */
+const TILE_PRODUCT_TYPE_NAME = 'Плитка';
+
+function isTileProductType(name?: string): boolean {
+    return (name || '').trim().toLowerCase() === TILE_PRODUCT_TYPE_NAME.toLowerCase();
+}
+
+/** Единица измерения — квадратные метры («м²», «м2», «м.кв.»). */
+function isM2Unit(unit?: string): boolean {
+    return /^м(2|²|\.?кв\.?)$/i.test((unit || '').replace(/\s/g, ''));
+}
+
+/**
  * Убирает из характеристик слово «артикул» и идущее за ним значение — в печатной форме КП
  * артикул не показывается (в справочнике он хранится в характеристиках, например:
  * «рядовой, 240*71*115 мм, артикул NFxxxxB115»). Значение — всё от слова «артикул» (с «:» или без)
@@ -472,9 +489,9 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                                         >
                                             <td className="px-4 py-3.5">
                                                 {/* Метка валюты — рядом с названием, только если КП в валюте (не рубль).
-                                                    Общая ширина ячейки прежняя (220px): длинное название обрезается, метка — нет. */}
-                                                <div className="flex items-center gap-1.5 max-w-[220px]">
-                                                    <p className="text-[13px] font-bold text-ink truncate min-w-0">{m.materialName || '—'}</p>
+                                                    Длинное название переносится на несколько строк и видно целиком; метка валюты не сжимается. */}
+                                                <div className="flex items-center gap-1.5 max-w-[260px]">
+                                                    <p className="text-[13px] font-semibold text-ink min-w-0 break-words">{m.materialName || '—'}</p>
                                                     {currencyNameOf(m) && (
                                                         <span className="shrink-0 inline-flex px-1.5 py-0.5 rounded-md bg-ochre-bg text-ochre text-[10.5px] font-semibold whitespace-nowrap">{currencyNameOf(m)}</span>
                                                     )}
@@ -640,7 +657,7 @@ function MaterialDetailPanel({ material, canEdit, onEdit, onDelete, onClose }: {
                 <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                         <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#8A8574] mb-0.5">Материал</p>
-                        <h4 className="font-serif text-[18px] font-normal text-[#2C2922] leading-[1.15] truncate">{material.materialName || '—'}</h4>
+                        <h4 className="font-serif text-[18px] font-normal text-[#2C2922] leading-[1.15] break-words">{material.materialName || '—'}</h4>
                         <p className="text-[11.5px] text-ink-3 mt-0.5 truncate">{formatMoney(material.quantity)} {material.unitName} · {material.supplierName || '—'}</p>
                         {material.extraCharacteristics && (
                             <p className="text-[11.5px] text-ink-3 mt-0.5 whitespace-pre-line">{material.extraCharacteristics}</p>
@@ -844,6 +861,7 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
     const selectedMaterialDir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
     const selectedProductTypeName = (directories.productTypes || []).find((pt: any) => pt.id === selectedMaterialDir?.productTypeId)?.name;
     const isBrick = isBrickProductType(selectedProductTypeName);
+    const isTile = isTileProductType(selectedProductTypeName);
     const qtyPerM2 = Number(selectedMaterialDir?.qtyPerM2) || 0;
     const qtyPerPallet = Number(selectedMaterialDir?.qtyPerPallet) || 0;
     const hasM2Ratio = qtyPerM2 > 0;
@@ -910,6 +928,19 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
      */
     const applyPcsCalculation = (pcsRaw: number) => {
         const patch: Partial<ProjectMaterial> = { quantityPcsRaw: pcsRaw };
+        if (isTile) {
+            // Плитка: только м² ↔ шт (поддонов и машин по поддонам нет). Итоговое quantity — в той
+            // единице, что выбрана в карточке: «м²» → кол-во м², иначе (шт) → кол-во штук.
+            const m2 = hasM2Ratio ? Math.round((pcsRaw / qtyPerM2) * 100) / 100 : undefined;
+            if (hasM2Ratio) {
+                setM2Text(m2 ? String(m2) : '');
+                patch.quantityM2 = m2;
+            }
+            patch.quantityPallets = undefined;
+            patch.quantity = isM2Unit(m.unitName) && m2 !== undefined ? m2 : pcsRaw;
+            set(patch);
+            return;
+        }
         if (hasM2Ratio) {
             const m2 = Math.round((pcsRaw / qtyPerM2) * 10) / 10; // округление до 1 знака
             setM2Text(m2 ? String(m2) : '');
@@ -947,11 +978,20 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
 
     const commitM2 = () => {
         if (!hasM2Ratio) return;
-        const m2 = Math.round(parseDecimal(m2Text) * 10) / 10;
+        const k = isTile ? 100 : 10; // плитка — до сотых м², кирпич — до десятых
+        const m2 = Math.round(parseDecimal(m2Text) * k) / k;
         setM2Text(m2 ? String(m2) : '');
         const pcs = Math.round(m2 * qtyPerM2);
         setPcsText(pcs ? String(pcs) : '');
         applyPcsCalculation(pcs);
+    };
+
+    /** Плитка: смена единицы пересчитывает итоговое quantity (м² ↔ шт) из уже введённых м²/шт. */
+    const applyTileUnit = (unitName: string) => {
+        const m2 = m.quantityM2 || 0;
+        const pcs = m.quantityPcsRaw || 0;
+        if (!m2 && !pcs) { set({ unitName }); return; }
+        set({ unitName, quantity: isM2Unit(unitName) && m2 ? m2 : pcs });
     };
 
     // ── Связка "% накрутки ↔ цена продажи с НДС" — локальные буферы, пересчёт только по blur/Enter/Tab ──
@@ -1101,6 +1141,71 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                             <label className={labelClass}>Кол-во машин</label>
                                             <CountInput value={m.trucksCount || 0} onCommit={commitTrucksCount} placeholder="1" className={inputClass} />
                                         </div>
+                                    </div>
+                                </>
+                            ) : isTile ? (
+                                <>
+                                    {/* Плитка: кол-во в м² и шт (как у кирпича), без поддонов */}
+                                    <div className="grid grid-cols-4 gap-3">
+                                        <div>
+                                            <label className={labelClass}>Кол-во, м²</label>
+                                            {hasM2Ratio ? (
+                                                <input
+                                                    type="text"
+                                                    inputMode="decimal"
+                                                    value={m2Text}
+                                                    onChange={e => setM2Text(e.target.value)}
+                                                    onBlur={commitM2}
+                                                    onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commitM2(); }}
+                                                    placeholder="0"
+                                                    className={inputClass}
+                                                />
+                                            ) : (
+                                                <div className={readonlyClass} title="Нет данных «шт в 1 м²» в справочнике материала">—</div>
+                                            )}
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Кол-во, шт</label>
+                                            <input
+                                                type="text"
+                                                inputMode="numeric"
+                                                value={pcsText}
+                                                onChange={e => setPcsText(e.target.value)}
+                                                onBlur={commitPcs}
+                                                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Tab') commitPcs(); }}
+                                                placeholder="0"
+                                                className={inputClass}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Ед. изм.</label>
+                                            <DirectorySelect
+                                                value={m.unitName || ''}
+                                                options={directories.units || []}
+                                                onChange={v => applyTileUnit(v)}
+                                                onAdd={async name => {
+                                                    await addDoc(collection(db, 'units'), { name, createdAt: serverTimestamp() });
+                                                    applyTileUnit(name);
+                                                }}
+                                                placeholder="—"
+                                                className={inputClass}
+                                                iconType="unit"
+                                                inputHeight="h-9"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Кол-во машин</label>
+                                            <CountInput value={m.trucksCount || 0} onCommit={commitTrucksCount} placeholder="1" className={inputClass} />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className={labelClass}>Поставщик</label>
+                                        <CompanySelect
+                                            value={m.supplierName || ''}
+                                            onChange={(name, id) => set({ supplierName: name, supplierId: id })}
+                                            placeholder="Компания-поставщик..."
+                                            companyType="Поставщик"
+                                        />
                                     </div>
                                 </>
                             ) : (

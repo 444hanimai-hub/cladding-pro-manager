@@ -116,11 +116,15 @@ export default function MaterialSelect({ value, materialId, onChange, placeholde
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    // Поиск идёт и по названию, и по всей склейке — так находится, даже если ввести
-    // часть характеристик или производителя, а не только короткое название.
-    const filteredMaterials = materials.filter(m =>
-        formatMaterialLabel(m, companyNames[m.manufacturerId || '']).toLowerCase().includes(searchTerm.toLowerCase())
-    );
+    // Поиск идёт по всей склейке «наименование, характеристики, производитель», по словам в ЛЮБОМ
+    // порядке: строка запроса делится на слова, и материал подходит, если КАЖДОЕ слово встречается
+    // где-либо в склейке (в том числе как часть слова). «ё» и «е» не различаются.
+    const normalizeForSearch = (s: string) => s.toLowerCase().replace(/ё/g, 'е');
+    const searchWords = normalizeForSearch(searchTerm).split(/\s+/).filter(Boolean);
+    const filteredMaterials = materials.filter(m => {
+        const label = normalizeForSearch(formatMaterialLabel(m, companyNames[m.manufacturerId || '']));
+        return searchWords.every(w => label.includes(w));
+    });
 
     const showCreate = searchTerm.trim() !== '' &&
         !materials.some(m => m.name.toLowerCase() === searchTerm.toLowerCase().trim());
