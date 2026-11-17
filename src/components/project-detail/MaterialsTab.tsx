@@ -47,6 +47,18 @@ function isBrickProductType(name?: string): boolean {
     return (name || '').trim().toLowerCase() === BRICK_PRODUCT_TYPE_NAME.toLowerCase();
 }
 
+/**
+ * Убирает из характеристик слово «артикул» и идущее за ним значение — в печатной форме КП
+ * артикул не показывается (в справочнике он хранится в характеристиках, например:
+ * «рядовой, 240*71*115 мм, артикул NFxxxxB115»). Значение — всё от слова «артикул» (с «:» или без)
+ * до ближайшей запятой, точки с запятой или конца строки; запятая перед словом убирается вместе с ним.
+ */
+function stripArticle(text: string): string {
+    return text
+        .replace(/(?:[,;]\s*)?артикул(?![а-яёa-z])\s*:?\s*[^,;\n]*/gi, '')
+        .replace(/^[\s,;]+|[\s,;]+$/g, '');
+}
+
 // ───────────────────────── форматирование чисел ─────────────────────────
 
 function formatMoney(n: number | null | undefined): string {
@@ -260,11 +272,18 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
             kpCurrencyName = currency.name;
         }
 
-        const hasBrickSelected = selected.some(m => {
+        // Кирпич и все остальные виды товара печатаются в РАЗНЫХ КП (разные шаблоны): смешивать
+        // в одном КП нельзя. Любой вид товара, кроме «Кирпич», идёт в универсальный шаблон.
+        const brickFlags = selected.map(m => {
             const dir = (directories.materials || []).find((dm: any) => dm.id === m.materialId);
             const productTypeName = (directories.productTypes || []).find((pt: any) => pt.id === dir?.productTypeId)?.name;
             return isBrickProductType(productTypeName);
         });
+        const hasBrickSelected = brickFlags.some(Boolean);
+        if (hasBrickSelected && !brickFlags.every(Boolean)) {
+            alert('Кирпич и другие материалы печатаются в отдельных КП. Отметьте либо только кирпич, либо только остальные материалы, а второй КП сформируйте отдельно.');
+            return;
+        }
         const templateType: KPTemplateType = hasBrickSelected ? 'brick' : 'other';
 
         setIsGeneratingKP(true);
@@ -309,10 +328,12 @@ function MaterialsTab({ project, canEdit, directories, trustDeeds = [], accessTo
                     materialName: m.materialName,
                     // Порядок в КП: наименование → характеристики из справочника →
                     // «Дополнительные характеристики» из карточки материала → производитель.
-                    characteristics: [dir?.characteristics, m.extraCharacteristics]
-                        .map(s => (s || '').trim())
-                        .filter(Boolean)
-                        .join(', '),
+                    characteristics: stripArticle(
+                        [dir?.characteristics, m.extraCharacteristics]
+                            .map(s => (s || '').trim())
+                            .filter(Boolean)
+                            .join(', ')
+                    ),
                     manufacturerName: manufacturerName || '',
                     unit: m.unitName || '',
                     qtyPerM2: dir?.qtyPerM2,
@@ -999,7 +1020,15 @@ function MaterialModal({ formData, setFormData, onClose, onSave, directories, is
                                 <MaterialSelect
                                     value={m.materialName || ''}
                                     materialId={m.materialId}
-                                    onChange={(name, id) => set({ materialName: name, materialId: id })}
+                                    onChange={(name, id) => {
+                                        // Единица измерения подтягивается из справочника материала (если там задана);
+                                        // потом её можно поменять вручную. Нет единицы в справочнике — поле не трогаем.
+                                        const dirMaterial = id ? (directories.materials || []).find((dm: any) => dm.id === id) : undefined;
+                                        const dirUnitName = dirMaterial?.unitId
+                                            ? (directories.units || []).find((u: any) => u.id === dirMaterial.unitId)?.name
+                                            : undefined;
+                                        set({ materialName: name, materialId: id, ...(dirUnitName ? { unitName: dirUnitName } : {}) });
+                                    }}
                                     placeholder="Из справочника..."
                                 />
                             </div>
