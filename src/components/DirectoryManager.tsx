@@ -1308,7 +1308,7 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, unit
                 initial={{ opacity: 0, scale: 0.96, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 12 }}
-                className="relative w-full max-w-lg bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
+                className="relative w-full max-w-3xl bg-surface border border-line rounded-2xl shadow-[0_24px_48px_-12px_rgba(48,42,28,0.28)] flex flex-col my-auto max-h-[90vh] overflow-hidden"
             >
                 <div className="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
                     <h2 className="font-serif text-[20px] font-medium text-ink leading-tight">
@@ -1319,7 +1319,7 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, unit
                     </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto px-6 py-5 space-y-3 custom-scrollbar">
                     <div>
                         <label className={labelCls}>Вид товара</label>
                         <select value={productTypeId} onChange={e => setProductTypeId(e.target.value)} className={cn(inputClass, "appearance-none cursor-pointer")}>
@@ -1339,32 +1339,33 @@ function MaterialDirectoryModal({ editingMaterial, productTypes, companies, unit
                         <textarea
                             value={characteristics}
                             onChange={e => setCharacteristics(e.target.value)}
-                            rows={3}
+                            rows={2}
                             placeholder="Например: 1 НФ 250*120*65мм, Цвет: PATINA GREEN BROWN..."
                             className="w-full bg-surface border border-line rounded-md px-3 py-2 text-[13px] text-ink focus:border-ochre focus:outline-none transition-colors placeholder:text-ink-4 resize-none"
                         />
                     </div>
 
-                    <div>
-                        <label className={labelCls}>Производитель</label>
-                        <CompanySelect
-                            value={manufacturerName}
-                            onChange={(nm, id) => { setManufacturerName(nm); setManufacturerId(id || ''); }}
-                            placeholder="Выбрать или создать производителя..."
-                            companyType={MANUFACTURER_COMPANY_TYPE}
-                        />
-                    </div>
-
-                    <div>
-                        <label className={labelCls}>Единица измерения</label>
-                        <select value={unitId} onChange={e => setUnitId(e.target.value)} className={cn(inputClass, "appearance-none cursor-pointer")}>
-                            <option value="">— не указана —</option>
-                            {units.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                        </select>
-                        <p className="text-[10.5px] text-ink-4 mt-1">Подставляется в карточку материала проекта автоматически. Новую единицу можно добавить во вкладке «Ед. измерения»</p>
-                    </div>
-
                     <div className="grid grid-cols-2 gap-3">
+                        <div>
+                            <label className={labelCls}>Производитель</label>
+                            <CompanySelect
+                                value={manufacturerName}
+                                onChange={(nm, id) => { setManufacturerName(nm); setManufacturerId(id || ''); }}
+                                placeholder="Выбрать или создать..."
+                                companyType={MANUFACTURER_COMPANY_TYPE}
+                            />
+                        </div>
+                        <div>
+                            <label className={labelCls}>Единица измерения</label>
+                            <select value={unitId} onChange={e => setUnitId(e.target.value)} className={cn(inputClass, "appearance-none cursor-pointer")}>
+                                <option value="">— не указана —</option>
+                                {units.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                            </select>
+                        </div>
+                        <p className="col-span-2 -mt-1 text-[10.5px] text-ink-4">Единица подставляется в карточку материала проекта автоматически. Новую единицу можно добавить во вкладке «Ед. измерения»</p>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3">
                         <div>
                             <label className={labelCls}>Кол-во шт в 1 м²</label>
                             <input
